@@ -3983,6 +3983,22 @@ pub(crate) fn resolve_player_for_context_ref(
         }) {
             return player;
         }
+        // CR 608.2c + CR 108.3: "that player shuffles" in a name-hate chain
+        // (Surgical Extraction / Eradicate) binds to the parent object target's
+        // owner or controller per the preceding search axis, but lowers as
+        // `TargetFilter::Player` without a `TargetRef::Player` slot. Fall back
+        // to the parent-target controller first (Eradicate / Counterbore class),
+        // then owner (Surgical Extraction class).
+        if matches!(target_filter, TargetFilter::Player) {
+            if let Some(player) =
+                crate::game::ability_utils::parent_target_controller(ability, state)
+            {
+                return player;
+            }
+            if let Some(player) = crate::game::ability_utils::parent_target_owner(ability, state) {
+                return player;
+            }
+        }
     }
     // CR 608.2c: A chained player anaphor can use `ParentTarget` when the
     // parent target was itself a player ("that library" after "target player's

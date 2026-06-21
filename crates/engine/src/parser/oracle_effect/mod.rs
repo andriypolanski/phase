@@ -13116,6 +13116,26 @@ fn extract_player_anchor(effect: &Effect) -> Option<TargetFilter> {
         Effect::ChangeZoneAll { target, .. } => target,
         _ => return None,
     };
+    // CR 608.2c + CR 108.3: Multi-zone name-hate search clauses lower to
+    // `ChangeZoneAll { Typed { controller: ParentTargetOwner|Controller } }`.
+    // The typed wrapper is not itself a player target slot — normalize to the
+    // parent-target owner/controller anaphor so a trailing "that player shuffles"
+    // (Surgical Extraction / Eradicate class) inherits the correct player axis.
+    let candidate = match candidate {
+        TargetFilter::Typed(tf)
+            if tf.type_filters.is_empty()
+                && tf.controller == Some(ControllerRef::ParentTargetOwner) =>
+        {
+            &TargetFilter::ParentTargetOwner
+        }
+        TargetFilter::Typed(tf)
+            if tf.type_filters.is_empty()
+                && tf.controller == Some(ControllerRef::ParentTargetController) =>
+        {
+            &TargetFilter::ParentTargetController
+        }
+        other => other,
+    };
     if !target_filter_can_target_player(candidate) {
         return None;
     }
@@ -13173,7 +13193,9 @@ fn apply_anchor_subject(effect: &mut Effect, anchor: &TargetFilter) {
         return;
     }
     match effect {
-        Effect::Shuffle { target } if *target == TargetFilter::Controller => {
+        Effect::Shuffle { target }
+            if matches!(*target, TargetFilter::Controller | TargetFilter::Player) =>
+        {
             *target = anchor.clone();
         }
         Effect::SearchLibrary {
@@ -49599,6 +49621,24 @@ mod tests {
                 "{label}: expected ChangeZoneAll {{ InAnyZone[GY,Hand,Lib], SameNameAsParentTarget }} in chain: {def:#?}"
             );
         }
+
+        let surgical = parse_effect_chain(
+            "Choose target card in a graveyard. Search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them. Then that player shuffles.",
+            AbilityKind::Spell,
+        );
+        let mut cursor = Some(&surgical);
+        while let Some(def) = cursor {
+            if let Effect::Shuffle { target } = &*def.effect {
+                assert_eq!(
+                    *target,
+                    TargetFilter::ParentTargetOwner,
+                    "Surgical Extraction shuffle must target the parent card's owner"
+                );
+                return;
+            }
+            cursor = def.sub_ability.as_deref();
+        }
+        panic!("expected Shuffle sub-ability in Surgical Extraction chain");
     }
 
     /// CR 701.12a: Tree of Perdition / Tree of Redemption / Evra — "exchange
