@@ -7883,6 +7883,19 @@ fn graveyard_keyword_grant_clause_escape() {
 }
 
 #[test]
+fn parse_keyword_with_where_x_accepts_uppercase_x() {
+    let (keyword, where_x) = parse_keyword_with_where_x("encore {X}, where X is its mana value")
+        .expect("uppercase X in where-clause must parse");
+    assert!(matches!(keyword, Keyword::Encore(_)));
+    assert!(matches!(
+        where_x,
+        Some(QuantityRef::ObjectManaValue {
+            scope: ObjectScope::Recipient,
+        })
+    ));
+}
+
+#[test]
 fn graveyard_keyword_grant_static_inline_encore_where_x_is_mana_value() {
     use crate::parser::oracle_static::keyword_grant::try_parse_graveyard_keyword_grant_static;
 

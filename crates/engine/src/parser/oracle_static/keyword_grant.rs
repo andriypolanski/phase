@@ -91,6 +91,28 @@ fn binds_recipient_mana_value(where_x: &Option<QuantityRef>) -> bool {
     )
 }
 
+fn graveyard_granted_kind_for_keyword(keyword: &Keyword) -> Option<GraveyardGrantedKeywordKind> {
+    [
+        GraveyardGrantedKeywordKind::Flashback,
+        GraveyardGrantedKeywordKind::Escape,
+        GraveyardGrantedKeywordKind::Mayhem,
+        GraveyardGrantedKeywordKind::Scavenge,
+        GraveyardGrantedKeywordKind::Encore,
+    ]
+    .into_iter()
+    .find(|kind| kind.matches_keyword(keyword))
+}
+
+fn finalize_graveyard_zone_grant_keyword(
+    keyword: Keyword,
+    where_x: Option<QuantityRef>,
+) -> Keyword {
+    let Some(kind) = graveyard_granted_kind_for_keyword(&keyword) else {
+        return keyword;
+    };
+    normalize_graveyard_granted_keyword(keyword, where_x, kind).unwrap_or(keyword)
+}
+
 fn normalize_graveyard_granted_keyword(
     keyword: Keyword,
     where_x: Option<QuantityRef>,
@@ -158,9 +180,12 @@ pub(crate) fn parse_keyword_with_where_x(input: &str) -> Option<(Keyword, Option
         return Some((keyword, None));
     }
 
-    let (_, qty_text) = preceded(tag::<_, _, VE<'_>>(", where x is "), nom::combinator::rest)
-        .parse(rest)
-        .ok()?;
+    let (_, qty_text) = preceded(
+        tag_no_case::<_, _, VE<'_>>(", where x is "),
+        nom::combinator::rest,
+    )
+    .parse(rest)
+    .ok()?;
     let (_, qty) =
         super::oracle_nom::quantity::parse_quantity_ref_complete(qty_text.trim()).ok()?;
     Some((keyword, Some(qty)))
@@ -456,6 +481,7 @@ pub(crate) fn parse_spells_have_keyword(tp: &TextPair<'_>, text: &str) -> Option
     {
         let (base_filter, rest) = parse_type_phrase(subject);
         if rest.trim().is_empty() && target_filter_is_your_graveyard(&base_filter) {
+            let keyword = finalize_graveyard_zone_grant_keyword(keyword, where_x.clone());
             let mut def = StaticDefinition::continuous()
                 .affected(base_filter)
                 .modifications(vec![ContinuousModification::AddKeyword { keyword }])
