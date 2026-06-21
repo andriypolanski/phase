@@ -8,7 +8,8 @@
 //! CR 121.1: A draw trigger fires only when a card is actually drawn.
 //! CR 614.1: Replacement effects that replace the draw (e.g. Abundance) prevent
 //!           the draw event, so Sheoldred does not trigger.
-//! CR 118.2: Multiple Sheoldreds each fire independently on the same draw.
+//! CR 603.2 + CR 603.2c: Two Sheoldreds are separate triggered abilities; each
+//!           triggers once on the same draw event.
 
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
@@ -326,7 +327,7 @@ fn two_sheoldreds_each_gain_two_on_own_draw() {
     assert_eq!(
         runner.life(P0),
         life_before + 4,
-        "two Sheoldreds must each trigger independently for +4 total (CR 118.2)"
+        "two Sheoldreds must each trigger independently for +4 total (CR 603.2 + CR 603.2c)"
     );
 }
 

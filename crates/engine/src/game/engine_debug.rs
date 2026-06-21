@@ -1465,7 +1465,7 @@ mod tests {
         assert!(
             watcher
                 .trigger_definitions
-                .iter()
+                .iter_all()
                 .any(|t| t.mode == TriggerMode::Drawn),
             "sanity: watcher carries a Drawn trigger"
         );
