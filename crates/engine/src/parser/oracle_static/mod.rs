@@ -19,7 +19,9 @@ mod prelude {
     pub(super) use super::super::oracle_effect::subject::{
         parse_restriction_modes, static_mode_needs_grant_propagation,
     };
-    pub(super) use super::super::oracle_effect::{parse_effect_chain, strip_trailing_duration};
+    pub(super) use super::super::oracle_effect::{
+        parse_effect_chain, parse_effect_chain_with_context, strip_trailing_duration,
+    };
     pub(super) use super::super::oracle_ir::context::ParseContext;
     pub(super) use super::super::oracle_ir::static_ir::StaticIr;
     pub(super) use super::super::oracle_nom::bridge::nom_on_lower;
@@ -138,7 +140,7 @@ pub(crate) use evasion::classify_block_exception;
 pub(crate) use keyword_grant::{
     classify_quoted_inner, parse_chosen_qualifier_subject, parse_continuous_modifications,
     parse_quoted_ability_modifications, split_keyword_list,
-    try_parse_graveyard_keyword_grant_clause,
+    try_parse_graveyard_keyword_grant_clause, try_parse_graveyard_keyword_grant_static,
 };
 pub(crate) use mana_transform::try_parse_retain_unspent_mana_static;
 pub(crate) use restriction::parse_cant_be_activated_exemption_in_text;

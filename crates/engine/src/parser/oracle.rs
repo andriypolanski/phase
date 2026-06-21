@@ -83,7 +83,8 @@ use super::oracle_static::{
     parse_cast_spells_alternative_cost_multi, parse_chosen_creature_type_static_prefix,
     parse_collect_evidence_alt_cost, parse_every_creature_type_static_prefix,
     parse_spells_alternative_cost, parse_static_line, parse_static_line_multi,
-    try_parse_graveyard_keyword_grant_clause, GraveyardGrantedKeywordKind,
+    try_parse_graveyard_keyword_grant_clause, try_parse_graveyard_keyword_grant_static,
+    GraveyardGrantedKeywordKind,
 };
 use super::oracle_trigger::{lower_trigger_ir, parse_trigger_lines_at_index};
 use super::oracle_util::{
@@ -765,7 +766,7 @@ fn try_parse_graveyard_keyword_static_with_continuation(line: &str) -> Option<St
         value(StaticCondition::DuringYourTurn, tag("during your turn, ")).parse(input)
     })
     .map_or((None, prefix), |(condition, rest)| (Some(condition), rest));
-    let (affected, kind) = try_parse_graveyard_keyword_grant_clause(grant_prefix)?;
+    let (affected, kind, _) = try_parse_graveyard_keyword_grant_clause(grant_prefix)?;
     let keyword = parse_graveyard_keyword_continuation(continuation, kind)?;
     if !kind.matches_keyword(&keyword) {
         return None;
@@ -787,6 +788,9 @@ fn try_parse_graveyard_keyword_static_with_continuation(line: &str) -> Option<St
 /// rather than silently dropping the extras.
 fn parse_static_line_with_graveyard_keyword_continuation(line: &str) -> Vec<StaticDefinition> {
     if let Some(def) = try_parse_graveyard_keyword_static_with_continuation(line) {
+        return vec![def];
+    }
+    if let Some(def) = try_parse_graveyard_keyword_grant_static(line) {
         return vec![def];
     }
     parse_static_line_multi(line)
@@ -5992,6 +5996,177 @@ mod tests {
             foreign_data: Vec::new(),
         };
         crate::database::synthesis::build_oracle_face(&card, None)
+    }
+
+    /// CR 708.5: Found Footage's "You may look at face-down creatures your
+    /// opponents control any time" lowers to a `MayLookAtFaceDown` static whose
+    /// affected filter carries the FaceDown property and the opponent scope. The
+    /// whole card (look static + sacrifice ability) parses with zero
+    /// unimplemented parts. Runtime visibility discrimination lives in
+    /// `game::visibility::tests::found_footage_reveals_opponent_face_down`.
+    #[test]
+    fn found_footage_look_at_face_down_static_full_card_supported() {
+        use crate::types::ability::FilterProp;
+        let face = oracle_face_for(
+            "Found Footage",
+            "You may look at face-down creatures your opponents control any time.\n{2}, Sacrifice this artifact: Surveil 2, then draw a card.",
+            &["Artifact"],
+            &[],
+        );
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert!(
+            gaps.is_empty(),
+            "Found Footage must be fully supported, gaps: {gaps:?}"
+        );
+        // (test-only) Iterator::find over the parsed statics — not a parsing
+        // dispatch; the parser-combinator gate's `.find(` heuristic flags the
+        // string method, but this is a Vec<StaticDefinition> lookup.
+        let look = face
+            .static_abilities
+            .iter()
+            .find(|s| s.mode == StaticMode::MayLookAtFaceDown)
+            .expect("MayLookAtFaceDown static must be present");
+        let affected = look
+            .affected
+            .as_ref()
+            .expect("look static must scope an affected filter");
+        match affected {
+            TargetFilter::Typed(t) => {
+                assert!(
+                    t.properties
+                        .iter()
+                        .any(|p| matches!(p, FilterProp::FaceDown)),
+                    "affected filter must carry FaceDown, got {t:?}"
+                );
+                assert_eq!(
+                    t.controller,
+                    Some(ControllerRef::Opponent),
+                    "'your opponents control' must scope to Opponent"
+                );
+            }
+            other => panic!("expected Typed affected filter, got {other:?}"),
+        }
+    }
+
+    /// CR 116.2b + CR 708.7: Karlov Watchdog's "Permanents your opponents
+    /// control can't be turned face up during your turn" lowers to a
+    /// `CantBeTurnedFaceUp` static with the opponent-scoped affected filter and
+    /// a `DuringYourTurn` timing condition. Runtime prohibition discrimination
+    /// lives in `game::morph::tests::
+    /// karlov_watchdog_blocks_opponent_turn_face_up_during_your_turn`.
+    #[test]
+    fn karlov_watchdog_cant_be_turned_face_up_static_parses() {
+        let parsed = parse_oracle_text(
+            "Vigilance\nPermanents your opponents control can't be turned face up during your turn.\nWhenever you attack with three or more creatures, creatures you control get +1/+1 until end of turn.",
+            "Karlov Watchdog",
+            &["Vigilance".to_string()],
+            &["Creature".to_string()],
+            &["Dog".to_string()],
+        );
+        // No part of the card may be Unimplemented.
+        assert!(
+            parsed
+                .abilities
+                .iter()
+                .all(|a| !matches!(&*a.effect, Effect::Unimplemented { .. })),
+            "no spell ability should be Unimplemented: {:?}",
+            parsed.abilities
+        );
+        assert!(
+            parsed.triggers.iter().all(|t| t
+                .execute
+                .as_ref()
+                .is_none_or(|e| !matches!(&*e.effect, Effect::Unimplemented { .. }))),
+            "no trigger should be Unimplemented: {:?}",
+            parsed.triggers
+        );
+        // (test-only) Iterator::find over the parsed statics — not a parsing
+        // dispatch; the parser-combinator gate's `.find(` heuristic flags the
+        // string method, but this is a Vec<StaticDefinition> lookup.
+        let prohibition = parsed
+            .statics
+            .iter()
+            .find(|s| s.mode == StaticMode::CantBeTurnedFaceUp)
+            .expect("CantBeTurnedFaceUp static must be present");
+        assert_eq!(
+            prohibition.condition,
+            Some(crate::types::ability::StaticCondition::DuringYourTurn),
+            "the prohibition must be gated on the controller's turn"
+        );
+        match prohibition.affected.as_ref() {
+            Some(TargetFilter::Typed(t)) => {
+                assert_eq!(
+                    t.controller,
+                    Some(ControllerRef::Opponent),
+                    "affected filter must scope to opponents' permanents"
+                );
+            }
+            other => panic!("expected Typed affected filter, got {other:?}"),
+        }
+    }
+
+    /// CR 116.2b + CR 708.7: Etrata, Deadly Fugitive grants face-down creatures
+    /// "{2}{U}{B}: Turn this creature face up. ...". The granted activated
+    /// ability's head clause lowers to `Effect::TurnFaceUp { SelfRef }` (the
+    /// printed resolving effect of the granted ability), so the whole granted
+    /// body parses with zero unimplemented parts. Runtime turn-up discrimination
+    /// lives in `game::effects::turn_face_up::tests::
+    /// granted_turn_face_up_ability_flips_source_face_up`.
+    #[test]
+    fn etrata_granted_turn_face_up_ability_parses() {
+        use crate::types::ability::ContinuousModification;
+        let parsed = parse_oracle_text(
+            "Deathtouch\nFace-down creatures you control have \"{2}{U}{B}: Turn this creature face up. If you can't, exile it, then you may cast the exiled card without paying its mana cost.\"\nWhenever an Assassin you control deals combat damage to an opponent, cloak the top card of that player's library.",
+            "Etrata, Deadly Fugitive",
+            &["Deathtouch".to_string()],
+            &["Legendary".to_string(), "Creature".to_string()],
+            &["Assassin".to_string()],
+        );
+        assert!(
+            parsed
+                .abilities
+                .iter()
+                .all(|a| !matches!(&*a.effect, Effect::Unimplemented { .. })),
+            "no spell ability should be Unimplemented: {:?}",
+            parsed.abilities
+        );
+        let granted = parsed
+            .statics
+            .iter()
+            .flat_map(|s| s.modifications.iter())
+            .find_map(|m| match m {
+                ContinuousModification::GrantAbility { definition } => Some(definition),
+                _ => None,
+            })
+            .expect("Etrata must grant a quoted activated ability");
+        assert!(
+            matches!(
+                &*granted.effect,
+                Effect::TurnFaceUp {
+                    target: TargetFilter::SelfRef
+                }
+            ),
+            "granted ability head must be TurnFaceUp {{ SelfRef }}, got {:?}",
+            granted.effect
+        );
+        // CR 608.2c + CR 708.7: the "If you can't, exile it …" rider must gate on
+        // the performed-signal, NOT the zone-change ledger — a successful
+        // `TurnFaceUp` changes no zone, so `Not { ZoneChangedThisWay }` would fire
+        // the exile even after success. Runtime under/over-the-gate discrimination
+        // lives in `game::effects::turn_face_up::tests::
+        // etrata_granted_turn_face_up_{success_does_not_exile,blocked_exiles}`.
+        let rider = granted
+            .sub_ability
+            .as_ref()
+            .expect("the granted ability must carry the \"If you can't, exile it\" rider");
+        assert_eq!(
+            rider.condition,
+            Some(crate::types::ability::AbilityCondition::Not {
+                condition: Box::new(crate::types::ability::AbilityCondition::effect_performed()),
+            }),
+            "the \"if you can't\" rider must read Not {{ OptionalEffectPerformed }}, got {:?}",
+            rider.condition
+        );
     }
 
     /// CR 602.2b + CR 601.2f + CR 102.1: Hylda's Crown of Winter parses with zero
@@ -16491,6 +16666,12 @@ Artifacts you control have \"{T}: Add {U}. Spend this mana only to cast a spell 
                 "Wire Surgeons",
                 &["Phyrexian", "Artificer"][..],
                 Keyword::Encore(ManaCost::SelfManaCost),
+            ),
+            (
+                "Each Sliver creature card in your graveyard has encore {X}, where X is its mana value.",
+                "Sliver Gravemother",
+                &["Sliver"][..],
+                Keyword::Encore(ManaCost::SelfManaValue),
             ),
         ] {
             let result = parse(text, name, &[], &["Creature"], subtypes);

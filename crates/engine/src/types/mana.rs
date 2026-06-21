@@ -1117,6 +1117,9 @@ pub enum ManaCost {
     },
     /// The card's own mana cost (used for "the flashback cost is equal to its mana cost").
     SelfManaCost,
+    /// The card's own mana value (CR 202.3), as generic mana only — used for
+    /// "encore {X}, where X is its mana value" (Sliver Gravemother class).
+    SelfManaValue,
 }
 
 impl ManaCost {
@@ -1133,7 +1136,7 @@ impl ManaCost {
         match self {
             ManaCost::NoCost => true,
             ManaCost::Cost { shards, generic } => shards.is_empty() && *generic == 0,
-            ManaCost::SelfManaCost => false,
+            ManaCost::SelfManaCost | ManaCost::SelfManaValue => false,
         }
     }
 
@@ -1150,7 +1153,7 @@ impl ManaCost {
     /// CR 202.3f: For hybrid symbols, use the largest component.
     pub fn mana_value(&self) -> u32 {
         match self {
-            ManaCost::NoCost | ManaCost::SelfManaCost => 0,
+            ManaCost::NoCost | ManaCost::SelfManaCost | ManaCost::SelfManaValue => 0,
             ManaCost::Cost { shards, generic } => {
                 let shard_total: u32 = shards.iter().map(|s| s.mana_value_contribution()).sum();
                 shard_total + generic
@@ -1167,7 +1170,7 @@ impl ManaCost {
     /// Gutsy Explorer).
     pub fn has_x(&self) -> bool {
         match self {
-            ManaCost::NoCost | ManaCost::SelfManaCost => false,
+            ManaCost::NoCost | ManaCost::SelfManaCost | ManaCost::SelfManaValue => false,
             ManaCost::Cost { shards, .. } => shards.iter().any(|s| matches!(s, ManaCostShard::X)),
         }
     }

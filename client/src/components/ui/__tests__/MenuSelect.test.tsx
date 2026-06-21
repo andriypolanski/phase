@@ -99,6 +99,39 @@ describe("MenuSelect", () => {
     vi.unstubAllGlobals();
   });
 
+  it("anchors the dropdown to the trigger box when opened", () => {
+    const rect = {
+      left: 96,
+      right: 296,
+      top: 48,
+      bottom: 88,
+      width: 200,
+      height: 40,
+      x: 96,
+      y: 48,
+      toJSON: () => ({}),
+    };
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue(rect as DOMRect);
+
+    render(
+      <MenuSelect
+        label="Standard"
+        items={[{ value: "Standard", label: "Standard" }]}
+        onSelect={vi.fn()}
+        fitContainer
+        wrapperClassName="w-full min-w-0"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Standard" }));
+
+    const listbox = screen.getByRole("listbox");
+    expect(listbox).toHaveStyle({ left: "96px", width: "200px" });
+
+    spy.mockRestore();
+  });
+
   it("does not apply content-based minWidth when fitContainer is set", () => {
     const longLabel = "Option ".repeat(12).trimEnd();
     const items = [{ value: "option-a", label: longLabel }];

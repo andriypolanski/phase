@@ -7835,7 +7835,7 @@ fn graveyard_cast_permission_oathsworn_vampire_if_gate() {
 
 #[test]
 fn graveyard_keyword_grant_clause_flashback() {
-    let (filter, kind) = try_parse_graveyard_keyword_grant_clause(
+    let (filter, kind, _) = try_parse_graveyard_keyword_grant_clause(
         "Each instant and sorcery card in your graveyard has flashback.",
     )
     .expect("should parse flashback grant clause");
@@ -7859,7 +7859,7 @@ fn graveyard_keyword_grant_clause_flashback() {
 
 #[test]
 fn graveyard_keyword_grant_clause_escape() {
-    let (filter, kind) =
+    let (filter, kind, _) =
         try_parse_graveyard_keyword_grant_clause("Each nonland card in your graveyard has escape.")
             .expect("should parse escape grant clause");
     assert_eq!(kind, GraveyardGrantedKeywordKind::Escape);
@@ -7883,8 +7883,64 @@ fn graveyard_keyword_grant_clause_escape() {
 }
 
 #[test]
+fn parse_keyword_with_where_x_accepts_uppercase_x() {
+    let (keyword, where_x) = parse_keyword_with_where_x("encore {X}, where X is its mana value")
+        .expect("uppercase X in where-clause must parse");
+    assert!(matches!(keyword, Keyword::Encore(_)));
+    assert!(matches!(
+        where_x,
+        Some(QuantityRef::ObjectManaValue {
+            scope: ObjectScope::Recipient,
+        })
+    ));
+}
+
+#[test]
+fn graveyard_keyword_grant_static_inline_encore_where_x_is_mana_value() {
+    use crate::parser::oracle_static::keyword_grant::try_parse_graveyard_keyword_grant_static;
+
+    let def = try_parse_graveyard_keyword_grant_static(
+        "Each Sliver creature card in your graveyard has encore {X}, where X is its mana value.",
+    )
+    .expect("Sliver Gravemother inline encore grant must parse");
+    match &def.modifications[0] {
+        ContinuousModification::AddKeyword {
+            keyword: Keyword::Encore(ManaCost::SelfManaValue),
+        } => {}
+        other => panic!("expected Encore(SelfManaValue), got {other:?}"),
+    }
+    let TargetFilter::Typed(tf) = def.affected.as_ref().expect("affected filter") else {
+        panic!("expected typed affected filter");
+    };
+    assert!(
+        tf.type_filters.contains(&TypeFilter::Creature)
+            && tf
+                .type_filters
+                .iter()
+                .any(|t| matches!(t, TypeFilter::Subtype(s) if s == "Sliver"))
+            && tf.properties.contains(&FilterProp::InZone {
+                zone: Zone::Graveyard
+            }),
+        "expected Sliver creature in your graveyard filter, got {tf:?}"
+    );
+}
+
+#[test]
+fn graveyard_keyword_grant_static_rejects_continuation_sentence() {
+    use crate::parser::oracle_static::keyword_grant::try_parse_graveyard_keyword_grant_static;
+
+    assert!(
+        try_parse_graveyard_keyword_grant_static(
+            "Each artifact creature card in your graveyard has encore. Its encore cost is equal to its mana cost."
+        )
+        .is_none(),
+        "continuation-sentence grants must stay on the period-split parser"
+    );
+}
+
+#[test]
 fn graveyard_keyword_grant_clause_non_lesson_instant_sorcery() {
-    let (filter, kind) = try_parse_graveyard_keyword_grant_clause(
+    let (filter, kind, _) = try_parse_graveyard_keyword_grant_clause(
         "Each non-Lesson instant and sorcery card in your graveyard has flashback.",
     )
     .expect("non-Lesson instant/sorcery graveyard flashback");
@@ -17444,6 +17500,55 @@ fn top_of_library_cast_permission_future_sight_compound() {
         other => panic!("expected TopOfLibraryCastPermission, got {other:?}"),
     }
     assert!(matches!(def.affected, Some(TargetFilter::Any)));
+}
+
+/// CR 700.6 + CR 401.5: Crystal Skull — "You may play historic lands and cast
+/// historic spells from the top of your library." lowers to a disjunctive
+/// `TopOfLibraryCastPermission` whose `affected` is an `Or` of historic Land
+/// and historic Card filters.
+#[test]
+fn top_of_library_cast_permission_crystal_skull_historic_disjunctive() {
+    let text = "You may play historic lands and cast historic spells from the top of your library.";
+    let lower = text.to_lowercase();
+    let def = try_parse_top_of_library_cast_permission(text, &lower)
+        .expect("Crystal Skull static must parse");
+    match def.mode {
+        StaticMode::TopOfLibraryCastPermission {
+            play_mode,
+            frequency,
+            ref alt_cost,
+        } => {
+            assert_eq!(play_mode, CardPlayMode::Play);
+            assert_eq!(frequency, CastFrequency::Unlimited);
+            assert!(alt_cost.is_none());
+        }
+        other => panic!("expected TopOfLibraryCastPermission, got {other:?}"),
+    }
+    let filter = def.affected.expect("affected filter set");
+    let TargetFilter::Or { filters } = filter else {
+        panic!("expected Or over historic land / historic spell branches, got {filter:?}");
+    };
+    assert_eq!(filters.len(), 2);
+    assert!(
+        matches!(
+            &filters[0],
+            TargetFilter::Typed(tf)
+                if tf.type_filters.contains(&TypeFilter::Land)
+                    && tf.properties.contains(&FilterProp::Historic)
+        ),
+        "expected historic Land branch, got {:?}",
+        filters[0]
+    );
+    assert!(
+        matches!(
+            &filters[1],
+            TargetFilter::Typed(tf)
+                if tf.type_filters.contains(&TypeFilter::Card)
+                    && tf.properties.contains(&FilterProp::Historic)
+        ),
+        "expected historic Card branch, got {:?}",
+        filters[1]
+    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { FormatConfig, FormatGroup, GameFormat, MatchType } from "../../adapter/types";
@@ -8,6 +8,7 @@ import type { AiSeatConfig, HostingSettings } from "../../stores/multiplayerStor
 import { useAiDeckCatalog } from "../../services/aiDeckCatalog";
 import { expandParsedDeck } from "../../services/deckParser";
 import { menuButtonClass } from "../menu/buttonStyles";
+import { MenuSelect, type MenuSelectGroup } from "../ui/MenuSelect";
 import { SelectField } from "../ui/SelectField";
 
 export type { AiSeatConfig };
@@ -349,11 +350,15 @@ export function HostSetup({
   // so any format whose minimum is reachable from that ceiling is listable.
   // Formats requiring more seats than the ceiling are hidden here to avoid
   // advertising a configuration we can't actually host.
-  const availableFormats = isP2P
-    ? FORMAT_OPTIONS.filter(
-        (f) => FORMAT_DEFAULTS[f.format].min_players <= P2P_MAX_PEERS,
-      )
-    : FORMAT_OPTIONS;
+  const availableFormats = useMemo(
+    () =>
+      isP2P
+        ? FORMAT_OPTIONS.filter(
+            (f) => FORMAT_DEFAULTS[f.format].min_players <= P2P_MAX_PEERS,
+          )
+        : FORMAT_OPTIONS,
+    [isP2P],
+  );
 
   // Shared field-input grammar (mockup Host-setup inputs).
   const inp =
@@ -364,6 +369,23 @@ export function HostSetup({
       on ? "bg-white/10 text-white" : "text-fg-meta hover:text-slate-200"
     } ${extra}`;
   const formatMeta = availableFormats.find((f) => f.format === selectedFormat);
+  const formatMenuGroups = useMemo((): MenuSelectGroup[] => {
+    const groups: MenuSelectGroup[] = [];
+    for (const group of (Object.keys(GROUP_ORDER) as FormatGroup[]).sort(
+      (a, b) => GROUP_ORDER[a] - GROUP_ORDER[b],
+    )) {
+      const groupFormats = availableFormats.filter((f) => f.group === group);
+      if (groupFormats.length === 0) continue;
+      groups.push({
+        label: group,
+        items: groupFormats.map((opt) => ({
+          value: opt.format,
+          label: opt.label,
+        })),
+      });
+    }
+    return groups;
+  }, [availableFormats]);
   const submitDisabled =
     hostDisabled || isSubmitting || hostingStatus !== "idle" || (aiSeats.length > 0 && !defaultAiDeck);
 
@@ -407,33 +429,21 @@ export function HostSetup({
           </Field>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {/* Format — grouped native <select>. Native is the mobile/tablet UX
-                win: iOS/Android render touch-optimized pickers from <select>.
-                <optgroup>s mirror the engine's FormatGroup taxonomy. */}
-            <Field label={t("hostSetup.format")} htmlFor="host-setup-format" hint={formatMeta?.description}>
-              <SelectField
-                wrapperClassName="w-full"
-                id="host-setup-format"
-                value={selectedFormat}
-                onChange={(e) => handleFormatSelect(e.target.value as GameFormat)}
+            {/* Format — grouped MenuSelect mirrors the engine's FormatGroup
+                taxonomy. fitContainer keeps the trigger inside the grid column;
+                menuLayout="dropdown" anchors below the trigger on all widths. */}
+            <Field label={t("hostSetup.format")} hint={formatMeta?.description}>
+              <MenuSelect
+                ariaLabel={t("hostSetup.format")}
+                label={formatMeta?.label ?? selectedFormat}
+                selectedValue={selectedFormat}
+                groups={formatMenuGroups}
+                onSelect={(value) => handleFormatSelect(value as GameFormat)}
+                menuLayout="dropdown"
+                fitContainer
+                wrapperClassName="w-full min-w-0"
                 className={`${inp} min-h-[44px] w-full cursor-pointer font-medium`}
-              >
-                {(Object.keys(GROUP_ORDER) as FormatGroup[])
-                  .sort((a, b) => GROUP_ORDER[a] - GROUP_ORDER[b])
-                  .map((group) => {
-                    const items = availableFormats.filter((f) => f.group === group);
-                    if (items.length === 0) return null;
-                    return (
-                      <optgroup key={group} label={group} className="bg-[#0a0f1b] text-slate-100">
-                        {items.map((opt) => (
-                          <option key={opt.format} value={opt.format} title={opt.description} className="bg-[#0a0f1b] text-slate-100">
-                            {opt.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    );
-                  })}
-              </SelectField>
+              />
             </Field>
 
             <Field label={t("hostSetup.startingLife")} htmlFor="host-setup-life">

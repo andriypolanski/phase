@@ -592,6 +592,9 @@ fn static_mode_is_optional_permission(mode: &StaticMode) -> bool {
     matches!(
         mode,
         StaticMode::MayLookAtTopOfLibrary
+            // CR 708.5: "you may look at face-down creatures [you don't control |
+            // your opponents control] any time" — opt-in look permission.
+            | StaticMode::MayLookAtFaceDown
             | StaticMode::MayChooseNotToUntap
             | StaticMode::MayPlayAdditionalLand
             | StaticMode::TopOfLibraryCastPermission { .. }
@@ -1433,6 +1436,7 @@ fn detect_dynamic_qty(
         // Replicate "cost equal to its mana cost" — encoded as a dynamic
         // mana-cost reference rather than a fixed cost.
         "SelfManaCost",
+        "SelfManaValue",
         "TargetManaCost",
         // CR 702.20a: "assigns combat damage equal to its toughness
         // rather than its power" — Brontodon class. Encoded as a typed
