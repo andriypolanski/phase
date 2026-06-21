@@ -856,6 +856,29 @@ fn an_opponent_lost_life_this_turn(state: &GameState, caster: PlayerId) -> bool 
         .any(|p| p.id != caster && p.life_lost_this_turn > 0)
 }
 
+/// CR 702.76a: Prowl's gate — whether `player` controlled a creature that dealt
+/// combat damage to a player this turn while having one of `object_id`'s
+/// creature types. The per-turn creature-type ledger
+/// (`creature_types_dealt_combat_damage_this_turn`) is snapshot at damage time.
+/// Single authority shared by the candidate path and the normal-vs-prowl
+/// alternative-cast choice so both agree on legality.
+fn prowl_damage_ledger_satisfied(state: &GameState, player: PlayerId, object_id: ObjectId) -> bool {
+    let Some(obj) = state.objects.get(&object_id) else {
+        return false;
+    };
+    state
+        .creature_types_dealt_combat_damage_this_turn
+        .iter()
+        .any(|(controller, creature_type)| {
+            *controller == player
+                && obj
+                    .card_types
+                    .subtypes
+                    .iter()
+                    .any(|spell_type| spell_type == creature_type)
+        })
+}
+
 fn foretell_cost(obj: &crate::game::game_object::GameObject) -> Option<ManaCost> {
     obj.keywords.iter().find_map(|keyword| match keyword {
         Keyword::Foretell(cost) => Some(cost.clone()),
@@ -3244,17 +3267,7 @@ fn casting_variant_candidates(
         && effective_spell_keywords(state, player, object_id)
             .iter()
             .any(|k| matches!(k, Keyword::Prowl(_)))
-        && state
-            .creature_types_dealt_combat_damage_this_turn
-            .iter()
-            .any(|(controller, creature_type)| {
-                *controller == player
-                    && obj
-                        .card_types
-                        .subtypes
-                        .iter()
-                        .any(|spell_type| spell_type == creature_type)
-            })
+        && prowl_damage_ledger_satisfied(state, player, object_id)
     {
         candidates.push(CastingVariant::Prowl);
     }
@@ -6887,6 +6900,36 @@ pub fn handle_spectacle_cost_choice_with_payment_mode(
     continue_cast_from_prepared(state, player, object_id, payment_mode, events)
 }
 
+/// CR 702.76a: Resolve the player's Prowl cost choice. Mirrors
+/// `handle_spectacle_cost_choice_with_payment_mode` — `Alternative` opts into
+/// `CastingVariant::Prowl` (which substitutes the prowl mana cost), and `Normal`
+/// casts for the printed cost. Prowl is a pure cost substitution (CR 702.76a);
+/// the prowl provenance tag is applied at resolution (stack.rs). The
+/// dealt-combat-damage gate is enforced at offer time, so reaching this handler
+/// means the option was legal.
+pub fn handle_prowl_cost_choice_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    _card_id: CardId,
+    decision: crate::types::actions::AlternativeCastDecision,
+    payment_mode: CastPaymentMode,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    use crate::types::actions::AlternativeCastDecision;
+    if matches!(decision, AlternativeCastDecision::Alternative) {
+        let mut prepared = prepare_spell_cast_with_variant_override(
+            state,
+            player,
+            object_id,
+            Some(CastingVariant::Prowl),
+        )?;
+        prepared.payment_mode = payment_mode;
+        return continue_with_prepared(state, player, prepared, events);
+    }
+    continue_cast_from_prepared(state, player, object_id, payment_mode, events)
+}
+
 /// Shared continuation: call prepare_spell_cast and run the standard casting
 /// pipeline (modal → targeting → payment). Extracted so handle_warp_cost_choice
 /// and handle_cast_spell can share the same post-prepare logic.
@@ -8075,6 +8118,63 @@ pub fn handle_cast_spell_with_payment_mode(
                 }
                 if !normal_affordable && spectacle_affordable {
                     return handle_spectacle_cost_choice_with_payment_mode(
+                        state,
+                        player,
+                        object_id,
+                        card_id,
+                        crate::types::actions::AlternativeCastDecision::Alternative,
+                        payment_mode,
+                        events,
+                    );
+                }
+                // Otherwise (normal-only or neither): fall through to normal cast.
+            }
+        }
+    }
+
+    // CR 702.76a + CR 118.9: Prowl — opt-in pure-mana alternative cost from
+    // hand, available only if a creature the caster controlled dealt combat
+    // damage to a player this turn while sharing one of the spell's creature
+    // types. When the gate holds and both the printed and prowl costs are
+    // affordable, present the choice; auto-route when only the prowl cost is
+    // payable. Mirrors the Spectacle opt-in flow — prowl is a pure cost
+    // substitution; its provenance is tagged at resolution (stack.rs) so "if its
+    // prowl cost was paid" intervening-ifs can read it.
+    if let Some(obj) = state.objects.get(&object_id) {
+        if obj.zone == Zone::Hand && prowl_damage_ledger_satisfied(state, player, object_id) {
+            if let Some(prowl_cost) = effective_spell_keywords(state, player, object_id)
+                .into_iter()
+                .find_map(|k| match k {
+                    crate::types::keywords::Keyword::Prowl(cost) => Some(cost),
+                    _ => None,
+                })
+            {
+                // CR 601.2f: affordability and displayed costs reflect active
+                // cost modifiers, applied to both the printed and prowl costs.
+                let normal_cost =
+                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
+                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let prowl_eff =
+                    apply_cost_modifiers_to_base(state, player, object_id, prowl_cost.clone())
+                        .unwrap_or(prowl_cost);
+                let normal_affordable =
+                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
+                let prowl_affordable =
+                    can_pay_cost_after_auto_tap(state, player, object_id, &prowl_eff);
+                if normal_affordable && prowl_affordable {
+                    return Ok(WaitingFor::AlternativeCastChoice {
+                        player,
+                        object_id,
+                        card_id,
+                        payment_mode,
+                        keyword: crate::types::game_state::AlternativeCastKeyword::Prowl,
+                        normal_cost,
+                        alternative_cost: Some(prowl_eff),
+                        alternative_additional_cost: None,
+                    });
+                }
+                if !normal_affordable && prowl_affordable {
+                    return handle_prowl_cost_choice_with_payment_mode(
                         state,
                         player,
                         object_id,

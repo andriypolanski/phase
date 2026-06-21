@@ -92,7 +92,8 @@ export function DeckBuilderToolbar({
           selectedValue={format}
           items={formatMenuItems}
           onSelect={(value) => onFormatChange(value as GameFormat)}
-          wrapperClassName="w-full lg:hidden"
+          fitContainer
+          wrapperClassName="w-full min-w-0 lg:hidden"
         />
         <div className="hidden lg:block">
           <FormatFilter selected={format} onChange={onFormatChange} />
