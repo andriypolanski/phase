@@ -104,7 +104,7 @@ fn sliver_gravemother_granted_encore_uses_recipient_mana_cost() {
     assert!(
         actions.iter().any(|action| matches!(
             action,
-            GameAction::ActivateAbility { object_id, .. } if *object_id == sliver_id
+            GameAction::ActivateAbility { source_id, .. } if *source_id == sliver_id
         )),
         "legal_actions must expose Encore activation for the graveyard Sliver"
     );
