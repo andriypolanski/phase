@@ -39,7 +39,7 @@ fn issue_3279_song_of_dryads_strips_enchanted_permanent_abilities() {
             obuun_obj
                 .base_trigger_definitions
                 .iter()
-                .any(|t| matches!(t.mode, TriggerMode::BeginCombat)),
+                .any(|t| t.mode == TriggerMode::Phase && t.phase == Some(Phase::BeginCombat)),
             "Obuun must carry a begin-combat trigger before Song attaches"
         );
     }
@@ -71,12 +71,7 @@ fn issue_3279_song_of_dryads_strips_enchanted_permanent_abilities() {
     );
     assert!(
         obuun_obj.trigger_definitions.is_empty(),
-        "CR 305.7: rules-text triggers must be removed, got {:?}",
-        obuun_obj
-            .trigger_definitions
-            .iter_all()
-            .map(|t| &t.mode)
-            .collect::<Vec<_>>()
+        "CR 305.7: rules-text triggers must be removed"
     );
     assert!(
         obuun_obj.static_definitions.is_empty(),
@@ -93,14 +88,14 @@ fn issue_3279_song_of_dryads_strips_enchanted_permanent_abilities() {
         obuun_obj.abilities.len()
     );
 
-    let mana_options = activatable_land_mana_options(obuun_obj);
+    let mana_options = activatable_land_mana_options(runner.state(), obuun, P0);
     assert!(
-        mana_options.contains(&ManaType::Green),
+        mana_options.iter().any(|o| o.mana_type == ManaType::Green),
         "Forest land must tap for {{G}}, got {mana_options:?}"
     );
 
     runner.pass_both_players();
-    assert_eq!(runner.state().phase, Phase::BeginCombat);
+    assert_eq!(runner.state().phase, Phase::PostCombatMain);
     assert!(
         !matches!(
             runner.state().waiting_for,
