@@ -7,8 +7,15 @@ use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::AbilityDefinition;
 use engine::types::game_state::WaitingFor;
-use engine::types::mana::ManaColor;
+use engine::types::identifiers::ObjectId;
+use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
+
+fn floating_mana(n: usize, ty: ManaType) -> Vec<ManaUnit> {
+    (0..n)
+        .map(|_| ManaUnit::new(ty, ObjectId(0), false, vec![]))
+        .collect()
+}
 
 const DOMINATING_LICID_ORACLE: &str = "{1}{U}{U}, {T}: This creature loses this ability and becomes an Aura enchantment with enchant creature. Attach it to target creature. You may pay {U} to end this effect.\n\
 You control enchanted creature.";
@@ -51,7 +58,9 @@ fn dominating_licid_parsed_activation_is_not_optional() {
 fn dominating_licid_activation_does_not_open_optional_effect_choice() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
-    scenario.with_mana_pool(P0, &[ManaColor::Blue, ManaColor::Blue, ManaColor::Blue], 1);
+    let mut mana = floating_mana(2, ManaType::Blue);
+    mana.extend(floating_mana(1, ManaType::Colorless));
+    scenario.with_mana_pool(P0, mana);
 
     let licid = scenario
         .add_creature(P0, "Dominating Licid", 1, 1)

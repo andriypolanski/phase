@@ -19767,7 +19767,7 @@ pub(crate) fn parse_effect_chain_ir(
         // permission grants as mandatory so resolution installs the permission.
         let is_optional = if matches!(&clause.effect, Effect::FreeCastFromZones { .. })
             || clause_is_additional_land_permission(&clause)
-            || clause_is_pay_to_end_effect_termination(&normalized_text)
+            || clause_is_pay_to_end_effect_termination(normalized_text)
         {
             false
         } else {
