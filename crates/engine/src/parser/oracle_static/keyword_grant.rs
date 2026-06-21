@@ -118,7 +118,10 @@ fn normalize_graveyard_granted_keyword(
 pub(crate) fn try_parse_graveyard_keyword_grant_static(line: &str) -> Option<StaticDefinition> {
     let stripped = strip_reminder_text(line);
     let lower = stripped.to_lowercase();
-    if lower.contains(". ") {
+    // Same period boundary as `try_parse_graveyard_keyword_static_with_continuation`
+    // in oracle.rs — if a continuation sentence is present, the inline path must
+    // not parse a bare keyword off the first sentence and drop the cost clause.
+    if super::oracle_nom::bridge::split_once_on_lower(&stripped, &lower, ". ").is_some() {
         return None;
     }
 

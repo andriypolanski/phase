@@ -7859,7 +7859,7 @@ fn graveyard_keyword_grant_clause_flashback() {
 
 #[test]
 fn graveyard_keyword_grant_clause_escape() {
-    let (filter, kind) =
+    let (filter, kind, _) =
         try_parse_graveyard_keyword_grant_clause("Each nonland card in your graveyard has escape.")
             .expect("should parse escape grant clause");
     assert_eq!(kind, GraveyardGrantedKeywordKind::Escape);
