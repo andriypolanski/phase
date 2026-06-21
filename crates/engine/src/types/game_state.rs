@@ -2416,6 +2416,12 @@ pub enum AlternativeCastKeyword {
     /// an opponent lost life this turn. A pure cost substitution — the spell
     /// resolves normally (no riders); spectacle changes only how the cost is paid.
     Spectacle,
+    /// CR 702.76a: Prowl alternative cost paid from hand, available only if a
+    /// creature the caster controlled dealt combat damage to a player this turn
+    /// while sharing one of the spell's creature types. A pure cost substitution
+    /// — the spell resolves normally; the prowl provenance is recorded so "if
+    /// its prowl cost was paid" intervening-ifs (Latchkey Faerie) can read it.
+    Prowl,
 }
 
 /// CR 601.2b: Engine-authored cast-variant option for spells with more than

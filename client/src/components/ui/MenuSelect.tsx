@@ -124,6 +124,51 @@ function flattenMenuItems(
   ];
 }
 
+type AnchoredMenuStyle = {
+  top: number | "auto";
+  bottom: number | "auto";
+  left: number;
+  width: number;
+  maxHeight: number;
+  boxSizing: "border-box";
+};
+
+function computeAnchoredMenuStyle(trigger: HTMLElement): AnchoredMenuStyle {
+  const rect = trigger.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const viewportLeft = viewport?.offsetLeft ?? 0;
+  const viewportWidth = viewport?.width ?? window.innerWidth;
+  const viewportTop = getViewportTop();
+  const viewportBottom = getViewportBottom();
+
+  // Pin the menu to the trigger's box; only nudge when the menu would clip.
+  let width = rect.width;
+  let left = rect.left;
+  const minLeft = viewportLeft + MENU_VIEWPORT_PADDING_PX;
+  const maxRight = viewportLeft + viewportWidth - MENU_VIEWPORT_PADDING_PX;
+
+  if (left + width > maxRight) {
+    left = Math.max(minLeft, maxRight - width);
+  }
+  if (left < minLeft) {
+    left = minLeft;
+    width = Math.min(width, maxRight - minLeft);
+  }
+  const spaceBelow = Math.max(0, viewportBottom - rect.bottom - MENU_GAP_PX);
+  const spaceAbove = Math.max(0, rect.top - viewportTop - MENU_GAP_PX);
+  const openUp = spaceBelow < MENU_MAX_HEIGHT_PX && spaceAbove > spaceBelow;
+  const maxHeight = Math.min(MENU_MAX_HEIGHT_PX, openUp ? spaceAbove : spaceBelow);
+
+  return {
+    left: Math.round(left),
+    width: Math.round(width),
+    maxHeight: Math.max(maxHeight, 0),
+    top: openUp ? "auto" : Math.round(rect.bottom + MENU_GAP_PX),
+    bottom: openUp ? Math.round(window.innerHeight - rect.top + MENU_GAP_PX) : "auto",
+    boxSizing: "border-box",
+  };
+}
+
 export function MenuSelect({
   label,
   items,
@@ -146,18 +191,13 @@ export function MenuSelect({
   const menuRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
   const allItems = useMemo(() => flattenMenuItems(items, groups), [items, groups]);
-  const [menuStyle, setMenuStyle] = useState<{
-    top: number | "auto";
-    bottom: number | "auto";
-    left: number;
-    width: number;
-    maxHeight: number;
-  }>({
+  const [menuStyle, setMenuStyle] = useState<AnchoredMenuStyle>({
     top: 0,
     bottom: "auto",
     left: 0,
     width: 0,
     maxHeight: MENU_MAX_HEIGHT_PX,
+    boxSizing: "border-box",
   });
 
   useLayoutEffect(() => {
@@ -183,40 +223,21 @@ export function MenuSelect({
     if (useBottomSheet) return;
     const trigger = triggerRef.current;
     if (!trigger) return;
-
-    const rect = trigger.getBoundingClientRect();
-    const viewport = window.visualViewport;
-    const viewportLeft = viewport?.offsetLeft ?? 0;
-    const viewportWidth = viewport?.width ?? window.innerWidth;
-    const viewportTop = getViewportTop();
-    const viewportBottom = getViewportBottom();
-
-    // Pin the menu to the trigger's box; only nudge when the menu would clip.
-    let width = rect.width;
-    let left = rect.left;
-    const minLeft = viewportLeft + MENU_VIEWPORT_PADDING_PX;
-    const maxRight = viewportLeft + viewportWidth - MENU_VIEWPORT_PADDING_PX;
-
-    if (left + width > maxRight) {
-      left = Math.max(minLeft, maxRight - width);
-    }
-    if (left < minLeft) {
-      left = minLeft;
-      width = Math.min(width, maxRight - minLeft);
-    }
-    const spaceBelow = Math.max(0, viewportBottom - rect.bottom - MENU_GAP_PX);
-    const spaceAbove = Math.max(0, rect.top - viewportTop - MENU_GAP_PX);
-    const openUp = spaceBelow < MENU_MAX_HEIGHT_PX && spaceAbove > spaceBelow;
-    const maxHeight = Math.min(MENU_MAX_HEIGHT_PX, openUp ? spaceAbove : spaceBelow);
-
-    setMenuStyle({
-      left,
-      width,
-      maxHeight: Math.max(maxHeight, 0),
-      top: openUp ? "auto" : rect.bottom + MENU_GAP_PX,
-      bottom: openUp ? window.innerHeight - rect.top + MENU_GAP_PX : "auto",
-    });
+    setMenuStyle(computeAnchoredMenuStyle(trigger));
   }, [useBottomSheet]);
+
+  const toggleOpen = useCallback(() => {
+    if (disabled) return;
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const trigger = triggerRef.current;
+    if (trigger && !useBottomSheet) {
+      setMenuStyle(computeAnchoredMenuStyle(trigger));
+    }
+    setOpen(true);
+  }, [disabled, open, useBottomSheet]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -335,10 +356,7 @@ export function MenuSelect({
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
         aria-label={ariaLabel ?? label}
-        onClick={() => {
-          if (disabled) return;
-          setOpen((prev) => !prev);
-        }}
+        onClick={toggleOpen}
         className={triggerClassName}
       >
         <span className="min-w-0 truncate" title={label}>
@@ -379,6 +397,7 @@ export function MenuSelect({
                       left: menuStyle.left,
                       width: menuStyle.width,
                       maxHeight: menuStyle.maxHeight,
+                      boxSizing: menuStyle.boxSizing,
                     }
               }
             >

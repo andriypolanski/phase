@@ -60,7 +60,8 @@ describe("HostSetup", () => {
       />,
     );
 
-    await user.selectOptions(screen.getByLabelText("Format"), "FreeForAll");
+    await user.click(screen.getByRole("button", { name: "Format" }));
+    await user.click(screen.getByRole("option", { name: "Free-for-All" }));
     await user.click(screen.getByRole("button", { name: "40" }));
     await user.click(screen.getByRole("button", { name: "Host Game" }));
 
