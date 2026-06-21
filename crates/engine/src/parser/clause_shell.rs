@@ -346,7 +346,10 @@ fn peel_you_may_prefix(text: &str, blocklist: YouMayBlocklist) -> Option<String>
     let rest_lower = rest.to_lowercase();
     let blocked = match blocklist {
         YouMayBlocklist::PeelClause => is_specialized_you_may_phrase(&rest_lower),
-        YouMayBlocklist::ChunkLoop => is_specialized_you_may_retarget_phrase(&rest_lower),
+        YouMayBlocklist::ChunkLoop => {
+            is_specialized_you_may_retarget_phrase(&rest_lower)
+                || is_you_may_pay_to_end_effect_phrase(&rest_lower)
+        }
     };
     if blocked {
         return None;
@@ -452,6 +455,19 @@ pub(crate) fn is_specialized_you_may_retarget_phrase(rest_lower: &str) -> bool {
     ))
     .parse(rest_lower)
     .is_ok()
+}
+
+/// CR 611.2 + CR 702.5a: Licid-class "you may pay {U} to end this effect" grants a
+/// separate activated way to terminate the ongoing enchantment. The "may" is the
+/// later payment permission, not an optional resolution choice on the licid
+/// activation itself (issue #4000).
+pub(crate) fn is_you_may_pay_to_end_effect_phrase(rest_lower: &str) -> bool {
+    nom_on_lower(rest_lower, rest_lower, |input| {
+        let (input, _) = tag("pay ").parse(input)?;
+        let (input, _) = take_until(" to end this effect").parse(input)?;
+        tag(" to end this effect").parse(input)
+    })
+    .is_some()
 }
 
 pub(crate) fn is_specialized_you_may_phrase(rest_lower: &str) -> bool {
@@ -785,6 +801,20 @@ mod tests {
             peel_optional_slots("you may cast the exiled card without paying its mana cost");
         assert!(is_optional);
         assert_eq!(rest, "cast the exiled card without paying its mana cost");
+    }
+
+    #[test]
+    fn peel_optional_slots_chunk_loop_licid_pay_to_end_does_not_strip() {
+        let text = "you may pay {U} to end this effect";
+        let (is_optional, _, _, rest) = peel_optional_slots(text);
+        assert!(
+            !is_optional,
+            "licid pay-to-end must keep full surface form, not become optional"
+        );
+        assert_eq!(rest, text);
+        assert!(is_you_may_pay_to_end_effect_phrase(
+            "pay {u} to end this effect"
+        ));
     }
 
     #[test]
