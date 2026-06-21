@@ -7835,7 +7835,7 @@ fn graveyard_cast_permission_oathsworn_vampire_if_gate() {
 
 #[test]
 fn graveyard_keyword_grant_clause_flashback() {
-    let (filter, kind) = try_parse_graveyard_keyword_grant_clause(
+    let (filter, kind, _) = try_parse_graveyard_keyword_grant_clause(
         "Each instant and sorcery card in your graveyard has flashback.",
     )
     .expect("should parse flashback grant clause");
@@ -7883,8 +7883,51 @@ fn graveyard_keyword_grant_clause_escape() {
 }
 
 #[test]
+fn graveyard_keyword_grant_static_inline_encore_where_x_is_mana_value() {
+    use crate::parser::oracle_static::keyword_grant::try_parse_graveyard_keyword_grant_static;
+
+    let def = try_parse_graveyard_keyword_grant_static(
+        "Each Sliver creature card in your graveyard has encore {X}, where X is its mana value.",
+    )
+    .expect("Sliver Gravemother inline encore grant must parse");
+    match &def.modifications[0] {
+        ContinuousModification::AddKeyword {
+            keyword: Keyword::Encore(ManaCost::SelfManaCost),
+        } => {}
+        other => panic!("expected Encore(SelfManaCost), got {other:?}"),
+    }
+    let TargetFilter::Typed(tf) = def.affected.as_ref().expect("affected filter") else {
+        panic!("expected typed affected filter");
+    };
+    assert!(
+        tf.type_filters.contains(&TypeFilter::Creature)
+            && tf
+                .type_filters
+                .iter()
+                .any(|t| matches!(t, TypeFilter::Subtype(s) if s == "Sliver"))
+            && tf.properties.contains(&FilterProp::InZone {
+                zone: Zone::Graveyard
+            }),
+        "expected Sliver creature in your graveyard filter, got {tf:?}"
+    );
+}
+
+#[test]
+fn graveyard_keyword_grant_static_rejects_continuation_sentence() {
+    use crate::parser::oracle_static::keyword_grant::try_parse_graveyard_keyword_grant_static;
+
+    assert!(
+        try_parse_graveyard_keyword_grant_static(
+            "Each artifact creature card in your graveyard has encore. Its encore cost is equal to its mana cost."
+        )
+        .is_none(),
+        "continuation-sentence grants must stay on the period-split parser"
+    );
+}
+
+#[test]
 fn graveyard_keyword_grant_clause_non_lesson_instant_sorcery() {
-    let (filter, kind) = try_parse_graveyard_keyword_grant_clause(
+    let (filter, kind, _) = try_parse_graveyard_keyword_grant_clause(
         "Each non-Lesson instant and sorcery card in your graveyard has flashback.",
     )
     .expect("non-Lesson instant/sorcery graveyard flashback");

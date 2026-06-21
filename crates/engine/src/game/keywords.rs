@@ -232,20 +232,24 @@ fn resolve_keyword_mana_cost(state: &GameState, object_id: ObjectId, cost: &Mana
     }
 }
 
-/// CR 702.128a / CR 702.129a + CR 602.1a: Resolve a `ManaCost::SelfManaCost`
-/// payload carried by a granted Embalm / Eternalize keyword to the recipient
-/// card's concrete mana cost. Embalm / Eternalize are graveyard *activated*
-/// abilities whose mana sub-cost is paid through `AbilityCost::Mana`, and that
-/// payment path treats `SelfManaCost` as a free cost — so a self-cost grant must
-/// be concretized before the activated ability is synthesized. Non-self-cost
-/// keywords (printed Embalm `{3}{W}`, or any other keyword) pass through
-/// unchanged.
+/// CR 702.97a / CR 702.128a / CR 702.129a / CR 702.141a + CR 602.1a: Resolve a
+/// `ManaCost::SelfManaCost` payload carried by a granted graveyard activated
+/// keyword to the recipient card's concrete mana cost. Encore / Scavenge /
+/// Embalm / Eternalize are graveyard *activated* abilities whose mana sub-cost
+/// is paid through `AbilityCost::Mana`, and that payment path treats
+/// `SelfManaCost` as a free cost — so a self-cost grant must be concretized
+/// before the activated ability is synthesized. Non-self-cost keywords (printed
+/// Embalm `{3}{W}`, Encore `{5}`, or any other keyword) pass through unchanged.
 pub fn resolve_self_cost_graveyard_activated_keyword(
     state: &GameState,
     object_id: ObjectId,
     keyword: &Keyword,
 ) -> Keyword {
     match keyword {
+        Keyword::Encore(cost) => Keyword::Encore(resolve_keyword_mana_cost(state, object_id, cost)),
+        Keyword::Scavenge(cost) => {
+            Keyword::Scavenge(resolve_keyword_mana_cost(state, object_id, cost))
+        }
         Keyword::Embalm(EmbalmCost::Mana(cost)) => Keyword::Embalm(EmbalmCost::Mana(
             resolve_keyword_mana_cost(state, object_id, cost),
         )),

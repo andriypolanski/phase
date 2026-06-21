@@ -765,7 +765,7 @@ fn try_parse_graveyard_keyword_static_with_continuation(line: &str) -> Option<St
         value(StaticCondition::DuringYourTurn, tag("during your turn, ")).parse(input)
     })
     .map_or((None, prefix), |(condition, rest)| (Some(condition), rest));
-    let (affected, kind) = try_parse_graveyard_keyword_grant_clause(grant_prefix)?;
+    let (affected, kind, _) = try_parse_graveyard_keyword_grant_clause(grant_prefix)?;
     let keyword = parse_graveyard_keyword_continuation(continuation, kind)?;
     if !kind.matches_keyword(&keyword) {
         return None;
@@ -787,6 +787,11 @@ fn try_parse_graveyard_keyword_static_with_continuation(line: &str) -> Option<St
 /// rather than silently dropping the extras.
 fn parse_static_line_with_graveyard_keyword_continuation(line: &str) -> Vec<StaticDefinition> {
     if let Some(def) = try_parse_graveyard_keyword_static_with_continuation(line) {
+        return vec![def];
+    }
+    if let Some(def) =
+        crate::parser::oracle_static::keyword_grant::try_parse_graveyard_keyword_grant_static(line)
+    {
         return vec![def];
     }
     parse_static_line_multi(line)
@@ -16490,6 +16495,12 @@ Artifacts you control have \"{T}: Add {U}. Spend this mana only to cast a spell 
                 "Each artifact creature card in your graveyard has encore. Its encore cost is equal to its mana cost.",
                 "Wire Surgeons",
                 &["Phyrexian", "Artificer"][..],
+                Keyword::Encore(ManaCost::SelfManaCost),
+            ),
+            (
+                "Each Sliver creature card in your graveyard has encore {X}, where X is its mana value.",
+                "Sliver Gravemother",
+                &["Sliver"][..],
                 Keyword::Encore(ManaCost::SelfManaCost),
             ),
         ] {
