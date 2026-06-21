@@ -30,7 +30,7 @@ use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::identifiers::CardId;
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
-use engine::types::zones::Zone;
+use engine::types::zones::{EtbTapState, Zone};
 
 /// Ark of Hunger's `{T}` ability chain: `Mill a card. You may play that card
 /// this turn.` The parser emits `Mill (→ Graveyard)` then
@@ -258,7 +258,7 @@ fn exiled_card_with_play_permission_stays_on_exile_path() {
                 single_use_group: None,
                 single_use: false,
                 cast_cost_raise: None,
-                land_enter_tapped: engine::types::zones::EtbTapState::Unspecified,
+                land_enter_tapped: EtbTapState::Unspecified,
             });
         id
     };

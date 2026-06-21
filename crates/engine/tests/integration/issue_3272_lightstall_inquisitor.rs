@@ -42,12 +42,15 @@ fn find_play_from_exile_grant(
 
 #[test]
 fn lightstall_etb_grants_owner_play_with_cost_raise_and_land_tapped() {
+    let keywords = vec!["Vigilance".to_string()];
+    let types = vec!["Creature".to_string()];
+    let subtypes = vec!["Bird".to_string(), "Cleric".to_string()];
     let parsed = parse_oracle_text(
         LIGHTSTALL_ORACLE,
         "Lightstall Inquisitor",
-        &["Vigilance".to_string()],
-        &["Creature".to_string()],
-        &["Bird".to_string(), "Cleric".to_string()],
+        &keywords,
+        &types,
+        &subtypes,
     );
 
     assert_eq!(

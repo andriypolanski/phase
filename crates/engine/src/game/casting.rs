@@ -1830,8 +1830,6 @@ pub(crate) fn single_use_play_from_exile_group(
             card_filter,
             single_use_group,
             single_use: true,
-            cast_cost_raise: None,
-            land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
             ..
         } if *granted_to == player => {
             let group = single_use_group.as_ref()?;
@@ -1866,8 +1864,6 @@ pub(crate) fn consume_single_use_play_from_exile(state: &mut GameState, group: T
                     crate::types::ability::CastingPermission::PlayFromExile {
                         single_use_group,
                         single_use: true,
-                        cast_cost_raise: None,
-                        land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                         ..
                     } if *single_use_group == Some(group)
                 )
@@ -44588,6 +44584,58 @@ mod tests {
         assert!(
             state.objects[&second].casting_permissions.is_empty(),
             "the void single-use grant must be stripped from sibling exiled cards"
+        );
+    }
+
+    /// CR 601.2a + CR 611.2a: Single-use accounting is independent of rider
+    /// metadata on the same `PlayFromExile` grant. Cost/tap riders scope how a
+    /// permitted play behaves; they must not make the one-cast tracked set
+    /// unspendable or leave sibling permissions behind.
+    #[test]
+    fn play_from_exile_single_use_consumes_with_rider_fields() {
+        let mut state = setup_game_at_main_phase();
+        let player = PlayerId(0);
+        let source = ObjectId(9999);
+        let group = TrackedSetId(1);
+        let first =
+            add_impulse_exiled_card(&mut state, player, "Bolt", CoreType::Instant, source, group);
+        let second = add_impulse_exiled_card(
+            &mut state,
+            player,
+            "Shock",
+            CoreType::Instant,
+            source,
+            group,
+        );
+        for object_id in [first, second] {
+            let obj = state.objects.get_mut(&object_id).unwrap();
+            let CastingPermission::PlayFromExile {
+                cast_cost_raise,
+                land_enter_tapped,
+                ..
+            } = obj.casting_permissions.first_mut().unwrap()
+            else {
+                panic!("test helper creates PlayFromExile grants");
+            };
+            *cast_cost_raise = Some(ManaCost::generic(1));
+            *land_enter_tapped = crate::types::zones::EtbTapState::Tapped;
+        }
+
+        let resolved_group = {
+            let obj = state.objects.get(&first).unwrap();
+            single_use_play_from_exile_group(&state, obj, player)
+        };
+        assert_eq!(
+            resolved_group,
+            Some(group),
+            "rider-bearing single-use grant must still resolve its tracked set"
+        );
+
+        consume_single_use_play_from_exile(&mut state, group);
+
+        assert!(
+            state.objects[&second].casting_permissions.is_empty(),
+            "consuming the tracked set must strip sibling grants even when rider fields are set"
         );
     }
 

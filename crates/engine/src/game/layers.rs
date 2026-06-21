@@ -229,8 +229,6 @@ pub fn prune_end_of_turn_casting_permissions(state: &mut GameState) {
                     CastingPermission::PlayFromExile {
                         single_use_group,
                         single_use: true,
-                        cast_cost_raise: None,
-                        land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                         ..
                     } => *single_use_group,
                     _ => None,

@@ -243,6 +243,14 @@ fn cast_cost_raise_rider(clause: &ClauseIr) -> Option<ManaCost> {
     .map(|(cost, _)| cost)
 }
 
+fn parses_land_enters_tapped_rider(input: &str) -> bool {
+    all_consuming(tag::<_, _, OracleError<'_>>(
+        "each land played this way enters tapped",
+    ))
+    .parse(input)
+    .is_ok()
+}
+
 /// CR 614.1c: Detect the "each land played this way enters tapped" rider
 /// sentence (Lightstall Inquisitor) — "enters tapped" is a CR 614.1c
 /// "[permanent] enters ..." replacement. Scoped to lands played via the
@@ -251,12 +259,7 @@ fn cast_cost_raise_rider(clause: &ClauseIr) -> Option<ManaCost> {
 fn is_land_enters_tapped_rider(clause: &ClauseIr) -> bool {
     let lower = clause.source_text.to_ascii_lowercase();
     let trimmed = lower.trim().trim_end_matches('.').trim();
-    let parsed = all_consuming(tag::<_, _, OracleError<'_>>(
-        "each land played this way enters tapped",
-    ))
-    .parse(trimmed)
-    .is_ok();
-    parsed
+    parses_land_enters_tapped_rider(trimmed)
 }
 
 /// Walk the previous def and its `sub_ability` chain for a `PlayFromExile`
