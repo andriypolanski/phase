@@ -228,18 +228,26 @@ fn resolve_keyword_mana_cost(state: &GameState, object_id: ObjectId, cost: &Mana
             .get(&object_id)
             .map(|obj| obj.mana_cost.clone())
             .unwrap_or(ManaCost::NoCost),
+        // CR 202.3: Mana value is a single number; keyword costs bound to mana
+        // value resolve to that much generic mana, not the card's colored cost.
+        ManaCost::SelfManaValue => state
+            .objects
+            .get(&object_id)
+            .map(|obj| ManaCost::generic(obj.mana_cost.mana_value()))
+            .unwrap_or(ManaCost::NoCost),
         _ => cost.clone(),
     }
 }
 
 /// CR 702.97a / CR 702.128a / CR 702.129a / CR 702.141a + CR 602.1a: Resolve a
-/// `ManaCost::SelfManaCost` payload carried by a granted graveyard activated
-/// keyword to the recipient card's concrete mana cost. Encore / Scavenge /
-/// Embalm / Eternalize are graveyard *activated* abilities whose mana sub-cost
-/// is paid through `AbilityCost::Mana`, and that payment path treats
-/// `SelfManaCost` as a free cost — so a self-cost grant must be concretized
-/// before the activated ability is synthesized. Non-self-cost keywords (printed
-/// Embalm `{3}{W}`, Encore `{5}`, or any other keyword) pass through unchanged.
+/// `ManaCost::SelfManaCost` or `ManaCost::SelfManaValue` payload carried by a
+/// granted graveyard activated keyword to the recipient card's concrete mana
+/// sub-cost. Encore / Scavenge / Embalm / Eternalize are graveyard *activated*
+/// abilities whose mana sub-cost is paid through `AbilityCost::Mana`, and that
+/// payment path treats self-referential placeholders as free — so they must be
+/// concretized before the activated ability is synthesized. Non-self-referential
+/// keywords (printed Embalm `{3}{W}`, Encore `{5}`, or any other keyword) pass
+/// through unchanged.
 pub fn resolve_self_cost_graveyard_activated_keyword(
     state: &GameState,
     object_id: ObjectId,

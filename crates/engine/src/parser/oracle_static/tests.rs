@@ -7905,9 +7905,9 @@ fn graveyard_keyword_grant_static_inline_encore_where_x_is_mana_value() {
     .expect("Sliver Gravemother inline encore grant must parse");
     match &def.modifications[0] {
         ContinuousModification::AddKeyword {
-            keyword: Keyword::Encore(ManaCost::SelfManaCost),
+            keyword: Keyword::Encore(ManaCost::SelfManaValue),
         } => {}
-        other => panic!("expected Encore(SelfManaCost), got {other:?}"),
+        other => panic!("expected Encore(SelfManaValue), got {other:?}"),
     }
     let TargetFilter::Typed(tf) = def.affected.as_ref().expect("affected filter") else {
         panic!("expected typed affected filter");

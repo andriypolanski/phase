@@ -1,6 +1,6 @@
 //! Regression for GitHub issue #3655 — Sliver Gravemother grants encore whose
 //! cost equals each Sliver's mana value; granted encore must surface as a
-//! graveyard activated ability at the card's own mana cost.
+//! graveyard activated ability costing generic mana equal to that mana value.
 //!
 //! https://github.com/phase-rs/phase/issues/3655
 
@@ -36,12 +36,12 @@ fn sliver_gravemother_parses_inline_encore_grant() {
                 matches!(
                     m,
                     ContinuousModification::AddKeyword {
-                        keyword: Keyword::Encore(ManaCost::SelfManaCost),
+                        keyword: Keyword::Encore(ManaCost::SelfManaValue),
                     }
                 )
             })
         })
-        .expect("Sliver Gravemother must grant Encore(SelfManaCost) to graveyard Slivers");
+        .expect("Sliver Gravemother must grant Encore(SelfManaValue) to graveyard Slivers");
     assert!(
         grant.affected.is_some(),
         "encore grant must carry an affected filter"
@@ -54,11 +54,11 @@ fn sliver_gravemother_parses_inline_encore_grant() {
     );
 }
 
-/// CR 702.141a: a Sliver in graveyard with mana cost {2}{R}{G} must surface an
-/// Encore activated ability costing {2}{R}{G} + exile when Gravemother grants
-/// encore equal to mana value.
+/// CR 702.141a + CR 202.3: a Sliver in graveyard with mana cost {2}{R}{G} must
+/// surface an Encore activated ability costing {4} + exile when Gravemother
+/// grants encore equal to mana value.
 #[test]
-fn sliver_gravemother_granted_encore_uses_recipient_mana_cost() {
+fn sliver_gravemother_granted_encore_uses_recipient_mana_value() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.add_creature_from_oracle(P0, "Sliver Gravemother", 6, 6, GRAVEMOTHER_ORACLE);
@@ -67,6 +67,7 @@ fn sliver_gravemother_granted_encore_uses_recipient_mana_cost() {
         generic: 2,
         shards: vec![ManaCostShard::Red, ManaCostShard::Green],
     };
+    let expected_encore_cost = ManaCost::generic(4);
     let sliver_id = scenario
         .add_creature_to_graveyard(P0, "Graveyard Sliver", 2, 2)
         .with_mana_cost(card_cost.clone())
@@ -78,8 +79,8 @@ fn sliver_gravemother_granted_encore_uses_recipient_mana_cost() {
         vec![
             ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]),
             ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]),
-            ManaUnit::new(ManaType::Red, ObjectId(0), false, vec![]),
-            ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]),
+            ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]),
+            ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]),
         ],
     );
 
@@ -96,7 +97,7 @@ fn sliver_gravemother_granted_encore_uses_recipient_mana_cost() {
     assert!(
         costs
             .iter()
-            .any(|c| matches!(c, AbilityCost::Mana { cost } if *cost == card_cost)),
+            .any(|c| matches!(c, AbilityCost::Mana { cost } if *cost == expected_encore_cost)),
         "encore mana sub-cost must equal the Sliver's mana value, got {costs:?}"
     );
 

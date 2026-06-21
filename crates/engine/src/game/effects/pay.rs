@@ -154,7 +154,7 @@ pub fn resolve(
 /// treats as trivially paid.
 fn scale_mana_cost(base: &ManaCost, times: u32) -> ManaCost {
     match base {
-        ManaCost::NoCost | ManaCost::SelfManaCost => ManaCost::zero(),
+        ManaCost::NoCost | ManaCost::SelfManaCost | ManaCost::SelfManaValue => ManaCost::zero(),
         ManaCost::Cost { shards, generic } => {
             let mut scaled_shards = Vec::with_capacity(shards.len() * times as usize);
             for _ in 0..times {
@@ -242,7 +242,7 @@ fn mana_x_shard_count(cost: &ManaCost) -> u32 {
             .iter()
             .filter(|shard| matches!(shard, ManaCostShard::X))
             .count() as u32,
-        ManaCost::NoCost | ManaCost::SelfManaCost => 0,
+        ManaCost::NoCost | ManaCost::SelfManaCost | ManaCost::SelfManaValue => 0,
     }
 }
 

@@ -16500,7 +16500,7 @@ Artifacts you control have \"{T}: Add {U}. Spend this mana only to cast a spell 
                 "Each Sliver creature card in your graveyard has encore {X}, where X is its mana value.",
                 "Sliver Gravemother",
                 &["Sliver"][..],
-                Keyword::Encore(ManaCost::SelfManaCost),
+                Keyword::Encore(ManaCost::SelfManaValue),
             ),
         ] {
             let result = parse(text, name, &[], &["Creature"], subtypes);

@@ -65,7 +65,7 @@ pub(crate) fn try_parse_graveyard_keyword_grant_clause(
 
 /// CR 702.97a / CR 702.141a: Resolve the keyword phrase on a graveyard grant
 /// line — fixed costs ("encore {5}"), inline variable costs ("encore {X}, where
-/// X is its mana value" → `SelfManaCost`), or bare keyword tokens when the cost
+/// X is its mana value" → `SelfManaValue`), or bare keyword tokens when the cost
 /// arrives in a separate continuation sentence (handled upstream).
 fn parse_graveyard_granted_keyword_phrase(
     keyword_text: &str,
@@ -79,8 +79,8 @@ fn parse_graveyard_granted_keyword_phrase(
 }
 
 /// CR 702.97a / CR 702.141a: When a graveyard grant binds X to the recipient
-/// card's mana value, lower to `ManaCost::SelfManaCost` so runtime synthesis
-/// concretizes the activated ability's mana sub-cost.
+/// card's mana value, lower to `ManaCost::SelfManaValue` so runtime synthesis
+/// concretizes the activated ability's mana sub-cost as generic mana.
 fn binds_recipient_mana_value(where_x: &Option<QuantityRef>) -> bool {
     matches!(
         where_x,
@@ -123,10 +123,10 @@ fn normalize_graveyard_granted_keyword(
     }
     match (keyword, &where_x) {
         (Keyword::Encore(_), where_x) if binds_recipient_mana_value(where_x) => {
-            Some(Keyword::Encore(ManaCost::SelfManaCost))
+            Some(Keyword::Encore(ManaCost::SelfManaValue))
         }
         (Keyword::Scavenge(_), where_x) if binds_recipient_mana_value(where_x) => {
-            Some(Keyword::Scavenge(ManaCost::SelfManaCost))
+            Some(Keyword::Scavenge(ManaCost::SelfManaValue))
         }
         (keyword, None) => Some(keyword),
         _ => None,

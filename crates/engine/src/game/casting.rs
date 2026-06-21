@@ -96,11 +96,12 @@ fn runtime_granted_graveyard_activated_abilities(
         .into_iter()
         .filter(|keyword| !obj.base_keywords.iter().any(|printed| printed == keyword))
         .filter_map(|keyword| {
-            // CR 702.128a / CR 702.129a: Embalm / Eternalize granted with a
-            // self-cost ("the embalm cost is equal to its mana cost") carry
-            // `ManaCost::SelfManaCost`; concretize it to the card's mana cost
-            // before synthesizing the activated ability (the activated-ability
-            // payment path would otherwise treat SelfManaCost as free).
+            // CR 702.128a / CR 702.129a / CR 702.141a: Embalm / Eternalize / Encore
+            // granted with a self-referential cost ("equal to its mana cost" or
+            // "where X is its mana value") carry `ManaCost::SelfManaCost` or
+            // `ManaCost::SelfManaValue`; concretize before synthesizing the
+            // activated ability (the activated-ability payment path would
+            // otherwise treat those placeholders as free).
             let keyword = super::keywords::resolve_self_cost_graveyard_activated_keyword(
                 state, source_id, &keyword,
             );
@@ -4341,9 +4342,10 @@ fn prepare_spell_cast_with_variant_override_inner(
                         generic: tax,
                     };
                 }
-                crate::types::mana::ManaCost::SelfManaCost => {
-                    // SelfManaCost should have been resolved before reaching here;
-                    // treat as no-op for commander tax purposes.
+                crate::types::mana::ManaCost::SelfManaCost
+                | crate::types::mana::ManaCost::SelfManaValue => {
+                    // Self-referential placeholders should have been resolved before
+                    // reaching here; treat as no-op for commander tax purposes.
                 }
             }
         }
@@ -4658,7 +4660,7 @@ pub(super) fn apply_cost_modifiers_to_base(
                         generic: tax,
                     };
                 }
-                ManaCost::SelfManaCost => {}
+                ManaCost::SelfManaCost | ManaCost::SelfManaValue => {}
             }
         }
     }
@@ -5420,7 +5422,7 @@ fn apply_cost_floor_inner(
             ManaCost::NoCost => {
                 *mana_cost = ManaCost::generic(delta);
             }
-            ManaCost::SelfManaCost => {}
+            ManaCost::SelfManaCost | ManaCost::SelfManaValue => {}
         }
     }
 }
@@ -9656,7 +9658,7 @@ fn reduce_harmonize_cost_for_creature_power(cost: &ManaCost, power: u32) -> Mana
             shards: shards.clone(),
             generic: generic.saturating_sub(power),
         },
-        ManaCost::NoCost | ManaCost::SelfManaCost => cost.clone(),
+        ManaCost::NoCost | ManaCost::SelfManaCost | ManaCost::SelfManaValue => cost.clone(),
     }
 }
 
@@ -10311,9 +10313,9 @@ fn can_feasibly_pay_mana_cost_without_x(
     );
 
     let (residual_shards, residual_generic) = match &residual {
-        crate::types::mana::ManaCost::NoCost | crate::types::mana::ManaCost::SelfManaCost => {
-            return true
-        }
+        crate::types::mana::ManaCost::NoCost
+        | crate::types::mana::ManaCost::SelfManaCost
+        | crate::types::mana::ManaCost::SelfManaValue => return true,
         crate::types::mana::ManaCost::Cost { shards, generic } => (shards, *generic),
     };
 
@@ -24176,12 +24178,11 @@ mod tests {
         );
     }
 
-    /// CR 702.141a + CR 604.1: Encore granted with `SelfManaCost` (Sliver
-    /// Gravemother / Wire Surgeons class) must synthesize a graveyard activated
-    /// ability whose mana sub-cost equals the card's own mana cost — not a free
-    /// `SelfManaCost` placeholder.
+    /// CR 702.141a + CR 604.1: Encore granted with `SelfManaValue` (Sliver
+    /// Gravemother class) must synthesize a graveyard activated ability whose
+    /// mana sub-cost equals the card's mana value as generic mana.
     #[test]
-    fn granted_self_cost_encore_surfaces_graveyard_ability_at_card_mana_cost() {
+    fn granted_self_mana_value_encore_surfaces_graveyard_ability_at_mana_value() {
         let mut state = setup_game_at_main_phase();
 
         let grantor = create_object(
@@ -24195,11 +24196,79 @@ mod tests {
             generic: 2,
             shards: vec![ManaCostShard::Red, ManaCostShard::Green],
         };
+        let expected_encore_cost = ManaCost::generic(4);
         let creature = create_object(
             &mut state,
             CardId(9501),
             PlayerId(0),
             "Graveyard Sliver".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&creature).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Sliver".into());
+            obj.base_card_types = obj.card_types.clone();
+            obj.mana_cost = card_cost.clone();
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+        }
+
+        state.add_transient_continuous_effect(
+            grantor,
+            PlayerId(0),
+            crate::types::ability::Duration::UntilEndOfTurn,
+            TargetFilter::SpecificObject { id: creature },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Encore(ManaCost::SelfManaValue),
+            }],
+            None,
+        );
+
+        let abilities = activated_ability_definitions(&state, creature);
+        let (_, encore) = abilities
+            .iter()
+            .find(|(_, a)| matches!(&*a.effect, Effect::Encore))
+            .expect("granted encore must surface a graveyard activated ability");
+        assert_eq!(
+            encore.activation_zone,
+            Some(Zone::Graveyard),
+            "encore ability must function only from the graveyard"
+        );
+        let Some(AbilityCost::Composite { costs }) = &encore.cost else {
+            panic!("encore cost must be a Composite, got {:?}", encore.cost);
+        };
+        assert!(
+            costs
+                .iter()
+                .any(|c| matches!(c, AbilityCost::Mana { cost } if *cost == expected_encore_cost)),
+            "encore mana sub-cost must equal the card's mana value, got {costs:?}"
+        );
+    }
+
+    /// CR 702.141a + CR 604.1: Encore granted with `SelfManaCost` (Wire Surgeons
+    /// class) must synthesize a graveyard activated ability whose mana sub-cost
+    /// equals the card's own mana cost — not a free self-referential placeholder.
+    #[test]
+    fn granted_self_cost_encore_surfaces_graveyard_ability_at_card_mana_cost() {
+        let mut state = setup_game_at_main_phase();
+
+        let grantor = create_object(
+            &mut state,
+            CardId(9500),
+            PlayerId(0),
+            "Wire Surgeons".to_string(),
+            Zone::Battlefield,
+        );
+        let card_cost = ManaCost::Cost {
+            generic: 2,
+            shards: vec![ManaCostShard::Red, ManaCostShard::Green],
+        };
+        let creature = create_object(
+            &mut state,
+            CardId(9501),
+            PlayerId(0),
+            "Graveyard Artifact Creature".to_string(),
             Zone::Graveyard,
         );
         {

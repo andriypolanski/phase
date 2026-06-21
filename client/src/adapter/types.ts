@@ -434,7 +434,8 @@ export interface ManaPool {
 export type ManaCost =
   | { type: "NoCost" }
   | { type: "Cost"; shards: string[]; generic: number }
-  | { type: "SelfManaCost" };
+  | { type: "SelfManaCost" }
+  | { type: "SelfManaValue" };
 
 export type CastFrequency =
   | "Unlimited"
