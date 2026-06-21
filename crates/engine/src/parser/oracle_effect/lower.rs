@@ -4766,11 +4766,21 @@ pub(super) fn try_parse_damage_with_remainder<'a>(
                 nom::combinator::all_consuming(tag::<_, _, OracleError<'_>>("defending player"))
                     .parse(target_phrase)
                     .is_ok();
+            // CR 120.3: "deals damage to each player equal to the number of [X]
+            // THEY control" — the third-person "they" binds to the iterating
+            // player (DamageEachPlayer resolves per recipient), NOT the caster.
+            // Classify the recipient scope BEFORE parsing the amount so the
+            // count's controller threads to `ScopedPlayer` (Acidic Soil).
+            let each_player_scope = parse_damage_each_player_scope(target_phrase).is_some();
             // Parse amount using existing helpers
             let qty = crate::parser::oracle_quantity::parse_event_context_quantity(amount_phrase)
                 .or_else(|| {
                     if references_defending_player {
                         ctx.with_player_scope(ControllerRef::DefendingPlayer, |amount_ctx| {
+                            parse_cda_quantity_with_context(amount_phrase, amount_ctx)
+                        })
+                    } else if each_player_scope {
+                        ctx.with_player_scope(ControllerRef::ScopedPlayer, |amount_ctx| {
                             parse_cda_quantity_with_context(amount_phrase, amount_ctx)
                         })
                     } else {

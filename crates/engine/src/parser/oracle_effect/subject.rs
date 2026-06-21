@@ -2756,7 +2756,7 @@ fn build_become_clause(
 
     // CR 119.5: "life total becomes N" — set life total to a specific number.
     // Must intercept before parse_animation_spec which tokenizes each word as a subtype.
-    if let Some(clause) = try_parse_set_life_total(become_text, &application) {
+    if let Some(clause) = try_parse_set_life_total(become_text, &application, ctx) {
         return Some(clause);
     }
 
@@ -3176,6 +3176,7 @@ fn parse_attack_if_able_duration(input: &str) -> OracleResult<'_, Duration> {
 fn try_parse_set_life_total(
     become_text: &str,
     application: &SubjectApplication,
+    ctx: &mut ParseContext,
 ) -> Option<ParsedEffectClause> {
     let full_lower = become_text.to_lowercase();
     // CR 119.5: "life total becomes equal to <quantity>" — strip the optional
@@ -3214,7 +3215,25 @@ fn try_parse_set_life_total(
         // "life total becomes <quantity>" card composes. `parse_cda_quantity`
         // returns `Some` only when it fully consumes the phrase, so an
         // unrecognized trailer yields `None` here — no false positives.
-        oracle_quantity::parse_cda_quantity(lower)?
+        //
+        // CR 119.5 + CR 109.5: the untargeted "each player's life total becomes
+        // the number of [X] THEY control" form (Biorhythm, Shaman of Forgotten
+        // Ways) resolves per player — the third-person "they" binds to the
+        // iterating player, not the caster. Thread `ScopedPlayer` so the count's
+        // controller resolves per-recipient. Gate strictly to the AllPlayers
+        // each-player form: the targeted form ("target player's life total",
+        // `application.target = Some`), the cross-player extremum (Repay in Kind
+        // → `LifeTotal{AllPlayers{Min/Max}}`, which carries no "they control"
+        // count to rebind), "your life total" (Controller), and the numeric arm
+        // (Worldfire) are all left at the default controller scope.
+        if application.target.is_none() && matches!(application.affected, TargetFilter::AllPlayers)
+        {
+            ctx.with_player_scope(ControllerRef::ScopedPlayer, |c| {
+                oracle_quantity::parse_cda_quantity_with_context(lower, c)
+            })?
+        } else {
+            oracle_quantity::parse_cda_quantity_with_context(lower, ctx)?
+        }
     };
 
     // CR 119.5: Use the parsed target if targeted ("target player's life total"),
