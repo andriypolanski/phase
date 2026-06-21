@@ -1105,21 +1105,20 @@ fn parse_number_of_inner(input: &str) -> OracleResult<'_, QuantityRef> {
         )),
         parse_number_of_controlled_type,
         parse_cards_exiled_with_source,
-        // CR 109.4 + CR 115.7: "cards in their <zone>" / "cards in that player's <zone>"
-        // must be tried BEFORE the scoped-zone combinator so the target-referring
-        // possessive routes to `TargetZoneCardCount` (resolves against the player
-        // target in scope) instead of falling back to a controller-less
-        // `InZone` filter that counts every player's cards.
-        // CR 613.1: "cards in the chosen player's <zone>" — the persisted ETB
-        // choice; must precede the generic target/zone arms below.
-        parse_number_of_cards_in_chosen_player_zone,
-        // CR 402.1: "cards in the hand of the {player|opponent} with the
-        // {most|fewest} cards in hand" — must precede the generic
-        // `parse_number_of_cards_in_target_zone` "cards in …" arms.
-        parse_number_of_cards_in_hand_of_extremum_player,
-        parse_number_of_cards_in_target_zone,
-        parse_number_of_cards_in_all_players_hands,
-        parse_number_of_cards_in_zone,
+        // CR 109.4 + CR 115.7 + CR 402.1: "cards in …" hand/zone counts share a
+        // nested alt to stay within nom's top-level `alt` arity (nom 8.0 max: 21
+        // items). Ordering within the nest is load-bearing: chosen-player and
+        // extremum-hand phrases must precede the generic target-zone and zone
+        // arms they share a "cards in " prefix with.
+        alt((
+            parse_number_of_cards_in_chosen_player_zone,
+            // CR 402.1: "cards in the hand of the {player|opponent} with the
+            // {most|fewest} cards in hand" (Adamaro P/T CDA class).
+            parse_number_of_cards_in_hand_of_extremum_player,
+            parse_number_of_cards_in_target_zone,
+            parse_number_of_cards_in_all_players_hands,
+            parse_number_of_cards_in_zone,
+        )),
         parse_number_of_opponents,
     ))
     .or(alt((
