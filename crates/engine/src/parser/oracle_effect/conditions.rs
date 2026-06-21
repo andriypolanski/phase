@@ -898,8 +898,42 @@ fn parse_if_revealed_card_type_conditional(text: &str) -> Option<(AbilityConditi
     ))
 }
 
+/// CR 608.2c + CR 406.6: "If the exiled card is a [type] card, ..." — gates a
+/// sub_ability / repeat-process loop on the type of the card just moved by the
+/// preceding step. `RevealedHasCardType` falls back to `last_zone_changed_ids`
+/// when no reveal occurred, so the demonstrative "the exiled card" resolves to
+/// the card the preceding `ChangeZone` step moved this resolution (Sin, Spira's
+/// Punishment exiles a graveyard card, then this gates the repeat on its type).
+fn parse_if_exiled_card_type_conditional(text: &str) -> Option<(AbilityCondition, String)> {
+    let lower = text.to_lowercase();
+    let (type_filters, remainder) = nom_on_lower(text, &lower, |input| {
+        let (rest, _) = tag::<_, _, OracleError<'_>>("if the exiled card is a ").parse(input)?;
+        let (rest, type_filters) = nom_quantity::parse_type_filter_list(rest)?;
+        let (rest, _) = tag::<_, _, OracleError<'_>>(" card").parse(rest)?;
+        Ok((rest, type_filters))
+    })?;
+    let core_types: Vec<CoreType> = type_filters
+        .iter()
+        .filter_map(type_filter_to_core_type)
+        .collect();
+    if core_types.is_empty() {
+        return None;
+    }
+    Some((
+        AbilityCondition::RevealedHasCardType {
+            card_types: core_types,
+            additional_filter: None,
+            subtype_filter: None,
+        },
+        remainder_after_optional_comma(remainder).to_string(),
+    ))
+}
+
 pub(super) fn strip_card_type_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     if let Some((condition, remainder)) = parse_if_revealed_card_type_conditional(text) {
+        return (Some(condition), remainder);
+    }
+    if let Some((condition, remainder)) = parse_if_exiled_card_type_conditional(text) {
         return (Some(condition), remainder);
     }
     let lower = text.to_lowercase();
@@ -1003,6 +1037,16 @@ pub(super) fn strip_card_type_conditional(text: &str) -> (Option<AbilityConditio
             tag::<_, _, OracleError<'_>>(" of the chosen type").parse(after_type)
         {
             (rest_after_chosen, Some(FilterProp::IsChosenCreatureType))
+        } else if let Some((prop, consumed)) = crate::parser::oracle_target::parse_mana_value_suffix(
+            after_type.trim_start(),
+            &mut ParseContext::default(),
+        ) {
+            // CR 202.3: "if it's a creature card with mana value N or less/greater"
+            // (Kellan, Daring Traveler) — the revealed-card gate carries a mana-value
+            // bound as an additional filter property. Recompute the offset against the
+            // untrimmed `after_type` so byte arithmetic below stays exact.
+            let leading_ws = after_type.len() - after_type.trim_start().len();
+            (&after_type[leading_ws + consumed..], Some(prop))
         } else {
             (after_type, None)
         };
@@ -1900,9 +1944,27 @@ pub(crate) fn condition_text_is_rehomeable(condition_text: &str) -> bool {
     // list (the verbatim pre-existing `excluded_prefixes` set), not parser
     // dispatch. The actual condition parsing is done downstream by
     // `parse_inner_condition` / `parse_condition_text`.
-    !NON_REHOMEABLE_CONDITION_PREFIXES
-        .iter()
-        .any(|prefix| condition_text.starts_with(prefix))
+    //
+    // Each prefix must match on a word boundary: a bare `starts_with` lets the
+    // reflexive predicate `"you do"` swallow the control-presence condition
+    // `"you don't control a Snail"` (Wick, the Whorled Mind) — the latter is
+    // re-homeable as `Not(IsPresent)`, the former is the no-`AbilityCondition`
+    // optional-effect signal. The check only applies to prefixes whose last
+    // character is alphanumeric (e.g. "you do"): there the *following* character
+    // in the text must not be alphanumeric, so "you do**n't**" (continues with
+    // 'n') is rejected. Prefixes already ending in a space ("its power is ",
+    // "it has ") carry their own boundary, so they exclude on a plain prefix
+    // match and must NOT impose an extra boundary on the alphanumeric residual.
+    !NON_REHOMEABLE_CONDITION_PREFIXES.iter().any(|prefix| {
+        let prefix_ends_alnum = prefix
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric());
+        // allow-noncombinator: word-boundary membership test against a fixed exclusion list, not parsing dispatch (parsing happens downstream in parse_inner_condition)
+        condition_text.strip_prefix(prefix).is_some_and(|rest| {
+            !prefix_ends_alnum || !rest.chars().next().is_some_and(|c| c.is_alphanumeric())
+        })
+    })
 }
 
 /// CR 707.10c: When a suffix condition is immediately followed by a copy-retarget
@@ -3126,6 +3188,7 @@ pub(crate) fn ability_condition_to_static_condition(
         // No `StaticCondition` counterpart exists for these game-state
         // predicates.
         AbilityCondition::FirstCombatPhaseOfTurn
+        | AbilityCondition::FirstEndStepOfTurn
         | AbilityCondition::DayNightIsNeither
         | AbilityCondition::SourceLacksKeyword { .. } => None,
 
@@ -3456,6 +3519,15 @@ pub(super) fn try_nom_condition_as_ability_condition(
         return Some(AbilityCondition::FirstCombatPhaseOfTurn);
     }
 
+    // CR 500.8 + CR 513.1: "it's the first end step of the turn" — end-step
+    // sibling of the combat-phase gate above (Y'shtola Rhul's loop guard).
+    if tag::<_, _, OracleError<'_>>("it's the first end step of the turn")
+        .parse(lower.as_str())
+        .is_ok()
+    {
+        return Some(AbilityCondition::FirstEndStepOfTurn);
+    }
+
     // CR 603.4: "if this is the [Nth] time this ability has resolved this turn"
     // and the abbreviated continuation form "if it's the [Nth] time" used by
     // Omnath's later sentences (the "this ability has resolved this turn" tail
@@ -3495,6 +3567,15 @@ pub(super) fn try_nom_condition_as_ability_condition(
         return Some(AbilityCondition::EventOutcomeWon);
     }
 
+    // CR 603.12 + CR 608.2c: reflexive "you don't" / "you do not" / "you didn't"
+    // / "you did not" — the verb anaphors back to the immediately preceding
+    // optional action ("you didn't put a card into your hand this way"), so the
+    // fragment is the optional-effect signal, NOT a game-state condition. But a
+    // trailing game-state predicate ("you don't *control a Snail*", Wick) is a
+    // genuine control-presence gate. Disambiguate by deferring to the typed
+    // condition parser first: when `parse_inner_condition` consumes the whole
+    // fragment, it is a real game-state condition (re-homed below); only when it
+    // cannot is this the reflexive optional-effect signal.
     if alt((
         tag::<_, _, OracleError<'_>>("you don't"),
         tag("you do not"),
@@ -3503,6 +3584,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
     ))
     .parse(lower.as_str())
     .is_ok()
+        && !parse_inner_condition(&lower).is_ok_and(|(rest, _)| rest.trim().is_empty())
     {
         return Some(AbilityCondition::Not {
             condition: Box::new(AbilityCondition::effect_performed()),

@@ -11,10 +11,11 @@ use serde::{Deserialize, Serialize};
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AbilityTag,
     ActivationRestriction, AdditionalCost, CastTimingPermission, CastingRestriction, ChoiceType,
-    ChosenSubtypeKind, ContinuousModification, CostReduction, DelayedTriggerCondition, Effect,
-    FilterProp, ManaProduction, ModalChoice, ParsedCondition, PlayerFilter, QuantityExpr,
-    QuantityRef, ReplacementDefinition, SolveCondition, SpellCastingOption, StaticCondition,
-    StaticDefinition, TargetFilter, TriggerCondition, TriggerDefinition, TypedFilter,
+    ChosenSubtypeKind, ContinuousModification, ControllerRef, CostReduction,
+    DelayedTriggerCondition, Effect, FilterProp, ManaProduction, ModalChoice, ParsedCondition,
+    PlayerFilter, QuantityExpr, QuantityRef, ReplacementDefinition, SolveCondition,
+    SpellCastingOption, StaticCondition, StaticDefinition, TargetFilter, TriggerCondition,
+    TriggerDefinition, TypedFilter,
 };
 use crate::types::format::DeckCopyLimit;
 use crate::types::keywords::{EscapeCost, FlashbackCost, Keyword, KeywordKind};
@@ -477,38 +478,46 @@ fn try_parse_opening_hand_reveal_delayed_trigger(
 /// "exile a card from your hand" tail).
 fn parse_begin_game_clause(line: &str, lower: &str) -> Option<AbilityDefinition> {
     // Closure consumes the structural prefix on the lowercased view. It returns
-    // the parsed entry counters; the original-case remainder (mapped back by
-    // `nom_on_lower`) is the "If you do, [effect]" tail — empty when absent.
-    let (enter_with_counters, effect_text) = nom_on_lower(line, lower, |input| {
-        // Preamble — explicit known forms, each ending in "you may ".
-        // CR 103.6a (begin the game with that card on the battlefield);
-        // Gemstone Caverns additionally gates on not being the starting player.
-        let (input, _) = alt((
-            tag(
-                "if this card is in your opening hand and you're not the starting player, you may ",
-            ),
-            tag("if this card is in your opening hand, you may "),
-            tag("if ~ is in your opening hand, you may "),
-        ))
-        .parse(input)?;
-        let (input, _) = tag("begin the game with ").parse(input)?;
-        // Self-reference: `~` after normalization, or an object pronoun.
-        let (input, _) =
-            alt((tag("~"), tag("it"), tag("him"), tag("her"), tag("them"))).parse(input)?;
-        let (input, _) = tag(" on the battlefield").parse(input)?;
+    // (not_starting_player, counters); the original-case remainder (mapped back
+    // by `nom_on_lower`) is the "If you do, [effect]" tail — empty when absent.
+    let ((not_starting_player, enter_with_counters), effect_text) = nom_on_lower(
+        line,
+        lower,
+        |input| {
+            // Preamble — explicit known forms, each ending in "you may ".
+            // CR 103.6a (begin the game with that card on the battlefield);
+            // Gemstone Caverns additionally gates on not being the starting player
+            // (CR 103.1), captured as a bool so the condition is encoded below.
+            let (input, not_starting_player) = alt((
+                value(
+                    true,
+                    tag(
+                        "if this card is in your opening hand and you're not the starting player, you may ",
+                    ),
+                ),
+                value(false, tag("if this card is in your opening hand, you may ")),
+                value(false, tag("if ~ is in your opening hand, you may ")),
+            ))
+            .parse(input)?;
+            let (input, _) = tag("begin the game with ").parse(input)?;
+            // Self-reference: `~` after normalization, or an object pronoun.
+            let (input, _) =
+                alt((tag("~"), tag("it"), tag("him"), tag("her"), tag("them"))).parse(input)?;
+            let (input, _) = tag(" on the battlefield").parse(input)?;
 
-        // Optional "with [N] [type] counter(s) on it" clause (CR 122.1).
-        let (input, counters) = opt(parse_begin_game_counter_clause).parse(input)?;
+            // Optional "with [N] [type] counter(s) on it" clause (CR 122.1).
+            let (input, counters) = opt(parse_begin_game_counter_clause).parse(input)?;
 
-        // First sentence terminator.
-        let (input, _) = tag(".").parse(input)?;
+            // First sentence terminator.
+            let (input, _) = tag(".").parse(input)?;
 
-        // Optional "If you do, " follow-up prefix. When present, the remainder
-        // is the dependent effect text; when absent, the remainder is empty.
-        let (input, _) = opt(alt((tag(" if you do, "), tag(" if you do ")))).parse(input)?;
+            // Optional "If you do, " follow-up prefix. When present, the remainder
+            // is the dependent effect text; when absent, the remainder is empty.
+            let (input, _) = opt(alt((tag(" if you do, "), tag(" if you do ")))).parse(input)?;
 
-        Ok((input, counters.unwrap_or_default()))
-    })?;
+            Ok((input, (not_starting_player, counters.unwrap_or_default())))
+        },
+    )?;
 
     let mut def = AbilityDefinition::new(
         AbilityKind::BeginGame,
@@ -530,6 +539,16 @@ fn parse_begin_game_clause(line: &str, lower: &str) -> Option<AbilityDefinition>
     )
     .description(line.to_string());
     def.optional = true;
+
+    // CR 103.1: the starting player is determined before mulligans. Gemstone
+    // Caverns gates its begin-game ability on NOT being the starting player.
+    if not_starting_player {
+        def = def.condition(AbilityCondition::Not {
+            condition: Box::new(AbilityCondition::WasStartingPlayer {
+                controller: ControllerRef::You,
+            }),
+        });
+    }
 
     // Optional "If you do, [effect]" dependent sub-ability. A non-empty
     // remainder means the line carried a follow-up sentence.
@@ -771,6 +790,104 @@ fn parse_static_line_with_graveyard_keyword_continuation(line: &str) -> Vec<Stat
         return vec![def];
     }
     parse_static_line_multi(line)
+}
+
+/// CR 614.6 + CR 701.26b: A single `<subject> can't <P1> and can't <P2>`
+/// prohibition whose two conjuncts belong to DIFFERENT parser layers — the
+/// static layer and/or the replacement layer. Blossombind ("Enchanted creature
+/// can't become untapped and can't have counters put on it.") joins an
+/// untap-event prevention (CR 701.26b) and an `AddCounter`-prevention
+/// replacement (CR 614.6). Because the counter-prohibition substring trips
+/// `is_static_pattern`, the whole line would otherwise be claimed by the static
+/// parser, silently dropping the second conjunct. Split on the conjunction,
+/// re-attach the shared subject to each clause, route each to BOTH layer parsers,
+/// and adopt the split only when every conjunct is claimed by at least one layer
+/// AND at least one replacement is produced (a pure-static compound keeps its
+/// existing single-layer multi-static path). `line` is already
+/// self-ref-normalized for static parsing.
+fn parse_static_replacement_compound(
+    line: &str,
+    lower: &str,
+    card_name: &str,
+) -> Option<(Vec<StaticDefinition>, Vec<ReplacementDefinition>)> {
+    // Re-attach the shared subject to each conjunct so each clause parses
+    // independently (Oracle text drops the subject on the second conjunct).
+    let (subject, p1, p2) = split_dual_cant_clause(line, lower)?;
+    let left = format!("{subject} can't {p1}");
+    let right = format!("{subject} can't {p2}");
+
+    let left_statics = parse_static_line_with_graveyard_keyword_continuation(&left);
+    let right_statics = parse_static_line_with_graveyard_keyword_continuation(&right);
+    let left_repl = parse_replacement_line(&left, card_name);
+    let right_repl = parse_replacement_line(&right, card_name);
+
+    // Each conjunct must be claimed by at least one layer; otherwise this is not
+    // a clean cross-layer compound and the line belongs to the single-layer
+    // fallbacks.
+    let left_claimed = left_repl.is_some() || !left_statics.is_empty();
+    let right_claimed = right_repl.is_some() || !right_statics.is_empty();
+    if !left_claimed || !right_claimed {
+        return None;
+    }
+
+    let mut replacements = Vec::new();
+    replacements.extend(left_repl);
+    replacements.extend(right_repl);
+    // At least one conjunct must be a replacement — pure-static compounds have
+    // their own multi-static splitters and must not be diverted here.
+    if replacements.is_empty() {
+        return None;
+    }
+
+    let mut statics = left_statics;
+    statics.extend(right_statics);
+    Some((statics, replacements))
+}
+
+/// CR 614.6: Split `<subject> can't <P1> and can't <P2>` into the shared subject
+/// and the two bare predicates (the leading `can't ` already stripped). Operates
+/// on the lowercase view for matching but returns ORIGINAL-case slices of `line`.
+///
+/// Robust against a subject that itself contains "can't" (e.g. "A creature that
+/// can't block can't become untapped and can't …"): the conjunction `" and can't
+/// "` is the unambiguous structural boundary between the two prohibitions, so we
+/// split there FIRST to isolate P2, then take the LAST `" can't "` within the
+/// left half as the P1 boundary. `rfind` here is a deliberate structural
+/// last-boundary scan, not a parsing-dispatch substring test — the predicate
+/// tokens themselves are parsed by the layer parsers the caller invokes.
+fn split_dual_cant_clause<'a>(line: &'a str, lower: &str) -> Option<(&'a str, &'a str, &'a str)> {
+    const CONJ: [&str; 2] = [" and can't ", " and can\u{2019}t "];
+    const CANT: [&str; 2] = [" can't ", " can\u{2019}t "];
+
+    // Trim a single trailing period (on both views, so byte offsets stay aligned).
+    // allow-noncombinator: structural trailing-punctuation trim on a whole line, not parsing dispatch.
+    let lower = lower.strip_suffix('.').unwrap_or(lower);
+    let line = &line[..lower.len()];
+
+    // Conjunction boundary: "<left> and can't <P2>". The conjunction divider is
+    // located structurally so the two prohibition predicates can each be handed to
+    // the layer parsers; the predicate tokens themselves are parsed there.
+    // allow-noncombinator: structural conjunction-boundary scan, not parsing dispatch.
+    let (conj_pos, conj_len) = CONJ
+        .iter()
+        .find_map(|needle| lower.find(needle).map(|pos| (pos, needle.len())))?;
+    let left_lower = &lower[..conj_pos];
+    let p2 = line[conj_pos + conj_len..].trim();
+
+    // P1 boundary: the LAST " can't " inside the left half, so a subject that
+    // itself contains "can't" (e.g. "A creature that can't block …") is not
+    // truncated. The subject is everything before it; P1 everything after.
+    // allow-noncombinator: structural last-boundary scan, not parsing dispatch.
+    let (cant_pos, cant_len) = CANT
+        .iter()
+        .find_map(|needle| left_lower.rfind(needle).map(|pos| (pos, needle.len())))?;
+    let subject = line[..cant_pos].trim();
+    let p1 = line[cant_pos + cant_len..conj_pos].trim();
+
+    if subject.is_empty() || p1.is_empty() || p2.is_empty() {
+        return None;
+    }
+    Some((subject, p1, p2))
 }
 
 /// CR 607.2d: Reconcile self-chosen type statics with the source's linked
@@ -2873,6 +2990,24 @@ pub(crate) fn parse_oracle_ir(
             continue;
         }
 
+        // Priority 6e: Compound `<subject> can't <P1> and can't <P2>` prohibition
+        // whose conjuncts cross parser layers (static and/or replacement).
+        // CR 701.26b + CR 614.6: Blossombind class — "Enchanted creature can't
+        // become untapped and can't have counters put on it" is two replacement
+        // effects (an Untap prevention and an AddCounter prevention). The "can't
+        // have counters put on" substring makes Priority 7's `is_static_pattern`
+        // fire and consume the whole line, dropping a conjunct. Split on the
+        // " and can't " conjunction so each clause reaches BOTH layer parsers and
+        // every conjunct is claimed.
+        if let Some((statics, replacements)) =
+            parse_static_replacement_compound(&static_line, &static_line_lower, card_name)
+        {
+            result.statics.extend(statics);
+            result.replacements.extend(replacements);
+            i += 1;
+            continue;
+        }
+
         // Priority 7: Static/continuous patterns
         // CR 611.2a + CR 611.3a: On permanents, "creatures you control get +1/+1"
         // is a static ability (CR 611.3a). On instants/sorceries, lines with an
@@ -3110,6 +3245,27 @@ pub(crate) fn parse_oracle_ir(
                 result.replacements.push(rep_def);
                 i += 1;
                 continue;
+            }
+            // CR 207.2c: An ability word (e.g. "Venom Blast —") is an italicized
+            // flavor marker with no rules meaning — its replacement body must
+            // parse through the ordinary replacement machinery. Strip the
+            // prefix and retry so named static-replacement ability words
+            // (Spider-Woman's "Venom Blast — Artifacts and creatures your
+            // opponents control enter tapped.") reach the external-entry parser
+            // exactly as the unprefixed Blind Obedience / Authority of the
+            // Consuls lines do.
+            if let Some(effect_text) = strip_ability_word(&line) {
+                if let Some(rep_defs) = parse_replacement_sentence_sequence(&effect_text, card_name)
+                {
+                    result.replacements.extend(rep_defs);
+                    i += 1;
+                    continue;
+                }
+                if let Some(rep_def) = parse_replacement_line(&effect_text, card_name) {
+                    result.replacements.push(rep_def);
+                    i += 1;
+                    continue;
+                }
             }
         }
 
@@ -3967,6 +4123,7 @@ pub(crate) fn try_parse_equip(line: &str) -> Option<AbilityDefinition> {
         }
     }
     ability.cost_reduction = cost_reduction;
+    ability.ability_tag = Some(AbilityTag::Equip);
     Some(ability)
 }
 
@@ -5910,6 +6067,131 @@ mod tests {
         );
     }
 
+    /// CR 613.4b + CR 208.1 + CR 604.3: std BATCH 10 — Porcelain Gallery's static
+    /// "Creatures you control have base power and toughness each equal to the
+    /// number of creatures you control" must parse with zero coverage gaps. The
+    /// dynamic base-P/T set routes to layer-7b `SetPowerDynamic`/
+    /// `SetToughnessDynamic` with an `ObjectCount` value. (Runtime discrimination —
+    /// base P/T becomes and tracks the count — lives in
+    /// `tests/base_pt_dynamic_set_std_base_pt.rs`.)
+    #[test]
+    fn porcelain_gallery_full_card_supported_dynamic_base_pt() {
+        let face = oracle_face_for(
+            "Porcelain Gallery",
+            "Creatures you control have base power and toughness each equal to the number of creatures you control.",
+            &["Artifact"],
+            &[],
+        );
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert!(
+            gaps.is_empty(),
+            "Porcelain Gallery must be fully supported, gaps: {gaps:?}"
+        );
+    }
+
+    /// CR 613.4b + CR 208.1: std BATCH 10 — Pupu UFO's activated "{3}: Until end
+    /// of turn, this creature's base power becomes equal to the number of Towns
+    /// you control" must parse with zero coverage gaps. The power-only dynamic
+    /// base-set routes to a layer-7b `SetPowerDynamic(ObjectCount Towns)`; the
+    /// Flying keyword and the land-drop ability are already supported. (Runtime
+    /// discrimination lives in `tests/base_pt_dynamic_set_std_base_pt.rs`.)
+    #[test]
+    fn pupu_ufo_full_card_supported_dynamic_base_power() {
+        // Build the face the way the card-data pipeline does, with MTGJSON's
+        // printed `keywords: ["Flying"]` present so the standalone "Flying" line
+        // is recognized as a keyword (not a stray ability) — exactly the input
+        // production sees.
+        use crate::database::mtgjson::{AtomicCard, AtomicIdentifiers};
+        let card = AtomicCard {
+            name: "Pupu UFO".to_string(),
+            mana_cost: Some("{3}{G}".to_string()),
+            colors: vec!["G".to_string()],
+            color_identity: vec!["G".to_string()],
+            power: Some("2".to_string()),
+            toughness: Some("2".to_string()),
+            loyalty: None,
+            defense: None,
+            text: Some(
+                "Flying\n{T}: You may put a land card from your hand onto the battlefield.\n{3}: Until end of turn, this creature's base power becomes equal to the number of Towns you control.".to_string(),
+            ),
+            layout: "normal".to_string(),
+            type_line: Some("Creature — Alien".to_string()),
+            types: vec!["Creature".to_string()],
+            subtypes: vec!["Alien".to_string()],
+            supertypes: Vec::new(),
+            keywords: Some(vec!["Flying".to_string()]),
+            side: None,
+            face_name: None,
+            mana_value: 4.0,
+            legalities: Default::default(),
+            leadership_skills: None,
+            printings: Vec::new(),
+            rulings: Vec::new(),
+            is_game_changer: false,
+            identifiers: AtomicIdentifiers {
+                scryfall_oracle_id: Some("pupu-ufo-oracle".to_string()),
+                scryfall_id: Some("pupu-ufo-face".to_string()),
+            },
+            foreign_data: Vec::new(),
+        };
+        let face = crate::database::synthesis::build_oracle_face(&card, None);
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert!(
+            gaps.is_empty(),
+            "Pupu UFO must be fully supported, gaps: {gaps:?}"
+        );
+    }
+
+    /// CR 613.4b + CR 208.1 + CR 702.177: std BATCH 10 — Sita Varma's Exhaust
+    /// ability "Put X +1/+1 counters … Then you may have the base power and
+    /// toughness of each other creature you control become equal to Sita Varma's
+    /// power until end of turn" must parse with zero coverage gaps. The "Then you
+    /// may have …" half is the inverted-genitive base-P/T set on the other
+    /// creatures you control, set to the source's power (`~`-normalized →
+    /// `Power{Source}`) via layer-7b `SetPowerDynamic`/`SetToughnessDynamic`.
+    #[test]
+    fn sita_varma_full_card_supported_inverted_genitive_base_pt() {
+        use crate::database::mtgjson::{AtomicCard, AtomicIdentifiers};
+        let card = AtomicCard {
+            name: "Sita Varma, Masked Racer".to_string(),
+            mana_cost: Some("{1}{G}{U}".to_string()),
+            colors: vec!["G".to_string(), "U".to_string()],
+            color_identity: vec!["G".to_string(), "U".to_string()],
+            power: Some("3".to_string()),
+            toughness: Some("3".to_string()),
+            loyalty: None,
+            defense: None,
+            text: Some(
+                "Exhaust \u{2014} {X}{G}{G}{U}: Put X +1/+1 counters on Sita Varma. Then you may have the base power and toughness of each other creature you control become equal to Sita Varma's power until end of turn. (Activate each exhaust ability only once.)".to_string(),
+            ),
+            layout: "normal".to_string(),
+            type_line: Some("Legendary Creature — Human".to_string()),
+            types: vec!["Creature".to_string()],
+            subtypes: vec!["Human".to_string()],
+            supertypes: vec!["Legendary".to_string()],
+            keywords: Some(vec!["Exhaust".to_string()]),
+            side: None,
+            face_name: None,
+            mana_value: 3.0,
+            legalities: Default::default(),
+            leadership_skills: None,
+            printings: Vec::new(),
+            rulings: Vec::new(),
+            is_game_changer: false,
+            identifiers: AtomicIdentifiers {
+                scryfall_oracle_id: Some("sita-varma-oracle".to_string()),
+                scryfall_id: Some("sita-varma-face".to_string()),
+            },
+            foreign_data: Vec::new(),
+        };
+        let face = crate::database::synthesis::build_oracle_face(&card, None);
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert!(
+            gaps.is_empty(),
+            "Sita Varma must be fully supported, gaps: {gaps:?}"
+        );
+    }
+
     /// CR 601.2a + CR 609.4b + CR 601.3b: Azula, Cunning Usurper — the
     /// cast-from-exile static line must lower to a supported
     /// `StaticMode::ExileCastPermission` carrying the persistent Cast permission,
@@ -6128,24 +6410,16 @@ mod tests {
         );
     }
 
-    /// CR 702.6a + CR 106.6: Ronin, Shadow Stalker. Its second ability
-    /// ("{T}, Sacrifice an Equipment attached to ~: Target creature gets -4/-4
-    /// until end of turn. Activate only as a sorcery.") is fully supported with
-    /// no Unimplemented parts: a `Pump` effect, a `Composite[Tap, Sacrifice
-    /// Equipment]` cost, and an `AsSorcery` activation restriction.
-    ///
-    /// Its first ability's spend restriction ("Spend this mana only to cast
-    /// Equipment spells or activate equip abilities") is an honest, documented
-    /// gap (an Unimplemented "spend" marker): "equip abilities" (a
-    /// specific keyword ability per CR 702.6a) cannot be modeled by the existing
-    /// `AbilityActivationScope` (`OfSpellType` over-permits any Equipment
-    /// ability; `Any` over-permits any ability), and a categorically-correct
-    /// `EquipAbility` scope would require threading the activated ability's
-    /// identity through `PaymentContext::Activation` and the cost-payment
-    /// authority — out of scope for this change. This test pins both facts so a
-    /// future fix knows exactly what to flip.
+    /// CR 702.6a + CR 106.6: Ronin, Shadow Stalker. Both abilities are fully
+    /// supported:
+    /// - First ability: mana production with `Any([SpellType("Equipment"),
+    ///   ActivateTagged(Equip)])` spend restriction and `OnlyOnceEachTurn`
+    ///   activation restriction.
+    /// - Second ability: -4/-4 Pump effect, Composite[Tap, Sacrifice Equipment]
+    ///   cost, and `AsSorcery` activation restriction.
     #[test]
-    fn ronin_second_ability_supported_first_ability_spend_restriction_deferred() {
+    fn ronin_both_abilities_fully_supported() {
+        use crate::types::ability::{AbilityTag, ManaSpendRestriction};
         let r = parse_oracle_text(
             "Pay 2 life: Add two mana of any one color. Spend this mana only to cast Equipment spells or activate equip abilities. Activate only once each turn.\n{T}, Sacrifice an Equipment attached to ~: Target creature gets -4/-4 until end of turn. Activate only as a sorcery.",
             "Ronin, Shadow Stalker",
@@ -6181,12 +6455,29 @@ mod tests {
             second.activation_restrictions
         );
 
-        // First ability: mana production + once-each-turn parse, but the spend
-        // restriction's "equip abilities" half is a documented gap.
+        // First ability: mana production with equip-ability spend restriction.
         let first = &r.abilities[0];
         assert!(
-            has_unimplemented(first),
-            "first ability's equip-ability spend restriction is a known gap: {first:#?}"
+            !has_unimplemented(first),
+            "first ability must now be fully supported: {first:#?}"
+        );
+        let Effect::Mana { restrictions, .. } = &*first.effect else {
+            panic!("expected Effect::Mana, got {:?}", first.effect);
+        };
+        assert_eq!(
+            restrictions,
+            &[ManaSpendRestriction::Any(vec![
+                ManaSpendRestriction::SpellType("Equipment".to_string()),
+                ManaSpendRestriction::ActivateTagged(AbilityTag::Equip),
+            ])],
+            "equip-ability spend restriction must be keyword-precise"
+        );
+        assert!(
+            first
+                .activation_restrictions
+                .contains(&crate::types::ability::ActivationRestriction::OnlyOnceEachTurn),
+            "once-each-turn restriction must be present: {:?}",
+            first.activation_restrictions
         );
     }
 
@@ -8719,10 +9010,11 @@ mod tests {
         assert!(!reveal);
     }
 
-    /// CR 103.6a + CR 122.1 + CR 701.13a: Gemstone Caverns' begin-game line must
-    /// capture BOTH the "with a luck counter on it" entry counter AND the
+    /// CR 103.6a + CR 122.1 + CR 701.13a + CR 103.1: Gemstone Caverns' begin-game
+    /// line must capture BOTH the "with a luck counter on it" entry counter AND the
     /// "If you do, exile a card from your hand" dependent sub-ability gated by
-    /// `IfYouDo` — neither may be silently dropped.
+    /// `IfYouDo` — and must emit `Not(WasStartingPlayer)` because the ability is
+    /// only available to the non-starting player.
     #[test]
     fn gemstone_caverns_begin_game_captures_counter_and_exile_sub_ability() {
         let r = parse(
@@ -8737,6 +9029,19 @@ mod tests {
         let begin_game = &r.abilities[0];
         assert_eq!(begin_game.kind, AbilityKind::BeginGame);
         assert!(begin_game.optional);
+
+        // CR 103.1: the starting player cannot use this ability — the parser must
+        // emit Not(WasStartingPlayer) so the engine gates it correctly.
+        use crate::types::ability::ControllerRef;
+        assert_eq!(
+            begin_game.condition,
+            Some(AbilityCondition::Not {
+                condition: Box::new(AbilityCondition::WasStartingPlayer {
+                    controller: ControllerRef::You,
+                }),
+            }),
+            "Gemstone Caverns must carry Not(WasStartingPlayer) condition"
+        );
 
         let Effect::ChangeZone {
             destination,
@@ -8799,6 +9104,11 @@ mod tests {
             .expect("Leyline begin-game ability must parse");
         assert!(begin_game.optional);
         assert!(begin_game.sub_ability.is_none());
+        // Leylines carry no not-starting-player restriction.
+        assert!(
+            begin_game.condition.is_none(),
+            "Leyline must have no not-starting-player condition"
+        );
         let Effect::ChangeZone {
             enter_with_counters,
             ..
@@ -11896,6 +12206,37 @@ mod tests {
         assert_eq!(trigger.valid_target, Some(TargetFilter::Controller));
         assert!(trigger.valid_card.is_some());
         assert!(r.parse_warnings.is_empty());
+    }
+
+    #[test]
+    fn spell_temporal_phase_line_builds_delayed_trigger() {
+        // CR 603.7b: Full Throttle's second line. A *phase-based* inline delayed
+        // trigger on a sorcery ("At the beginning of each combat this turn, ...")
+        // must lower to a multi-fire WheneverEvent wrapping a Phase(BeginCombat)
+        // trigger — NOT a printed battlefield trigger, which would never fire for
+        // an instant/sorcery.
+        let r = parse(
+            "At the beginning of each combat this turn, untap all creatures that attacked this turn.",
+            "Full Throttle Test",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+        assert!(
+            r.triggers.is_empty(),
+            "phase-form delayed trigger must not emit a printed trigger: {:?}",
+            r.triggers
+        );
+        assert_eq!(r.abilities.len(), 1);
+        let Effect::CreateDelayedTrigger { condition, .. } = &*r.abilities[0].effect else {
+            panic!("expected delayed trigger, got {:?}", r.abilities[0].effect);
+        };
+        let crate::types::ability::DelayedTriggerCondition::WheneverEvent { trigger } = condition
+        else {
+            panic!("expected WheneverEvent, got {condition:?}");
+        };
+        assert_eq!(trigger.mode, TriggerMode::Phase);
+        assert_eq!(trigger.phase, Some(Phase::BeginCombat));
     }
 
     #[test]
@@ -16547,6 +16888,113 @@ Artifacts you control have \"{T}: Add {U}. Spend this mana only to cast a spell 
             "unexpected DynamicQty warning: {:?}",
             r.parse_warnings
         );
+    }
+
+    /// CR 701.26b + CR 614.6: Blossombind — the compound "Enchanted creature
+    /// can't become untapped and can't have counters put on it." is two
+    /// replacement effects: an unconditional `Untap` prevention (CR 701.26b — the
+    /// BROAD prohibition, NOT the untap-step-only `StaticMode::CantUntap` class)
+    /// and an `AddCounter` prevention (CR 614.6). The Priority-6e cross-layer
+    /// splitter must emit BOTH (and leave no Unimplemented). Reverting the splitter
+    /// collapses the line to an Unimplemented ability and drops a conjunct. The
+    /// Untap replacement must carry no `DuringUntapStep` condition so it applies to
+    /// every untap path (the runtime regression test in `tap_untap.rs` drives an
+    /// actual untap effect and asserts the host stays tapped).
+    #[test]
+    fn blossombind_compound_splits_into_untap_and_counter_replacements() {
+        let r = parse(
+            "Enchant creature\nWhen this Aura enters, tap enchanted creature.\nEnchanted creature can't become untapped and can't have counters put on it.",
+            "Blossombind",
+            &[],
+            &["Enchantment"],
+            &["Aura"],
+        );
+        assert!(
+            !r.abilities
+                .iter()
+                .any(|def| matches!(*def.effect, Effect::Unimplemented { .. })),
+            "no Unimplemented should remain, got {:?}",
+            r.abilities
+        );
+        // The broad untap prohibition must NOT lower to a CantUntap static
+        // (that class is untap-step-only and would not stop a spell/ability untap).
+        assert!(
+            !r.statics
+                .iter()
+                .any(|def| def.mode == StaticMode::CantUntap),
+            "broad 'can't become untapped' must not be a CantUntap static, got {:?}",
+            r.statics
+        );
+        let untap = r
+            .replacements
+            .iter()
+            .find(|def| def.event == ReplacementEvent::Untap)
+            .expect("compound must emit an Untap-prevention replacement");
+        assert!(
+            untap.condition.is_none(),
+            "the untap prevention must be unconditional (apply to every untap), got {:?}",
+            untap.condition
+        );
+        assert!(
+            untap.execute.is_none(),
+            "a bare 'can't become untapped' has no alternative effect, got {:?}",
+            untap.execute
+        );
+        assert!(
+            r.replacements
+                .iter()
+                .any(|def| def.event == ReplacementEvent::AddCounter),
+            "compound must emit an AddCounter-prevention replacement, got {:?}",
+            r.replacements
+        );
+    }
+
+    /// CR 207.2c + CR 702.185c: Temporal Intervention — the "Void —" ability-word
+    /// prefix has no rules meaning, so the body "This spell costs {2} less to cast
+    /// if [a nonland permanent left the battlefield this turn or a spell was warped
+    /// this turn]" must still lower to a self `ModifyCost`/`Reduce` static with the
+    /// Void condition attached — not an `Unimplemented` ability. Reverting the
+    /// ability-word strip in `is_self_spell_cost_modification` makes
+    /// `should_defer_spell_to_effect` fire on the "this turn" substring inside the
+    /// condition, routing the line to the effect parser and dropping the cost
+    /// reduction (the line becomes an Unimplemented ability). Discriminating:
+    /// the static count and the absence of Unimplemented both flip on revert.
+    #[test]
+    fn temporal_intervention_void_prefix_keeps_self_cost_reduction_static() {
+        let r = parse(
+            "Void \u{2014} This spell costs {2} less to cast if a nonland permanent left the battlefield this turn or a spell was warped this turn.\nTarget opponent reveals their hand. You choose a nonland card from it. That player discards that card.",
+            "Temporal Intervention",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+
+        assert!(
+            !r.abilities
+                .iter()
+                .any(|def| matches!(*def.effect, Effect::Unimplemented { .. })),
+            "Void-prefixed cost reduction must not leave an Unimplemented ability, got {:?}",
+            r.abilities
+        );
+        let reduction = r
+            .statics
+            .iter()
+            .find(|def| {
+                matches!(
+                    &def.mode,
+                    StaticMode::ModifyCost {
+                        mode: CostModifyMode::Reduce,
+                        amount: ManaCost::Cost { generic: 2, .. },
+                        ..
+                    }
+                )
+            })
+            .expect("Void body must lower to a self ModifyCost/Reduce of {2}");
+        assert!(
+            reduction.condition.is_some(),
+            "the Void cost reduction must carry its gating condition"
+        );
+        assert!(matches!(reduction.affected, Some(TargetFilter::SelfRef)));
     }
 
     #[test]

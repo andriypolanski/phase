@@ -499,10 +499,23 @@ const DELAYED_TRIGGER_WINDOWS: [&str; 2] = [" this turn, ", " this combat, "];
 /// (Also "whenever [trigger condition] this combat, [effect]".)
 /// These create multi-fire delayed triggers that persist until end of turn.
 /// Example: "whenever a creature you control deals combat damage to a player this turn, draw a card"
+///
+/// CR 603.7b: A spell may also introduce a *phase-based* inline delayed trigger,
+/// "at the beginning of [phase] this turn, [effect]" (Full Throttle: "At the
+/// beginning of each combat this turn, untap all creatures that attacked this
+/// turn."). This is the same multi-fire, end-of-turn-purged delayed trigger; its
+/// embedded `TriggerDefinition` is a Phase trigger, so it fires at the start of
+/// each matching phase for the rest of the turn. Without this path it would fall
+/// through to printed-trigger dispatch and become a battlefield Phase trigger that
+/// never fires for an instant/sorcery.
 fn try_parse_whenever_this_turn(tp: TextPair) -> Option<ParsedEffectClause> {
-    if tag::<_, _, OracleError<'_>>("whenever ")
+    let is_phase_form = tag::<_, _, OracleError<'_>>("at the beginning of ")
         .parse(tp.lower)
-        .is_err()
+        .is_ok();
+    if !is_phase_form
+        && tag::<_, _, OracleError<'_>>("whenever ")
+            .parse(tp.lower)
+            .is_err()
     {
         return None;
     }
@@ -541,11 +554,22 @@ fn try_parse_whenever_this_turn(tp: TextPair) -> Option<ParsedEffectClause> {
     // trigger clause.
     let (before, after) = match window_split {
         Some(split) => split,
+        // CR 603.7b: The phase form is a delayed trigger ONLY when scoped by an
+        // explicit "this turn"/"this combat" window. Without it, "at the beginning
+        // of [phase]" is a printed trigger and must not be intercepted here.
+        None if is_phase_form => return None,
         None => tp.split_around(", ")?,
     };
 
-    // Condition is between "whenever " and the split boundary.
-    let condition_text = &before.lower[9..];
+    // Condition spans the keyword through the split boundary. The "whenever "
+    // keyword is stripped (the trigger parser decomposes the event without it);
+    // the "at the beginning of " keyword is retained because the phase-trigger
+    // parser (`try_parse_phase_trigger`) dispatches on it.
+    let condition_text = if is_phase_form {
+        before.lower
+    } else {
+        &before.lower[9..]
+    };
     // Effect is the remainder after the split boundary.
     let effect_text = after.original;
 
@@ -726,7 +750,14 @@ fn try_parse_when_next_event(tp: TextPair) -> Option<ParsedEffectClause> {
     // Article choice depends on the payload — "a creature spell" vs "an instant or sorcery spell".
     let article_result: nom::IResult<&str, &str, OracleError<'_>> =
         alt((tag("when you next cast a "), tag("when you next cast an "))).parse(tp.lower);
-    let (_, matched_prefix) = article_result.ok()?;
+    let Ok((_, matched_prefix)) = article_result else {
+        // CR 603.7: non-cast "when you next <event> this turn" one-shot delayed
+        // triggers (e.g. All-Out Assault "When you next attack this turn, ...").
+        // The spell-cast arm above owns the rich spell-filter / disjunction
+        // grammar; this generic fallback reuses the trigger-condition parser so
+        // the whole "when you next <condition>" class is covered, not one card.
+        return try_parse_when_next_generic_event(tp);
+    };
 
     // Must contain "this turn, " to delimit condition from effect
     let (before_this_turn, after) = tp.rsplit_around(" this turn, ")?;
@@ -767,6 +798,70 @@ fn try_parse_when_next_event(tp: TextPair) -> Option<ParsedEffectClause> {
     trigger_def.valid_card = Some(combined_filter);
     // "when YOU next cast" — scope to the source's controller.
     trigger_def.valid_target = Some(TargetFilter::Controller);
+
+    Some(ParsedEffectClause {
+        effect: Effect::CreateDelayedTrigger {
+            condition: DelayedTriggerCondition::WhenNextEvent {
+                trigger: Box::new(trigger_def),
+                or_trigger: None,
+            },
+            effect: Box::new(inner),
+            uses_tracked_set: false,
+        },
+        duration: None,
+        sub_ability: None,
+        distribute: None,
+        multi_target: None,
+        condition: None,
+        optional: false,
+        unless_pay: None,
+    })
+}
+
+/// CR 603.7: Parse a generic non-cast "when you next <condition> this turn,
+/// <effect>" one-shot delayed trigger. Delegates condition recognition to the
+/// shared trigger-condition parser (`parse_trigger_condition`) so the whole
+/// class is covered — "When you next attack this turn" (All-Out Assault),
+/// "When you next <other matchable event> this turn", etc. — rather than a
+/// single card.
+///
+/// The cast-spell variant (`try_parse_when_next_event`) keeps its dedicated
+/// spell-filter / disjunction grammar; this fallback runs only when the cast
+/// prefix did not match. Builds a `WhenNextEvent` delayed trigger (one-shot),
+/// mirroring `try_parse_whenever_this_turn`'s `WheneverEvent` (multi-fire)
+/// construction but with one-shot semantics.
+fn try_parse_when_next_generic_event(tp: TextPair) -> Option<ParsedEffectClause> {
+    // The condition is bounded by " this turn, " — the same delimiter the
+    // spell-cast arm uses. Everything between "when you next " and the
+    // delimiter is the matchable trigger condition.
+    let (before_this_turn, after) = tp.rsplit_around(" this turn, ")?;
+    // Consume the "when you next " prefix with the combinator; the remainder is
+    // the bare trigger condition (e.g. "attack").
+    let (condition_text, _) = tag::<_, _, OracleError<'_>>("when you next ")
+        .parse(before_this_turn.lower)
+        .ok()?;
+    if condition_text.is_empty() {
+        return None;
+    }
+
+    // Reuse the shared trigger-condition parser. Re-prefix "you " so the bare
+    // condition (e.g. "attack") matches the "you attack" production; the parser
+    // accepts an optional "whenever "/"when " prefix but expects the subject.
+    let mut inner_ctx = ParseContext::default();
+    let condition_for_parser = format!("you {condition_text}");
+    let (mode, mut trigger_def) = crate::parser::oracle_trigger::parse_trigger_condition(
+        &condition_for_parser,
+        &mut inner_ctx,
+    );
+    // Only accept conditions the trigger matcher registry actually supports as a
+    // delayed event; an unrecognized condition lowers to Unknown and must not
+    // silently produce a never-firing delayed trigger.
+    if matches!(mode, crate::types::triggers::TriggerMode::Unknown(_)) {
+        return None;
+    }
+    trigger_def.execute = None;
+
+    let inner = parse_effect_chain_with_context(after.original, AbilityKind::Spell, &mut inner_ctx);
 
     Some(ParsedEffectClause {
         effect: Effect::CreateDelayedTrigger {
@@ -1978,6 +2073,67 @@ fn try_parse_cast_only_from_zones_restriction(tp: TextPair<'_>) -> Option<Parsed
     })
 }
 
+/// CR 601.2f + CR 611.2c: A one-shot effect that creates a turn-duration spell
+/// cost-modification continuous effect — "Spells you cast this turn that are
+/// [colors] cost {X} less to cast, where X is the amount of life you [lost|
+/// gained] this turn." (Rowan, Scion of War; Will, Scion of Peace, activated as
+/// `{T}: ...`). This is distinct from a *printed* cost-modification static
+/// (which is always on) because the subject's "this turn" duration marker makes
+/// it a continuous effect created by resolution (CR 611.2a) — it must expire at
+/// end of turn.
+///
+/// The static-line authority (`parse_static_line`) already lowers the entire
+/// `ModifyCost` payload (color-disjunction `spell_filter`, dynamic-X
+/// `LifeLostThisTurn`/`LifeGainedThisTurn` `dynamic_count`); we delegate to it
+/// rather than re-implementing cost-modifier parsing. The resulting static is
+/// then granted onto the resolving source for one turn via `GrantStaticAbility`
+/// on `SelfRef` (mirroring `try_parse_combat_tax_effect_clause`), so layer-6
+/// installs it on the source's `static_definitions` where
+/// `collect_battlefield_cost_modifiers` reads it at cast time.
+fn try_parse_temporary_spell_cost_modification(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    // The "this turn" subject duration is the structural discriminator that
+    // separates this temporary effect from a printed cost-mod static. The
+    // subject is "spells you cast this turn ..." (a duration on the affected
+    // SET, CR 611.2a), so require the marker on the cost-modify subject before
+    // delegating to the static authority.
+    if !scan_contains_phrase(tp.lower, "spells you cast this turn") {
+        return None;
+    }
+    if !scan_contains_phrase(tp.lower, "less to cast")
+        && !scan_contains_phrase(tp.lower, "more to cast")
+    {
+        return None;
+    }
+
+    let static_def = super::oracle_static::parse_static_line(tp.original)?;
+    if !matches!(static_def.mode, StaticMode::ModifyCost { .. }) {
+        return None;
+    }
+
+    // CR 611.2c: Grant the parsed cost-mod static onto the resolving source for
+    // one turn. `affected: SelfRef` anchors the host grant to the source; the
+    // inner static carries its own controller-scoped `affected` (cards you
+    // control) so it functions exactly as if printed on the source.
+    Some(ParsedEffectClause {
+        effect: Effect::GenericEffect {
+            static_abilities: vec![StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .modifications(vec![ContinuousModification::GrantStaticAbility {
+                    definition: Box::new(static_def),
+                }])],
+            duration: Some(Duration::UntilEndOfTurn),
+            target: Some(TargetFilter::SelfRef),
+        },
+        distribute: None,
+        multi_target: None,
+        duration: Some(Duration::UntilEndOfTurn),
+        sub_ability: None,
+        condition: None,
+        optional: false,
+        unless_pay: None,
+    })
+}
+
 /// CR 101.2: "Your opponents can't cast spells this turn" / "Players can't cast spells this turn."
 /// Handles blanket "can't cast spells" prohibitions from instant/sorcery effects (e.g., Silence).
 /// Must be called AFTER try_parse_cast_only_from_zones_restriction (which handles the more
@@ -2457,8 +2613,12 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
 }
 
 fn try_parse_earthbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    // CR 608.2c: the optional leading "you " subject ("you earthbend 4" — Fatal
+    // Fissure's delayed trigger) names the controller performing the keyword
+    // action. Earthbend is a player action with no extra targeting, so the
+    // subject is simply consumed before the count/target parse.
     let (_, rest) = nom_on_lower(tp.original, tp.lower, |i| {
-        value((), tag("earthbend ")).parse(i)
+        value((), preceded(opt(tag("you ")), tag("earthbend "))).parse(i)
     })?;
     // `rest` is the original-case remainder; lowercase it for the nom-based
     // dispatcher inside `parse_earthbend_count_expr`, which expects already-lowered
@@ -5075,6 +5235,15 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
 
     // CR 601.2f: "the next [type] spell you cast this turn [has keyword/can't be countered/etc.]"
     if let Some(clause) = try_parse_grant_next_spell_ability(tp) {
+        return clause;
+    }
+
+    // CR 601.2f + CR 611.2c: "Spells you cast this turn that are [colors] cost
+    // {X} less to cast, where X is the amount of life you [lost|gained] this
+    // turn" — turn-duration spell cost-modification continuous effect
+    // (Rowan/Will, Scion of …). Tried after the "next spell" handlers since
+    // those are the more specific one-spell forms.
+    if let Some(clause) = try_parse_temporary_spell_cost_modification(tp) {
         return clause;
     }
 
@@ -10947,8 +11116,15 @@ fn parse_bare_damage_continuation<'a>(
                 },
                 consumed,
             )
-        } else if let Ok((rest, _)) =
-            tag::<_, _, OracleError<'_>>("that much damage").parse(lower.as_str())
+        } else if let Ok((rest, _)) = alt((
+            tag::<_, _, OracleError<'_>>("that much damage"),
+            // CR 120.1: "that amount of damage" is the synonym used when the
+            // antecedent is "N damage" (Fear of Burning Alive's "deals that
+            // amount of damage to target creature that player controls"). Both
+            // anaphors resolve to the just-dealt damage amount.
+            tag("that amount of damage"),
+        ))
+        .parse(lower.as_str())
         {
             let consumed = lower.len() - rest.len();
             (
@@ -17170,6 +17346,94 @@ fn try_parse_repeat_until_stop_conditions(
     )
 }
 
+/// Outcome of recognizing a trailing "repeat this process" directive chunk.
+///
+/// Distinguishes the three back-reference forms so the chunk loop can both
+/// CONSUME the directive (it never produces an independent effect) and apply the
+/// right chain-level `repeat_until`:
+/// - `Continuation(c)` — a loop predicate was recognized; set `pending_repeat_until`.
+/// - `ConsumeOnly` — the bare / "if you do" form (Primal Surge) is recognized so
+///   the directive is consumed rather than producing an `Unimplemented` gap, but
+///   it sets no predicate (its game-state-predicate semantics stay deferred).
+#[derive(Debug)]
+enum RepeatProcessOutcome {
+    Continuation(crate::types::ability::RepeatContinuation),
+    ConsumeOnly,
+}
+
+/// CR 608.2c: Recognize a trailing "[if <condition>,] [you may] repeat this
+/// process [once | N times]" directive and map it to a `RepeatContinuation`.
+///
+/// The directive is a chain back-reference, not an independent effect, so the
+/// chunk loop consumes it. A leading game-state condition ("then if an opponent
+/// controls more lands than you," / "if the exiled card is a land card,") is
+/// stripped via the shared condition helpers and threaded into a
+/// `WhileCondition` predicate; the trailing "once"/"N times" sets its
+/// `max_iterations` cap. With no condition, "you may repeat …" maps to
+/// `ControllerChoice` and the bare / "if you do" forms are consumed only.
+fn try_parse_repeat_process_directive(
+    text: &str,
+    ctx: &mut ParseContext,
+) -> Option<RepeatProcessOutcome> {
+    use crate::types::ability::RepeatContinuation;
+
+    // Strip a leading game-state condition, if any. The card-type strippers
+    // ("if the exiled card is a land card") run alongside the general inner-
+    // condition path ("then if an opponent controls more lands than you").
+    let (condition, body) = {
+        let (general, rest) = strip_leading_general_conditional(text, ctx);
+        if general.is_some() {
+            (general, rest)
+        } else {
+            let (card_type, rest2) = strip_card_type_conditional(text);
+            (card_type, rest2)
+        }
+    };
+
+    let body_lower = body.to_lowercase();
+    let (max_iterations, _) = nom_on_lower(body.as_str(), &body_lower, |i| {
+        let (i, you_may) = opt(tag::<_, _, OracleError<'_>>("you may ")).parse(i)?;
+        // The bare/"if you do" forms have no condition and no "you may" — keep
+        // them recognized (consume-only) so they don't leak Unimplemented gaps.
+        let (i, _) = opt(alt((
+            tag::<_, _, OracleError<'_>>("if you do, "),
+            tag("if you do "),
+        )))
+        .parse(i)?;
+        let (i, _) = tag("repeat this process").parse(i)?;
+        // Trailing iteration cap: "once" → 1, "twice" → 2, "three times" → 3,
+        // bare / "any number of times" → unbounded (the latter only meaningful
+        // for the controller-choice form).
+        let (i, cap) = opt(alt((
+            value(Some(1u32), tag(" once")),
+            value(Some(2u32), tag(" twice")),
+            value(Some(3u32), tag(" three times")),
+            value(None, tag(" any number of times")),
+        )))
+        .parse(i)?;
+        let cap = cap.flatten();
+        let (i, _) = opt(tag(".")).parse(i)?;
+        eof(i)?;
+        Ok((i, (cap, you_may.is_some())))
+    })?;
+
+    let (cap, you_may) = max_iterations;
+    if let Some(condition) = condition {
+        return Some(RepeatProcessOutcome::Continuation(
+            RepeatContinuation::WhileCondition {
+                condition: Box::new(condition),
+                max_iterations: cap,
+            },
+        ));
+    }
+    if you_may {
+        return Some(RepeatProcessOutcome::Continuation(
+            RepeatContinuation::ControllerChoice,
+        ));
+    }
+    Some(RepeatProcessOutcome::ConsumeOnly)
+}
+
 /// Parse a compound effect chain into an `AbilityDefinition` sub-ability chain.
 ///
 /// Phase 1 keeps the existing clause/effect semantics but replaces the fragile
@@ -18078,28 +18342,17 @@ pub(crate) fn parse_effect_chain_ir(
         // directive that doesn't produce an independent effect. It is a
         // back-reference applying to the process (chain) built so far.
         //
+        //   - "[if <condition>,] repeat this process [once | N times]" → a
+        //     game-state-predicate loop (`WhileCondition`): re-follow the chain
+        //     while the leading condition holds, capped by the trailing count.
         //   - "you may repeat this process [any number of times]" → a
-        //     per-iteration controller decision; recorded chain-level in
-        //     `pending_repeat_until` and applied to the root
-        //     `AbilityDefinition` during lowering (`ControllerChoice`).
-        //   - "[if you do, ]repeat this process" — the game-state-predicate
-        //     form (Primal Surge) is a deferred unit. It is still recognized
-        //     here so the directive is consumed rather than producing an
-        //     Unimplemented gap, but it sets no `repeat_until` predicate.
-        if let Some((continuation, _)) = nom_on_lower(normalized_text, &lower_check, |i| {
-            let (i, prefix) = nom::combinator::opt(alt((
-                tag::<_, _, OracleError<'_>>("you may "),
-                tag("if you do, "),
-                tag("if you do "),
-            )))
-            .parse(i)?;
-            let (i, _) = value((), tag("repeat this process")).parse(i)?;
-            let continuation = (prefix == Some("you may "))
-                .then_some(crate::types::ability::RepeatContinuation::ControllerChoice);
-            Ok((i, continuation))
-        }) {
-            if continuation.is_some() {
-                pending_repeat_until = continuation;
+        //     per-iteration controller decision (`ControllerChoice`).
+        //   - bare / "if you do, repeat this process" — recognized and consumed
+        //     so the directive doesn't leak an `Unimplemented` gap, but it sets
+        //     no predicate (its game-state-predicate form stays deferred).
+        if let Some(outcome) = try_parse_repeat_process_directive(normalized_text, ctx) {
+            if let RepeatProcessOutcome::Continuation(continuation) = outcome {
+                pending_repeat_until = Some(continuation);
             }
             continue;
         }
@@ -19228,6 +19481,22 @@ pub(crate) fn parse_effect_chain_ir(
             chain_parent_target_controller_scope = None;
         }
         let leading_subject_application = subject::parse_leading_subject_application(&text, ctx);
+        // CR 608.2c + CR 109.5: A chained clause whose explicit subject is the caster
+        // ("you"/"you may") switches the acting player back to the ability controller
+        // (CR 109.5: "you"/"your" refer to the object's controller). A non-caster
+        // `anchor_subject` from an earlier clause (e.g. ParentTargetController from
+        // "that land's controller may search") must NOT bleed across this switch —
+        // clause (2)'s "search your library"/"then shuffle" route to the activator,
+        // not the opponent. Two parse shapes carry the caster subject: non-optional
+        // "You search ..." surfaces as leading_subject_application.affected == Controller
+        // (subject.rs); optional "You may search ..." has "you may " peeled by
+        // peel_optional_slots BEFORE subject extraction, surfacing only as
+        // `is_optional && opponent_may_scope.is_none() && player_scope.is_none()`.
+        let chunk_declares_caster_subject =
+            matches!(
+                leading_subject_application.as_ref().map(|s| &s.affected),
+                Some(TargetFilter::Controller)
+            ) || (is_optional && opponent_may_scope.is_none() && player_scope.is_none());
         let inherits_carried_targeted_player_subject = leading_subject_application.is_none()
             && player_scope.is_none()
             && !sequence::starts_clause_text(&text)
@@ -19599,6 +19868,15 @@ pub(crate) fn parse_effect_chain_ir(
                     }
                 }
             }
+        }
+        // CR 608.2c: disarm a stale non-caster anchor before applying it to this
+        // chunk's caster-default effects, so the caster's SearchLibrary{target_player:
+        // None} and Shuffle{Controller} are not rewritten to the earlier subject. The
+        // following extract_player_anchor_in_chain re-arms only on a fresh non-caster
+        // subject (it excludes Controller/Any), so a later subject-less continuation
+        // ("...then shuffle") still inherits the caster.
+        if chunk_declares_caster_subject {
+            anchor_subject = None;
         }
         if let Some(ref anchor) = anchor_subject {
             apply_anchor_subject(&mut clause.effect, anchor);
@@ -30505,6 +30783,121 @@ mod tests {
         );
     }
 
+    /// CR 608.2c + CR 109.5 + CR 701.23a + CR 701.24a (issue #900): Demolition
+    /// Field — two consecutive subject-anchored search chains in one body. The
+    /// first ("That land's controller may search …, then shuffle") anchors the
+    /// destroyed land's controller as `ParentTargetController`. The second ("You
+    /// may search …, then shuffle") is a CASTER-subject switch (CR 109.5: "you"
+    /// is the activator), so its `SearchLibrary`/`Shuffle` must route to the
+    /// activator — NOT inherit the prior clause's `ParentTargetController` anchor.
+    /// Pre-fix, `anchor_subject` was set once by clause (1) and never reset, so
+    /// clause (2)'s caster-default search wrongly inherited the opponent.
+    #[test]
+    fn demolition_field_you_clause_routes_search_to_activator_not_opponent() {
+        use crate::types::ability::AbilityKind;
+        // Demolition Field's second activated ability body (cost stripped).
+        let def = parse_effect_chain(
+            "Destroy target nonbasic land an opponent controls. That land's controller may search their library for a basic land card, put it onto the battlefield, then shuffle. You may search your library for a basic land card, put it onto the battlefield, then shuffle.",
+            AbilityKind::Activated,
+        );
+        // Collect every (SearchLibrary.target_player, Shuffle.target) down the chain.
+        let mut searches: Vec<Option<TargetFilter>> = Vec::new();
+        let mut shuffles: Vec<TargetFilter> = Vec::new();
+        let mut node: Option<&AbilityDefinition> = Some(&def);
+        while let Some(d) = node {
+            match &*d.effect {
+                Effect::SearchLibrary { target_player, .. } => {
+                    searches.push(target_player.clone());
+                }
+                Effect::Shuffle { target } => {
+                    shuffles.push(target.clone());
+                }
+                _ => {}
+            }
+            node = d.sub_ability.as_deref();
+        }
+        assert_eq!(
+            searches.len(),
+            2,
+            "expected two SearchLibrary clauses, got {searches:?}"
+        );
+        assert_eq!(
+            shuffles.len(),
+            2,
+            "expected two Shuffle clauses, got {shuffles:?}"
+        );
+        // Clause (1): "that land's controller" — routes to the opponent's controller.
+        assert_eq!(
+            searches[0].as_ref(),
+            Some(&TargetFilter::ParentTargetController),
+            "clause (1) search must route to the destroyed land's controller"
+        );
+        assert_eq!(
+            shuffles[0],
+            TargetFilter::ParentTargetController,
+            "clause (1) shuffle must route to the destroyed land's controller"
+        );
+        // Clause (2): "you" — caster subject. The fix resets the stale anchor so
+        // this stays a caster-default search (None) or explicit Controller — and
+        // crucially NOT ParentTargetController (the pre-fix bug).
+        assert!(
+            matches!(searches[1].as_ref(), None | Some(TargetFilter::Controller)),
+            "clause (2) search must route to the activator (None/Controller), got {:?}",
+            searches[1]
+        );
+        assert_ne!(
+            searches[1].as_ref(),
+            Some(&TargetFilter::ParentTargetController),
+            "clause (2) search must NOT inherit the opponent's-controller anchor (issue #900)"
+        );
+        assert_eq!(
+            shuffles[1],
+            TargetFilter::Controller,
+            "clause (2) shuffle must route to the activator, not the opponent"
+        );
+    }
+
+    /// CR 608.2c + CR 109.5 + CR 701.23a (issue #900): card-agnostic regression
+    /// for the caster-subject anchor reset using the NON-optional caster form
+    /// ("You search your library …"). This exercises the
+    /// `leading_subject_application.affected == Controller` arm of the reset
+    /// trigger (the Demolition Field card form uses the optional "You may"
+    /// shape, which is peeled to `is_optional` before subject extraction). After
+    /// a non-caster subject chain establishes `ParentTargetController`, the
+    /// caster-subject clause must reset the anchor so its search routes to the
+    /// activator, not the earlier subject.
+    #[test]
+    fn caster_subject_switch_resets_chain_anchor_for_search() {
+        use crate::types::ability::AbilityKind;
+        let def = parse_effect_chain(
+            "Destroy target nonbasic land an opponent controls. That land's controller searches their library for a basic land card, puts it onto the battlefield, then shuffles. You search your library for a basic land card, put it onto the battlefield, then shuffle.",
+            AbilityKind::Spell,
+        );
+        let mut searches: Vec<Option<TargetFilter>> = Vec::new();
+        let mut node: Option<&AbilityDefinition> = Some(&def);
+        while let Some(d) = node {
+            if let Effect::SearchLibrary { target_player, .. } = &*d.effect {
+                searches.push(target_player.clone());
+            }
+            node = d.sub_ability.as_deref();
+        }
+        assert_eq!(
+            searches.len(),
+            2,
+            "expected exactly two SearchLibrary clauses, got {searches:?}"
+        );
+        assert_eq!(
+            searches[0].as_ref(),
+            Some(&TargetFilter::ParentTargetController),
+            "clause (1) search must route to the prior non-caster subject"
+        );
+        assert!(
+            matches!(searches[1].as_ref(), None | Some(TargetFilter::Controller)),
+            "clause (2) caster-subject search must route to the activator, got {:?}",
+            searches[1]
+        );
+    }
+
     #[test]
     fn parse_search_basic_land_to_hand() {
         let e = parse_effect(
@@ -31697,6 +32090,102 @@ mod tests {
         let execute = trigger.execute.as_ref().unwrap();
         assert!(execute.optional, "the \"you may\" trigger must be optional");
         assert_eq!(execute.duration, Some(Duration::UntilEndOfTurn));
+    }
+
+    /// CR 613.4b + CR 208.1: Pupu UFO's "this creature's base power becomes equal
+    /// to the number of Towns you control" sets the *power* axis only to a
+    /// dynamic count (layer 7b). Proves the power-only axis and the dynamic
+    /// "equal to <count>" value compose in one parser — not a fixed-N/M special
+    /// case.
+    #[test]
+    fn effect_subject_base_power_becomes_equal_to_count_power_only() {
+        use crate::types::ability::{ContinuousModification, QuantityExpr, QuantityRef};
+        let def = parse_effect_chain(
+            "this creature's base power becomes equal to the number of Towns you control",
+            AbilityKind::Activated,
+        );
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = def.effect.as_ref()
+        else {
+            panic!("expected GenericEffect, got {:?}", def.effect);
+        };
+        let mods = &static_abilities[0].modifications;
+        // Power is set dynamically to the Town count.
+        assert!(
+            mods.iter().any(|m| matches!(
+                m,
+                ContinuousModification::SetPowerDynamic {
+                    value: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { .. }
+                    }
+                }
+            )),
+            "expected SetPowerDynamic(ObjectCount Towns), got {mods:?}"
+        );
+        // Toughness is NOT touched (power-only axis).
+        assert!(
+            !mods.iter().any(|m| matches!(
+                m,
+                ContinuousModification::SetToughnessDynamic { .. }
+                    | ContinuousModification::SetToughness { .. }
+            )),
+            "toughness must be untouched for the power-only axis, got {mods:?}"
+        );
+    }
+
+    /// CR 613.4b + CR 208.1: Sita Varma's inverted-genitive "the base power and
+    /// toughness of each other creature you control become equal to ~'s power"
+    /// sets BOTH axes of a non-self group subject to the source's power. Proves
+    /// the inverted-genitive surface form, the non-self group subject, and the
+    /// self-power (`~`-normalized) dynamic value all compose in one parser.
+    #[test]
+    fn effect_inverted_genitive_base_pt_of_group_equal_to_source_power() {
+        use crate::types::ability::{
+            ContinuousModification, ObjectScope, QuantityExpr, QuantityRef,
+        };
+        let def = parse_effect_chain(
+            "have the base power and toughness of each other creature you control become equal to ~'s power",
+            AbilityKind::Activated,
+        );
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = def.effect.as_ref()
+        else {
+            panic!("expected GenericEffect, got {:?}", def.effect);
+        };
+        let sa = &static_abilities[0];
+        // Affected: other creatures you control.
+        match &sa.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                assert_eq!(
+                    tf.controller,
+                    Some(crate::types::ability::ControllerRef::You)
+                );
+                assert!(tf.properties.contains(&FilterProp::Another));
+            }
+            other => panic!("expected other-creatures-you-control scope, got {other:?}"),
+        }
+        let expected = QuantityExpr::Ref {
+            qty: QuantityRef::Power {
+                scope: ObjectScope::Source,
+            },
+        };
+        assert!(
+            sa.modifications
+                .contains(&ContinuousModification::SetPowerDynamic {
+                    value: expected.clone(),
+                }),
+            "expected SetPowerDynamic(~ power), got {:?}",
+            sa.modifications
+        );
+        assert!(
+            sa.modifications
+                .contains(&ContinuousModification::SetToughnessDynamic { value: expected }),
+            "expected SetToughnessDynamic(~ power), got {:?}",
+            sa.modifications
+        );
     }
 
     #[test]
@@ -38222,6 +38711,34 @@ mod tests {
     }
 
     #[test]
+    fn create_token_and_attach_equipment_lowers_attach_to_last_created() {
+        // Field-Tested Frying Pan (#835): "create a Food token, then create a 1/1
+        // white Halfling creature token and attach this Equipment to it." The
+        // fused "and attach this Equipment to it" conjunct must survive as an
+        // Attach sub-ability bound to the just-created Halfling token (LastCreated),
+        // not be dropped (which left the equipment unattached).
+        let def = parse_effect_chain(
+            "Create a Food token, then create a 1/1 white Halfling creature token and attach this Equipment to it.",
+            AbilityKind::Spell,
+        );
+
+        fn find_attach_target(def: &AbilityDefinition) -> Option<&TargetFilter> {
+            match def.effect.as_ref() {
+                Effect::Attach { target, .. } => Some(target),
+                _ => def.sub_ability.as_deref().and_then(find_attach_target),
+            }
+        }
+
+        let target = find_attach_target(&def)
+            .expect("expected an Attach sub-ability for the fused token+attach clause");
+        assert_eq!(
+            *target,
+            TargetFilter::LastCreated,
+            "attach host anaphor must rebind to the just-created token"
+        );
+    }
+
+    #[test]
     fn dread_fugue_choose_from_revealed_hand_includes_cmc_leq_2() {
         // CR 702.148a: Cleave's bracketed text is removed at build time, so the
         // parser receives the bracket-stripped (KeepContent) base text — the
@@ -38256,6 +38773,42 @@ mod tests {
                     ))
             ),
             "expected nonland + CMC<=2 reveal choice filter, got {card_filter:?}"
+        );
+    }
+
+    #[test]
+    fn fused_reveal_hand_and_choose_populates_card_filter() {
+        // Biting-Palm Ninja (#842): the choose clause is fused to the reveal
+        // sentence with "and" ("that player reveals their hand and you choose a
+        // nonland card from it"), so the separate-sentence RevealHandFilter
+        // continuation never fires. The fused choose must still populate the
+        // RevealHand `card_filter` — otherwise the empty `None` filter matches no
+        // cards and the reveal/choose/exile silently does nothing.
+        let def = parse_effect_chain(
+            "That player reveals their hand and you choose a nonland card from it. Exile that card.",
+            AbilityKind::Spell,
+        );
+
+        fn reveal_hand_parts(def: &AbilityDefinition) -> Option<(&TargetFilter, &TargetFilter)> {
+            match def.effect.as_ref() {
+                Effect::RevealHand {
+                    target,
+                    card_filter,
+                    ..
+                } => Some((target, card_filter)),
+                _ => def.sub_ability.as_deref().and_then(reveal_hand_parts),
+            }
+        }
+
+        let (target, card_filter) = reveal_hand_parts(&def).expect("RevealHand in chain");
+        assert_eq!(*target, TargetFilter::TriggeringPlayer);
+        assert!(
+            matches!(
+                card_filter,
+                TargetFilter::Typed(tf)
+                    if tf.type_filters.iter().any(|t| matches!(t, TypeFilter::Non(inner) if **inner == TypeFilter::Land))
+            ),
+            "expected nonland reveal-choice filter, got {card_filter:?}"
         );
     }
 
@@ -54133,6 +54686,149 @@ mod tests {
         assert_eq!(parse_zone_word("a library").unwrap().1, Zone::Library);
         assert_eq!(parse_zone_word("their library").unwrap().1, Zone::Library);
         assert_eq!(parse_zone_word("the stack").unwrap().1, Zone::Stack);
+    }
+
+    /// CR 608.2c: the `WhileCondition` repeat directive — bare "if <type> card,
+    /// repeat this process" with no count → unbounded `max_iterations: None`.
+    /// Building-block coverage: exercises `try_parse_repeat_process_directive`'s
+    /// card-type leading-condition path independent of any one card.
+    #[test]
+    fn repeat_process_directive_exiled_card_type_unbounded_while_condition() {
+        use crate::types::ability::RepeatContinuation;
+        let mut ctx = ParseContext::default();
+        let outcome = try_parse_repeat_process_directive(
+            "if the exiled card is a land card, repeat this process",
+            &mut ctx,
+        );
+        match outcome {
+            Some(RepeatProcessOutcome::Continuation(RepeatContinuation::WhileCondition {
+                condition,
+                max_iterations,
+            })) => {
+                assert!(
+                    matches!(
+                        *condition,
+                        AbilityCondition::RevealedHasCardType { ref card_types, .. }
+                            if card_types == &[CoreType::Land]
+                    ),
+                    "condition must gate on a revealed/exiled Land card, got {condition:?}"
+                );
+                assert_eq!(max_iterations, None, "bare repeat is unbounded");
+            }
+            other => panic!("expected unbounded WhileCondition, got {other:?}"),
+        }
+    }
+
+    /// CR 608.2c: the bounded form — leading quantity comparison + trailing
+    /// "once" → `WhileCondition` with `max_iterations: Some(1)`.
+    #[test]
+    fn repeat_process_directive_once_caps_iterations() {
+        use crate::types::ability::RepeatContinuation;
+        let mut ctx = ParseContext::default();
+        let outcome = try_parse_repeat_process_directive(
+            "then if an opponent controls more lands than you, repeat this process once",
+            &mut ctx,
+        );
+        match outcome {
+            Some(RepeatProcessOutcome::Continuation(RepeatContinuation::WhileCondition {
+                condition,
+                max_iterations,
+            })) => {
+                assert!(
+                    matches!(*condition, AbilityCondition::QuantityCheck { .. }),
+                    "condition must be a quantity comparison, got {condition:?}"
+                );
+                assert_eq!(max_iterations, Some(1), "\"once\" caps at one extra repeat");
+            }
+            other => panic!("expected bounded WhileCondition, got {other:?}"),
+        }
+    }
+
+    /// CR 107.1c: with no leading condition, "you may repeat this process" stays
+    /// the controller-decision form — the new directive parser must not absorb it
+    /// into a `WhileCondition`.
+    #[test]
+    fn repeat_process_directive_you_may_stays_controller_choice() {
+        use crate::types::ability::RepeatContinuation;
+        let mut ctx = ParseContext::default();
+        assert!(matches!(
+            try_parse_repeat_process_directive("you may repeat this process", &mut ctx),
+            Some(RepeatProcessOutcome::Continuation(
+                RepeatContinuation::ControllerChoice
+            ))
+        ));
+    }
+
+    /// Sin, Spira's Punishment — full-card parse drops zero `Unimplemented` nodes
+    /// and the trigger's root carries the unbounded `WhileCondition` repeat.
+    #[test]
+    fn sin_spiras_punishment_parses_repeat_while_land() {
+        use crate::types::ability::RepeatContinuation;
+        let parsed = parse_oracle_text(
+            "Flying\nWhenever Sin enters or attacks, exile a permanent card from your graveyard at random, then create a tapped token that's a copy of that card. If the exiled card is a land card, repeat this process.",
+            "Sin, Spira's Punishment",
+            &["Flying".to_string()],
+            &["Creature".to_string()],
+            &[],
+        );
+        let json = serde_json::to_string(&parsed).unwrap();
+        assert!(
+            // allow-noncombinator: test assertion scans serialized AST JSON, not parsing dispatch
+            !json.contains("\"Unimplemented\""),
+            "Sin must parse with zero Unimplemented nodes"
+        );
+        let trigger = parsed
+            .triggers
+            .iter()
+            .find_map(|t| t.execute.as_ref())
+            .expect("enters-or-attacks trigger with an execute body");
+        assert!(
+            matches!(
+                trigger.repeat_until,
+                Some(RepeatContinuation::WhileCondition {
+                    max_iterations: None,
+                    ..
+                })
+            ),
+            "Sin's repeat is an unbounded WhileCondition, got {:?}",
+            trigger.repeat_until
+        );
+    }
+
+    /// Claim Jumper — full-card parse drops zero `Unimplemented` nodes and the
+    /// trigger's root carries the bounded ("once") `WhileCondition` repeat.
+    #[test]
+    fn claim_jumper_parses_repeat_once_while_opponent_lands() {
+        use crate::types::ability::RepeatContinuation;
+        let parsed = parse_oracle_text(
+            "Vigilance\nWhen this creature enters, if an opponent controls more lands than you, you may search your library for a Plains card and put it onto the battlefield tapped. Then if an opponent controls more lands than you, repeat this process once. If you search your library this way, shuffle.",
+            "Claim Jumper",
+            &["Vigilance".to_string()],
+            &["Creature".to_string()],
+            &[],
+        );
+        let json = serde_json::to_string(&parsed).unwrap();
+        assert!(
+            // allow-noncombinator: test assertion scans serialized AST JSON, not parsing dispatch
+            !json.contains("\"Unimplemented\""),
+            "Claim Jumper must parse with zero Unimplemented nodes"
+        );
+        let trigger = parsed
+            .triggers
+            .iter()
+            .find_map(|t| t.execute.as_ref())
+            .expect("enters trigger with an execute body");
+        assert!(
+            matches!(
+                trigger.repeat_until,
+                Some(RepeatContinuation::WhileCondition {
+                    max_iterations: Some(1),
+                    ..
+                })
+            ),
+            "Claim Jumper repeats once, got {:?}",
+            trigger.repeat_until
+        );
     }
 }
 

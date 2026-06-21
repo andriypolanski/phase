@@ -766,9 +766,21 @@ fn is_damage_done_trigger_pattern(cond_lower: &str) -> bool {
         return false;
     };
 
+    // CR 120.3a + CR 603.2c: A damage-to-player trigger establishes the damaged
+    // player as the relative `TriggeringPlayer` for "that player" anaphors.
+    // Both the generic player recipient ("a player") and the opponent recipient
+    // ("an opponent" → `Typed(controller: Opponent)`) are player recipients;
+    // Fear of Burning Alive ("deals noncombat damage to an opponent ... target
+    // creature that player controls") relies on the opponent form binding.
     matches!(
         parse_damage_to_qualifier(after_damage),
-        Some(TargetFilter::Player)
+        Some(
+            TargetFilter::Player
+                | TargetFilter::Typed(TypedFilter {
+                    controller: Some(ControllerRef::Opponent),
+                    ..
+                })
+        )
     )
 }
 
@@ -5363,6 +5375,13 @@ fn continues_player_action_list(after_comma: &str) -> bool {
         .unwrap_or(trimmed)
         .trim();
     if parse_player_action_phrase(candidate).is_some() {
+        return true;
+    }
+    // Avatar crossover: a comma-separated bending-verb disjunction
+    // ("whenever you waterbend, earthbend, firebend, or airbend") is a single
+    // batched trigger event, so the comma after each verb is a list separator,
+    // not the condition/effect boundary.
+    if all_consuming(parse_bend_verb).parse(candidate).is_ok() {
         return true;
     }
 
@@ -9983,8 +10002,99 @@ fn try_parse_phase_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinitio
     Some((TriggerMode::Phase, def))
 }
 
+/// Avatar crossover: recognize a single bending verb and map it to its
+/// specific `TriggerMode`. The full four-verb disjunction is collapsed by
+/// `try_parse_bend_trigger` to `TriggerMode::ElementalBend` (which matches any of
+/// the four bending `GameEvent`s for the source's controller); a partial
+/// disjunction fails closed (see `try_parse_bend_trigger`). Single source of
+/// truth for both the trigger-mode dispatch and the `continues_player_action_list`
+/// condition/effect boundary check.
+fn parse_bend_verb(input: &str) -> OracleResult<'_, TriggerMode> {
+    alt((
+        value(TriggerMode::Waterbend, tag("waterbend")),
+        value(TriggerMode::Earthbend, tag("earthbend")),
+        value(TriggerMode::Firebend, tag("firebend")),
+        value(TriggerMode::Airbend, tag("airbend")),
+    ))
+    .parse(input)
+}
+
+/// Avatar crossover (CR 603.2): "whenever you {waterbend|earthbend|firebend|
+/// airbend}[, {verb}]*[, or {verb}]" — a single bending verb fires its specific
+/// bend trigger; the full four-verb batch (Avatar Aang) fires on ANY of the four
+/// bend events via `TriggerMode::ElementalBend`, whose matcher
+/// `match_elemental_bend` already scopes to the source's controller.
+///
+/// A PARTIAL disjunction (a strict subset of two or three distinct verbs, e.g.
+/// "whenever you waterbend or earthbend") has no faithful runtime representation:
+/// the only any-bend matcher is `match_elemental_bend`, which fires on all four,
+/// and there is no parameterized bend-set matcher yet. Collapsing a partial set to
+/// `ElementalBend` would over-fire on the unlisted bend events. So this parser
+/// returns `None` for any partial set, leaving such cards to fail closed
+/// (strict-failure `Unknown`) rather than ship a trigger broader than its
+/// semantics. When a partial-bend card actually appears, add a parameterized
+/// bend-set matcher and route the parsed set through to it. `valid_target =
+/// Controller` is redundant with the matcher's controller scoping but kept for
+/// consistency with the other player-action bend-adjacent triggers.
+fn try_parse_bend_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    let rest = alt((
+        value((), tag::<_, _, OracleError<'_>>("whenever you ")),
+        value((), tag("when you ")),
+    ))
+    .parse(lower)
+    .map(|(rest, ())| rest)
+    .ok()?;
+
+    let mut modes: Vec<TriggerMode> = Vec::new();
+    let mut remaining = rest.trim();
+    loop {
+        let (after_verb, mode) = parse_bend_verb(remaining).ok()?;
+        modes.push(mode);
+        // Consume an optional list separator: ", or ", ", ", " or " — or stop at
+        // the end of the condition clause.
+        let next = alt((
+            value((), tag::<_, _, OracleError<'_>>(", or ")),
+            value((), tag(", ")),
+            value((), tag(" or ")),
+        ))
+        .parse(after_verb);
+        match next {
+            Ok((tail, ())) => remaining = tail.trim_start(),
+            Err(_) => {
+                if !after_verb.trim().is_empty() {
+                    return None;
+                }
+                break;
+            }
+        }
+    }
+
+    let distinct: std::collections::HashSet<&TriggerMode> = modes.iter().collect();
+    let mode = match modes.as_slice() {
+        [] => return None,
+        [single] => single.clone(),
+        // CR 603.2: only the complete four-verb batch maps to the any-bend matcher.
+        // Anything narrower (partial subset, or repeated verbs) lacks a faithful
+        // runtime matcher and must fail closed rather than over-fire.
+        _ if distinct.len() == 4 => TriggerMode::ElementalBend,
+        _ => return None,
+    };
+
+    let mut def = make_base();
+    def.mode = mode.clone();
+    def.valid_target = Some(TargetFilter::Controller);
+    Some((mode, def))
+}
+
 /// Parse player-centric triggers: "you gain life", "you cast a/an ...", "you draw a card"
 fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    // Avatar crossover: bending-verb triggers ("whenever you waterbend, …") must
+    // run before the generic player-action dispatch, which does not recognize the
+    // bend verbs and would fall through to `TriggerMode::Unknown`.
+    if let Some(result) = try_parse_bend_trigger(lower) {
+        return Some(result);
+    }
+
     if let Some(result) = try_parse_player_action_trigger(lower) {
         return Some(result);
     }
@@ -10426,6 +10536,10 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
             .unwrap_or(after)
             .trim();
         let (payload, spell_not_owned_by_you) = strip_spell_not_owned_qualifier(payload);
+        let (payload, turn_constraint) = peel_trailing_turn_constraint(payload);
+        if let Some(constraint) = turn_constraint {
+            def.constraint = Some(constraint);
+        }
 
         // CR 601.2a: pre-extract the "from <zone>" cast-origin tail BEFORE
         // running the type-phrase parser. `parse_type_phrase`'s
@@ -10524,6 +10638,10 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
                 .trim_start();
             let (spell_clause, spell_not_owned_by_caster) =
                 strip_spell_they_dont_own_qualifier(after_article);
+            let (spell_clause, turn_constraint) = peel_trailing_turn_constraint(spell_clause);
+            if let Some(constraint) = turn_constraint {
+                def.constraint = Some(constraint);
+            }
             if spell_not_owned_by_caster {
                 def.valid_target = Some(TargetFilter::TriggeringPlayer);
             }
@@ -10844,6 +10962,11 @@ fn try_parse_player_action_trigger(lower: &str) -> Option<(TriggerMode, TriggerD
                 def.mode = TriggerMode::CollectEvidence;
                 return Some((TriggerMode::CollectEvidence, def));
             }
+            // CR 701.16a: Investigate — create a Clue artifact token.
+            [PlayerActionKind::Investigate] => {
+                def.mode = TriggerMode::Investigated;
+                return Some((TriggerMode::Investigated, def));
+            }
             // CR 701.24a: Shuffle — player-action trigger, scoped by
             // valid_target so "you", "an opponent", and "a player" forms all
             // use the same matcher path.
@@ -10889,6 +11012,8 @@ fn parse_player_action_phrase(text: &str) -> Option<PlayerActionKind> {
         "surveil" | "surveils" => Some(PlayerActionKind::Surveil),
         // CR 701.59a: Collect evidence — exile cards from your graveyard with total mana value N or more.
         "collect evidence" | "collects evidence" => Some(PlayerActionKind::CollectEvidence),
+        // CR 701.16a: Investigate — create a Clue artifact token.
+        "investigate" | "investigates" => Some(PlayerActionKind::Investigate),
         "shuffle your library"
         | "shuffles their library"
         | "shuffle their library"
@@ -12583,6 +12708,7 @@ fn scan_for_generic_main_phase(text: &str) -> bool {
 fn parse_turn_constraint(phase_text: &str) -> Option<TriggerConstraint> {
     // Prefix-based: try at the start of the text
     if alt((
+        tag::<_, _, OracleError<'_>>("an opponent's "),
         tag::<_, _, OracleError<'_>>("each opponent's "),
         tag("each opponents\u{2019} "),
         tag("each opponents' "),
@@ -12617,6 +12743,47 @@ fn parse_turn_constraint(phase_text: &str) -> Option<TriggerConstraint> {
             .map_or("", |i| remaining[i + 1..].trim_start());
     }
     None
+}
+
+fn peel_trailing_turn_constraint(input: &str) -> (&str, Option<TriggerConstraint>) {
+    let mut remaining = input.trim();
+    loop {
+        if let Ok((_, constraint)) = preceded(
+            tag::<_, _, OracleError<'_>>("during "),
+            all_consuming(alt((
+                value(
+                    TriggerConstraint::OnlyDuringOpponentsTurn,
+                    alt((
+                        tag("an opponent's turn"),
+                        tag("each opponent's turn"),
+                        tag("each opponents\u{2019} turn"),
+                        tag("each opponents' turn"),
+                        tag("your opponent's turn"),
+                        tag("your opponents\u{2019} turn"),
+                        tag("your opponents' turn"),
+                        tag("each of your opponents\u{2019} turn"),
+                        tag("each of your opponents' turn"),
+                    )),
+                ),
+                value(
+                    TriggerConstraint::OnlyDuringYourTurn,
+                    alt((tag("your turn"), tag("each of your turns"))),
+                ),
+            ))),
+        )
+        .parse(remaining)
+        {
+            let split_at = input.len() - remaining.len();
+            return (input[..split_at].trim(), Some(constraint));
+        }
+
+        // allow-noncombinator: word-boundary scan to find a trailing "during <turn>" suffix;
+        // the candidate suffix itself is parsed by nom above.
+        let Some(idx) = remaining.find(' ') else {
+            return (input, None);
+        };
+        remaining = remaining[idx + 1..].trim_start();
+    }
 }
 
 /// CR 305.1 + CR 603.2: Parse the subject and land-play verb from
@@ -18292,6 +18459,29 @@ mod tests {
         assert_eq!(def.spell_cast_origin, OriginConstraint::Any);
     }
 
+    #[test]
+    fn trigger_you_cast_spell_during_opponents_turn() {
+        let def = parse_trigger_line(
+            "Whenever you cast a spell during an opponent's turn, put a -1/-1 counter on up to one target creature.",
+            "Nightmare Sower",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        assert!(def.valid_card.is_none());
+        assert_eq!(
+            def.constraint,
+            Some(TriggerConstraint::OnlyDuringOpponentsTurn)
+        );
+    }
+
+    #[test]
+    fn spell_cast_turn_constraint_peel_rejects_phase_or_step_tails() {
+        let (payload, constraint) =
+            peel_trailing_turn_constraint("spell during an opponent's end step");
+        assert_eq!(payload, "spell during an opponent's end step");
+        assert!(constraint.is_none());
+    }
+
     // CR 601.1a + CR 701.18b: "Whenever you play a card" fires on playing a land
     // or casting a spell. Recycle and Null Profusion both read "Whenever you play
     // a card, draw a card." — classify as the unified `PlayCard` mode.
@@ -20482,6 +20672,31 @@ mod tests {
             "Mirko, Obsessive Theorist",
         );
         assert_eq!(def.mode, TriggerMode::Surveil);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+    }
+
+    #[test]
+    fn trigger_you_investigate() {
+        // Erdwal Illuminator (SOI): "Whenever you investigate for the first time
+        // each turn, investigate an additional time." The "for the first time
+        // each turn" qualifier becomes OncePerTurn; the trigger itself must be
+        // Investigated (not the inert Unknown that never fires).
+        let def = parse_trigger_line(
+            "Whenever you investigate for the first time each turn, investigate an additional time.",
+            "Erdwal Illuminator",
+        );
+        assert_eq!(def.mode, TriggerMode::Investigated);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        assert_eq!(def.constraint, Some(TriggerConstraint::OncePerTurn));
+    }
+
+    #[test]
+    fn trigger_you_investigate_bare() {
+        let def = parse_trigger_line(
+            "Whenever you investigate, draw a card.",
+            "Test Investigator",
+        );
+        assert_eq!(def.mode, TriggerMode::Investigated);
         assert_eq!(def.valid_target, Some(TargetFilter::Controller));
     }
 
