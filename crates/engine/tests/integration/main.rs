@@ -268,6 +268,7 @@ mod issue_3265_knowledge_seeker_kwain;
 mod issue_3267_sanwell_rest_on_bottom;
 mod issue_3268_nahiri_lithomancer;
 mod issue_3274_elder_deep_fiend;
+mod issue_3277_captain_nghathrod_eliminated_opponent;
 mod issue_3282_consign_to_memory_counter;
 mod issue_3283_sevinne_reclamation_copy_no_self_copy;
 mod issue_3285_face_down_public_zone;
