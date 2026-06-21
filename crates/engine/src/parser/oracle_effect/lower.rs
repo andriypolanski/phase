@@ -251,11 +251,12 @@ fn cast_cost_raise_rider(clause: &ClauseIr) -> Option<ManaCost> {
 fn is_land_enters_tapped_rider(clause: &ClauseIr) -> bool {
     let lower = clause.source_text.to_ascii_lowercase();
     let trimmed = lower.trim().trim_end_matches('.').trim();
-    all_consuming(tag::<_, _, OracleError<'_>>(
+    let parsed = all_consuming(tag::<_, _, OracleError<'_>>(
         "each land played this way enters tapped",
     ))
     .parse(trimmed)
-    .is_ok()
+    .is_ok();
+    parsed
 }
 
 /// Walk the previous def and its `sub_ability` chain for a `PlayFromExile`
