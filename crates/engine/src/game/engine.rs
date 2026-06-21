@@ -5597,6 +5597,23 @@ fn handle_play_land(
         }
     }
 
+    // CR 614.1c: A land played via a `PlayFromExile` grant that carries
+    // `land_enter_tapped` enters the battlefield tapped (Lightstall Inquisitor:
+    // "Each land played this way enters tapped."). Seed the tap state on the
+    // proposed event so the replacement pipeline applies it like any other
+    // ETB-tapped land. Only the exile-play path can carry this grant field.
+    if in_exile_with_permission {
+        let enters_tapped = state
+            .objects
+            .get(&object_id)
+            .is_some_and(|obj| super::casting::exile_play_land_enters_tapped(obj, player));
+        if enters_tapped {
+            if let Some(slot) = proposed.battlefield_entry_tap_state_mut() {
+                *slot = crate::types::zones::EtbTapState::Tapped;
+            }
+        }
+    }
+
     match super::replacement::replace_event(state, proposed, events) {
         super::replacement::ReplacementResult::Execute(event) => {
             if let crate::types::proposed_event::ProposedEvent::ZoneChange { object_id, .. } = event

@@ -884,6 +884,12 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                                     .or_else(|| {
                                         exile_conjunct_prepend(&before_lower, remainder_trimmed)
                                     })
+                                    .or_else(|| {
+                                        untap_restriction_conjunct_prepend(
+                                            before_and,
+                                            remainder_trimmed,
+                                        )
+                                    })
                             {
                                 push_clause_chunk(
                                     &mut chunks,
@@ -1949,6 +1955,20 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
     // safe. Reuses the shared `parse_become_verb` combinator. Mirrors the anaphoric
     // "it becomes " arm above for the subject-carried form.
     .or(parse_become_verb)
+    // CR 608.2c + CR 400.7i: "may play <card-anaphor>" / "may cast
+    // <card-anaphor>" — a bare optional play/cast grant whose subject was
+    // established by the prior conjunct (Lightstall Inquisitor: "each opponent
+    // exiles a card from their hand and may play that card for as long as it
+    // remains exiled"). "may play"/"may cast" always begins a verb phrase,
+    // never a noun-phrase continuation of the prior conjunct, so the split
+    // routes the conjunct to the per-grantee play-from-exile grant parser
+    // (`try_parse_per_grantee_play_grant`). The "you may " subject-led form is
+    // already covered by the `you may ` arm above; this arm catches the
+    // subject-elided form after a player-scoped exile.
+    .or(alt((
+        value((), tag::<_, _, OracleError<'_>>("may play ")),
+        value((), tag("may cast ")),
+    )))
     .parse(s)
     .is_ok();
     if has_verb_prefix {
@@ -2099,10 +2119,42 @@ fn combat_requirement_conjunct_prepend(
     {
         return None;
     }
+    continuous_grant_subject_prepend(before_and)
+}
+
+/// CR 502.3 + CR 611.2a: "<subj> gains <keyword> until end of turn and doesn't
+/// untap during [its controller's | your] next untap step" (Homarid Warrior).
+/// Like the combat-requirement case, the trailing "doesn't untap …" conjunct
+/// is a restriction predicate that is NOT verb-headed by any entry in
+/// `starts_bare_and_clause`, so the bare-and logic never splits it; left
+/// unified, the keyword grant's mid-clause "until end of turn" is hidden from
+/// the suffix-only `strip_trailing_duration` and the grant lowers to
+/// `duration: None` (granted permanently, wrong). Split here and prepend
+/// conjunct 1's subject so the restriction reaches `build_restriction_clause`
+/// with the correct `affected`. Gated on the typed "next untap step" restriction
+/// phrase only, so multi-keyword lists ("gains flying and haste …") stay on the
+/// untouched single-clause path.
+fn untap_restriction_conjunct_prepend(before_and: &str, remainder_trimmed: &str) -> Option<String> {
+    let remainder_lower = remainder_trimmed.to_ascii_lowercase();
+    let is_doesnt_untap = (nom_primitives::scan_contains(&remainder_lower, "doesn't untap")
+        || nom_primitives::scan_contains(&remainder_lower, "does not untap"))
+        && nom_primitives::scan_contains(&remainder_lower, "next untap step");
+    if !is_doesnt_untap {
+        return None;
+    }
+    continuous_grant_subject_prepend(before_and)
+}
+
+/// Shared subject-reattach for a continuous "gain(s)/get(s)" conjunct-1: returns
+/// the subject text (with a trailing space) to prepend onto conjunct-2 so it
+/// parses as its own subject-predicate clause. `""` when the subject was already
+/// lifted (verb at offset 0); `"it "` for a targeted subject (anaphor); the
+/// literal subject otherwise. `None` when conjunct-1 is not a continuous grant.
+fn continuous_grant_subject_prepend(before_and: &str) -> Option<String> {
     let before_lower = before_and.to_ascii_lowercase();
     // CR 508.1d / CR 509.1c: chunk begins with the gain/get verb at offset 0
     // (subject already lifted by the enclosing compound-subject distribution);
-    // emit an empty subject so the trailing combat-requirement conjunct splits.
+    // emit an empty subject so the trailing conjunct splits.
     // This anchor-start check has PRIORITY over the interior `take_until` arms
     // below — those scan for the FIRST " gain"/" get" in the chunk, which would
     // spuriously bind an interior verb (e.g. "get +2/+0 and gain haste ..." has
