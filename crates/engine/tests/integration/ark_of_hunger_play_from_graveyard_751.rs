@@ -258,7 +258,7 @@ fn exiled_card_with_play_permission_stays_on_exile_path() {
                 single_use_group: None,
                 single_use: false,
                 cast_cost_raise: None,
-                land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                land_enter_tapped: engine::types::zones::EtbTapState::Unspecified,
             });
         id
     };

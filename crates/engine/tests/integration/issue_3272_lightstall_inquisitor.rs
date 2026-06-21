@@ -45,9 +45,9 @@ fn lightstall_etb_grants_owner_play_with_cost_raise_and_land_tapped() {
     let parsed = parse_oracle_text(
         LIGHTSTALL_ORACLE,
         "Lightstall Inquisitor",
-        &["Vigilance"],
-        &["Creature"],
-        &["Bird", "Cleric"],
+        &["Vigilance".to_string()],
+        &["Creature".to_string()],
+        &["Bird".to_string(), "Cleric".to_string()],
     );
 
     assert_eq!(
