@@ -69,7 +69,7 @@
 use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
-use nom::combinator::value;
+use nom::combinator::{opt, value};
 use nom::Parser;
 
 use super::oracle_effect::conditions::{
@@ -461,16 +461,21 @@ pub(crate) fn is_specialized_you_may_retarget_phrase(rest_lower: &str) -> bool {
 /// separate activated way to terminate the ongoing enchantment. The "may" is the
 /// later payment permission, not an optional resolution choice on the licid
 /// activation itself (issue #4000).
-pub(crate) fn is_you_may_pay_to_end_effect_phrase(rest_lower: &str) -> bool {
+///
+/// Accepts either the post-optional-strip body (`pay {U} to end this effect`) or
+/// the full clause surface (`you may pay {U} to end this effect`) so chunk-loop
+/// and full-clause carve-out call sites share one detector.
+pub(crate) fn is_you_may_pay_to_end_effect_phrase(text_lower: &str) -> bool {
     value(
         (),
         (
-            tag::<_, _, OracleError<'_>>("pay "),
+            opt(tag::<_, _, OracleError<'_>>("you may ")),
+            tag("pay "),
             take_until(" to end this effect"),
             tag(" to end this effect"),
         ),
     )
-    .parse(rest_lower)
+    .parse(text_lower)
     .is_ok()
 }
 
@@ -808,6 +813,19 @@ mod tests {
     }
 
     #[test]
+    fn is_you_may_pay_to_end_effect_phrase_matches_body_and_full_clause() {
+        assert!(is_you_may_pay_to_end_effect_phrase(
+            "pay {u} to end this effect"
+        ));
+        assert!(is_you_may_pay_to_end_effect_phrase(
+            "you may pay {u} to end this effect"
+        ));
+        assert!(!is_you_may_pay_to_end_effect_phrase(
+            "you may pay {u} rather than pay this spell's mana cost"
+        ));
+    }
+
+    #[test]
     fn peel_optional_slots_chunk_loop_licid_pay_to_end_does_not_strip() {
         let text = "you may pay {U} to end this effect";
         let (is_optional, _, _, rest) = peel_optional_slots(text);
@@ -816,6 +834,7 @@ mod tests {
             "licid pay-to-end must keep full surface form, not become optional"
         );
         assert_eq!(rest, text);
+        assert!(is_you_may_pay_to_end_effect_phrase(text));
         assert!(is_you_may_pay_to_end_effect_phrase(
             "pay {u} to end this effect"
         ));
