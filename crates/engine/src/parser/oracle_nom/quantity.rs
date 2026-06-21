@@ -1113,6 +1113,10 @@ fn parse_number_of_inner(input: &str) -> OracleResult<'_, QuantityRef> {
         // CR 613.1: "cards in the chosen player's <zone>" — the persisted ETB
         // choice; must precede the generic target/zone arms below.
         parse_number_of_cards_in_chosen_player_zone,
+        // CR 402.1: "cards in the hand of the {player|opponent} with the
+        // {most|fewest} cards in hand" — must precede the generic
+        // `parse_number_of_cards_in_target_zone` "cards in …" arms.
+        parse_number_of_cards_in_hand_of_extremum_player,
         parse_number_of_cards_in_target_zone,
         parse_number_of_cards_in_all_players_hands,
         parse_number_of_cards_in_zone,
@@ -1258,33 +1262,63 @@ fn parse_controlled_by_extremum_player(input: &str) -> OracleResult<'_, Quantity
     ))
 }
 
-/// CR 402.1: Parse "the player with the {most|fewest} cards in hand" →
-/// `QuantityRef::HandSize { player: AllPlayers { aggregate } }`. The hand-zone
-/// peer of `parse_cross_player_life_extremum` (the life axis, CR 119): two
-/// independent nom axes — the aggregate direction (most↔fewest) and the fixed
-/// "cards in hand" zone (CR 402, the hand). Used by the catch-up-draw
-/// interceptor (Tales of the Ancestors) and any future card that names the
-/// cross-player hand-size extremum. Hand is CR 402, so this routes to
-/// `HandSize`/`PlayerScope`, never the CR 208/202 object-property `Aggregate`.
-pub(crate) fn parse_player_with_extremum_cards_in_hand(
-    input: &str,
-) -> OracleResult<'_, QuantityRef> {
-    let (rest, _) = tag("the player with the ").parse(input)?;
-    let (rest, aggregate) = alt((
-        value(AggregateFunction::Max, tag("most")),
-        value(AggregateFunction::Min, tag("fewest")),
-    ))
-    .parse(rest)?;
-    let (rest, _) = tag(" cards in hand").parse(rest)?;
-    Ok((
-        rest,
-        QuantityRef::HandSize {
-            player: PlayerScope::AllPlayers {
+/// CR 402.1 + CR 102.2/102.3: Shared core for cross-player hand-size extrema.
+/// Two independent nom axes — population scope (`player` ↔ `opponent`) and
+/// aggregate direction (`most` ↔ `fewest`) — plus the fixed "cards in hand"
+/// zone suffix (CR 402). The hand-zone peer of `parse_cross_player_life_extremum`
+/// (the life axis, CR 119): routes to `HandSize`/`PlayerScope`, never the CR
+/// 208/202 object-property `Aggregate`.
+fn parse_extremum_hand_size_scope_and_aggregate(input: &str) -> OracleResult<'_, PlayerScope> {
+    let (rest, player) = alt((
+        map(
+            (
+                tag("player"),
+                tag(" with the "),
+                alt((
+                    value(AggregateFunction::Max, tag("most")),
+                    value(AggregateFunction::Min, tag("fewest")),
+                )),
+            ),
+            |(_, _, aggregate)| PlayerScope::AllPlayers {
                 aggregate,
                 exclude: None,
             },
-        },
+        ),
+        map(
+            (
+                tag("opponent"),
+                tag(" with the "),
+                alt((
+                    value(AggregateFunction::Max, tag("most")),
+                    value(AggregateFunction::Min, tag("fewest")),
+                )),
+            ),
+            |(_, _, aggregate)| PlayerScope::Opponent { aggregate },
+        ),
     ))
+    .parse(input)?;
+    let (rest, _) = tag(" cards in hand").parse(rest)?;
+    Ok((rest, player))
+}
+
+/// CR 402.1: Parse "the {player|opponent} with the {most|fewest} cards in hand"
+/// → `QuantityRef::HandSize`. Used by the catch-up-draw interceptor (Tales of
+/// the Ancestors) and any card naming the short cross-player hand-size extremum.
+pub(crate) fn parse_player_with_extremum_cards_in_hand(
+    input: &str,
+) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = tag("the ").parse(input)?;
+    let (rest, player) = parse_extremum_hand_size_scope_and_aggregate(rest)?;
+    Ok((rest, QuantityRef::HandSize { player }))
+}
+
+/// CR 402.1: Parse "cards in the hand of the {player|opponent} with the
+/// {most|fewest} cards in hand" after "the number of" → `QuantityRef::HandSize`.
+/// Verbose wrapper for P/T CDAs (Adamaro, First to Desire).
+fn parse_number_of_cards_in_hand_of_extremum_player(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = tag("cards in the hand of the ").parse(input)?;
+    let (rest, player) = parse_extremum_hand_size_scope_and_aggregate(rest)?;
+    Ok((rest, QuantityRef::HandSize { player }))
 }
 
 /// Parse "[type(s)] you control" / "[type(s)] the chosen player controls" after
@@ -5528,6 +5562,110 @@ mod tests {
                 player: PlayerScope::AllPlayers {
                     aggregate: AggregateFunction::Min,
                     exclude: None,
+                },
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_opponent_with_most_cards_in_hand() {
+        // CR 402.1 + CR 102.2/102.3: opponent-scoped MAX extremum.
+        let (rest, q) =
+            parse_player_with_extremum_cards_in_hand("the opponent with the most cards in hand")
+                .unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::HandSize {
+                player: PlayerScope::Opponent {
+                    aggregate: AggregateFunction::Max,
+                },
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_opponent_with_fewest_cards_in_hand() {
+        // CR 402.1 + CR 102.2/102.3: opponent-scoped MIN extremum.
+        let (rest, q) =
+            parse_player_with_extremum_cards_in_hand("the opponent with the fewest cards in hand")
+                .unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::HandSize {
+                player: PlayerScope::Opponent {
+                    aggregate: AggregateFunction::Min,
+                },
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_verbose_all_players_max_extremum_hand_size() {
+        let (rest, q) = parse_quantity_ref(
+            "the number of cards in the hand of the player with the most cards in hand",
+        )
+        .unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::HandSize {
+                player: PlayerScope::AllPlayers {
+                    aggregate: AggregateFunction::Max,
+                    exclude: None,
+                },
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_verbose_all_players_min_extremum_hand_size() {
+        let (rest, q) = parse_quantity_ref(
+            "the number of cards in the hand of the player with the fewest cards in hand",
+        )
+        .unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::HandSize {
+                player: PlayerScope::AllPlayers {
+                    aggregate: AggregateFunction::Min,
+                    exclude: None,
+                },
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_verbose_opponent_max_extremum_hand_size() {
+        let (rest, q) = parse_quantity_ref(
+            "the number of cards in the hand of the opponent with the most cards in hand",
+        )
+        .unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::HandSize {
+                player: PlayerScope::Opponent {
+                    aggregate: AggregateFunction::Max,
+                },
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_verbose_opponent_min_extremum_hand_size() {
+        let (rest, q) = parse_quantity_ref(
+            "the number of cards in the hand of the opponent with the fewest cards in hand",
+        )
+        .unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::HandSize {
+                player: PlayerScope::Opponent {
+                    aggregate: AggregateFunction::Min,
                 },
             }
         );
