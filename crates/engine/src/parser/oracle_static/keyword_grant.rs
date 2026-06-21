@@ -110,7 +110,7 @@ fn finalize_graveyard_zone_grant_keyword(
     let Some(kind) = graveyard_granted_kind_for_keyword(&keyword) else {
         return keyword;
     };
-    normalize_graveyard_granted_keyword(keyword, where_x, kind).unwrap_or(keyword)
+    normalize_graveyard_granted_keyword(keyword.clone(), where_x, kind).unwrap_or(keyword)
 }
 
 fn normalize_graveyard_granted_keyword(
