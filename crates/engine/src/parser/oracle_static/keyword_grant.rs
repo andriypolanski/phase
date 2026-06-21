@@ -29,7 +29,7 @@ pub(crate) enum RuleStaticPredicate {
 
 pub(crate) fn try_parse_graveyard_keyword_grant_clause(
     text: &str,
-) -> Option<(TargetFilter, GraveyardGrantedKeywordKind, &str)> {
+) -> Option<(TargetFilter, GraveyardGrantedKeywordKind, String)> {
     let stripped = strip_reminder_text(text);
     let lower = stripped.to_lowercase();
     let rest = nom_tag_lower(&stripped, &lower, "each ")?;
@@ -39,9 +39,9 @@ pub(crate) fn try_parse_graveyard_keyword_grant_clause(
             || super::oracle_nom::bridge::split_once_on_lower(rest, &rest_lower, " have "),
         )?;
     let subject = subject.trim();
-    let keyword_text = keyword_text.trim().trim_end_matches('.');
+    let keyword_text = keyword_text.trim().trim_end_matches('.').to_string();
 
-    let kind = nom_on_lower(keyword_text, &keyword_text.to_lowercase(), |i| {
+    let kind = nom_on_lower(&keyword_text, &keyword_text.to_lowercase(), |i| {
         alt((
             value(GraveyardGrantedKeywordKind::Flashback, tag("flashback")),
             value(GraveyardGrantedKeywordKind::Escape, tag("escape")),
@@ -81,7 +81,7 @@ fn parse_graveyard_granted_keyword_phrase(
 /// CR 702.97a / CR 702.141a: When a graveyard grant binds X to the recipient
 /// card's mana value, lower to `ManaCost::SelfManaCost` so runtime synthesis
 /// concretizes the activated ability's mana sub-cost.
-fn binds_recipient_mana_value(where_x: Option<QuantityRef>) -> bool {
+fn binds_recipient_mana_value(where_x: &Option<QuantityRef>) -> bool {
     matches!(
         where_x,
         Some(QuantityRef::SelfManaValue)
@@ -99,7 +99,7 @@ fn normalize_graveyard_granted_keyword(
     if !kind.matches_keyword(&keyword) {
         return None;
     }
-    match (keyword, where_x) {
+    match (keyword, &where_x) {
         (Keyword::Encore(_), where_x) if binds_recipient_mana_value(where_x) => {
             Some(Keyword::Encore(ManaCost::SelfManaCost))
         }
@@ -130,7 +130,7 @@ pub(crate) fn try_parse_graveyard_keyword_grant_static(line: &str) -> Option<Sta
     });
 
     let (affected, kind, keyword_text) = try_parse_graveyard_keyword_grant_clause(grant_prefix)?;
-    let keyword = parse_graveyard_granted_keyword_phrase(keyword_text, kind)?;
+    let keyword = parse_graveyard_granted_keyword_phrase(&keyword_text, kind)?;
 
     let mut def = StaticDefinition::continuous()
         .affected(affected)

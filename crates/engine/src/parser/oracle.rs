@@ -83,7 +83,8 @@ use super::oracle_static::{
     parse_cast_spells_alternative_cost_multi, parse_chosen_creature_type_static_prefix,
     parse_collect_evidence_alt_cost, parse_every_creature_type_static_prefix,
     parse_spells_alternative_cost, parse_static_line, parse_static_line_multi,
-    try_parse_graveyard_keyword_grant_clause, GraveyardGrantedKeywordKind,
+    try_parse_graveyard_keyword_grant_clause, try_parse_graveyard_keyword_grant_static,
+    GraveyardGrantedKeywordKind,
 };
 use super::oracle_trigger::{lower_trigger_ir, parse_trigger_lines_at_index};
 use super::oracle_util::{
@@ -789,9 +790,7 @@ fn parse_static_line_with_graveyard_keyword_continuation(line: &str) -> Vec<Stat
     if let Some(def) = try_parse_graveyard_keyword_static_with_continuation(line) {
         return vec![def];
     }
-    if let Some(def) =
-        crate::parser::oracle_static::keyword_grant::try_parse_graveyard_keyword_grant_static(line)
-    {
+    if let Some(def) = try_parse_graveyard_keyword_grant_static(line) {
         return vec![def];
     }
     parse_static_line_multi(line)
