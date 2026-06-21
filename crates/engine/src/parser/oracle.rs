@@ -83,7 +83,8 @@ use super::oracle_static::{
     parse_cast_spells_alternative_cost_multi, parse_chosen_creature_type_static_prefix,
     parse_collect_evidence_alt_cost, parse_every_creature_type_static_prefix,
     parse_spells_alternative_cost, parse_static_line, parse_static_line_multi,
-    try_parse_graveyard_keyword_grant_clause, GraveyardGrantedKeywordKind,
+    try_parse_graveyard_keyword_grant_clause, try_parse_graveyard_keyword_grant_static,
+    GraveyardGrantedKeywordKind,
 };
 use super::oracle_trigger::{lower_trigger_ir, parse_trigger_lines_at_index};
 use super::oracle_util::{
@@ -765,7 +766,7 @@ fn try_parse_graveyard_keyword_static_with_continuation(line: &str) -> Option<St
         value(StaticCondition::DuringYourTurn, tag("during your turn, ")).parse(input)
     })
     .map_or((None, prefix), |(condition, rest)| (Some(condition), rest));
-    let (affected, kind) = try_parse_graveyard_keyword_grant_clause(grant_prefix)?;
+    let (affected, kind, _) = try_parse_graveyard_keyword_grant_clause(grant_prefix)?;
     let keyword = parse_graveyard_keyword_continuation(continuation, kind)?;
     if !kind.matches_keyword(&keyword) {
         return None;
@@ -787,6 +788,9 @@ fn try_parse_graveyard_keyword_static_with_continuation(line: &str) -> Option<St
 /// rather than silently dropping the extras.
 fn parse_static_line_with_graveyard_keyword_continuation(line: &str) -> Vec<StaticDefinition> {
     if let Some(def) = try_parse_graveyard_keyword_static_with_continuation(line) {
+        return vec![def];
+    }
+    if let Some(def) = try_parse_graveyard_keyword_grant_static(line) {
         return vec![def];
     }
     parse_static_line_multi(line)
@@ -16662,6 +16666,12 @@ Artifacts you control have \"{T}: Add {U}. Spend this mana only to cast a spell 
                 "Wire Surgeons",
                 &["Phyrexian", "Artificer"][..],
                 Keyword::Encore(ManaCost::SelfManaCost),
+            ),
+            (
+                "Each Sliver creature card in your graveyard has encore {X}, where X is its mana value.",
+                "Sliver Gravemother",
+                &["Sliver"][..],
+                Keyword::Encore(ManaCost::SelfManaValue),
             ),
         ] {
             let result = parse(text, name, &[], &["Creature"], subtypes);

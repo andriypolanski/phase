@@ -5729,6 +5729,10 @@ pub enum CastVariantPaid {
     /// the "if its spectacle cost was paid" intervening-if (Rafter Demon) and the
     /// "...if its spectacle cost was paid, instead" clause (Rix Maadi Reveler).
     Spectacle,
+    /// CR 702.76a: Prowl alternative cast cost was paid from hand. Read by the
+    /// "if its prowl cost was paid" intervening-if (Latchkey Faerie, Oona's
+    /// Blackguard-style prowl payoffs).
+    Prowl,
 }
 
 /// CR 601.3b + CR 702.8a: A timing permission actually used to cast a spell.

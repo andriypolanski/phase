@@ -29,7 +29,7 @@ pub(crate) enum RuleStaticPredicate {
 
 pub(crate) fn try_parse_graveyard_keyword_grant_clause(
     text: &str,
-) -> Option<(TargetFilter, GraveyardGrantedKeywordKind)> {
+) -> Option<(TargetFilter, GraveyardGrantedKeywordKind, String)> {
     let stripped = strip_reminder_text(text);
     let lower = stripped.to_lowercase();
     let rest = nom_tag_lower(&stripped, &lower, "each ")?;
@@ -39,9 +39,9 @@ pub(crate) fn try_parse_graveyard_keyword_grant_clause(
             || super::oracle_nom::bridge::split_once_on_lower(rest, &rest_lower, " have "),
         )?;
     let subject = subject.trim();
-    let keyword_text = keyword_text.trim().trim_end_matches('.');
+    let keyword_text = keyword_text.trim().trim_end_matches('.').to_string();
 
-    let kind = nom_on_lower(keyword_text, &keyword_text.to_lowercase(), |i| {
+    let kind = nom_on_lower(&keyword_text, &keyword_text.to_lowercase(), |i| {
         alt((
             value(GraveyardGrantedKeywordKind::Flashback, tag("flashback")),
             value(GraveyardGrantedKeywordKind::Escape, tag("escape")),
@@ -60,7 +60,111 @@ pub(crate) fn try_parse_graveyard_keyword_grant_clause(
         return None;
     }
 
-    Some((filter, kind))
+    Some((filter, kind, keyword_text))
+}
+
+/// CR 702.97a / CR 702.141a: Resolve the keyword phrase on a graveyard grant
+/// line — fixed costs ("encore {5}"), inline variable costs ("encore {X}, where
+/// X is its mana value" → `SelfManaValue`), or bare keyword tokens when the cost
+/// arrives in a separate continuation sentence (handled upstream).
+fn parse_graveyard_granted_keyword_phrase(
+    keyword_text: &str,
+    kind: GraveyardGrantedKeywordKind,
+) -> Option<Keyword> {
+    if let Some((keyword, where_x)) = parse_keyword_with_where_x(keyword_text) {
+        return normalize_graveyard_granted_keyword(keyword, where_x, kind);
+    }
+    let keyword = super::oracle_keyword::parse_keyword_from_oracle(keyword_text.trim())?;
+    normalize_graveyard_granted_keyword(keyword, None, kind)
+}
+
+/// CR 702.97a / CR 702.141a: When a graveyard grant binds X to the recipient
+/// card's mana value, lower to `ManaCost::SelfManaValue` so runtime synthesis
+/// concretizes the activated ability's mana sub-cost as generic mana.
+fn binds_recipient_mana_value(where_x: &Option<QuantityRef>) -> bool {
+    matches!(
+        where_x,
+        Some(QuantityRef::SelfManaValue)
+            | Some(QuantityRef::ObjectManaValue {
+                scope: ObjectScope::Recipient,
+            })
+    )
+}
+
+fn graveyard_granted_kind_for_keyword(keyword: &Keyword) -> Option<GraveyardGrantedKeywordKind> {
+    [
+        GraveyardGrantedKeywordKind::Flashback,
+        GraveyardGrantedKeywordKind::Escape,
+        GraveyardGrantedKeywordKind::Mayhem,
+        GraveyardGrantedKeywordKind::Scavenge,
+        GraveyardGrantedKeywordKind::Encore,
+    ]
+    .into_iter()
+    .find(|kind| kind.matches_keyword(keyword))
+}
+
+fn finalize_graveyard_zone_grant_keyword(
+    keyword: Keyword,
+    where_x: Option<QuantityRef>,
+) -> Keyword {
+    let Some(kind) = graveyard_granted_kind_for_keyword(&keyword) else {
+        return keyword;
+    };
+    normalize_graveyard_granted_keyword(keyword.clone(), where_x, kind).unwrap_or(keyword)
+}
+
+fn normalize_graveyard_granted_keyword(
+    keyword: Keyword,
+    where_x: Option<QuantityRef>,
+    kind: GraveyardGrantedKeywordKind,
+) -> Option<Keyword> {
+    if !kind.matches_keyword(&keyword) {
+        return None;
+    }
+    match (keyword, &where_x) {
+        (Keyword::Encore(_), where_x) if binds_recipient_mana_value(where_x) => {
+            Some(Keyword::Encore(ManaCost::SelfManaValue))
+        }
+        (Keyword::Scavenge(_), where_x) if binds_recipient_mana_value(where_x) => {
+            Some(Keyword::Scavenge(ManaCost::SelfManaValue))
+        }
+        (keyword, None) => Some(keyword),
+        _ => None,
+    }
+}
+
+/// CR 702.97 / CR 702.141: Parse a single-sentence graveyard keyword grant whose
+/// keyword (and optional inline "where X is its mana value" binding) lives on
+/// the same line — Sliver Gravemother's "encore {X}, where X is its mana value".
+/// Continuation-sentence grants (Wire Surgeons / Varolz) return `None`.
+pub(crate) fn try_parse_graveyard_keyword_grant_static(line: &str) -> Option<StaticDefinition> {
+    let stripped = strip_reminder_text(line);
+    let lower = stripped.to_lowercase();
+    // Same period boundary as `try_parse_graveyard_keyword_static_with_continuation`
+    // in oracle.rs — if a continuation sentence is present, the inline path must
+    // not parse a bare keyword off the first sentence and drop the cost clause.
+    if super::oracle_nom::bridge::split_once_on_lower(&stripped, &lower, ". ").is_some() {
+        return None;
+    }
+
+    let (turn_condition, grant_prefix) = nom_on_lower(&stripped, &lower, |input| {
+        value(StaticCondition::DuringYourTurn, tag("during your turn, ")).parse(input)
+    })
+    .map_or((None, stripped.as_str()), |(condition, rest)| {
+        (Some(condition), rest)
+    });
+
+    let (affected, kind, keyword_text) = try_parse_graveyard_keyword_grant_clause(grant_prefix)?;
+    let keyword = parse_graveyard_granted_keyword_phrase(&keyword_text, kind)?;
+
+    let mut def = StaticDefinition::continuous()
+        .affected(affected)
+        .modifications(vec![ContinuousModification::AddKeyword { keyword }])
+        .description(line.to_string());
+    if let Some(condition) = turn_condition {
+        def = def.condition(condition);
+    }
+    Some(def)
 }
 
 pub(crate) fn parse_keyword_with_where_x(input: &str) -> Option<(Keyword, Option<QuantityRef>)> {
@@ -76,9 +180,12 @@ pub(crate) fn parse_keyword_with_where_x(input: &str) -> Option<(Keyword, Option
         return Some((keyword, None));
     }
 
-    let (_, qty_text) = preceded(tag::<_, _, VE<'_>>(", where x is "), nom::combinator::rest)
-        .parse(rest)
-        .ok()?;
+    let (_, qty_text) = preceded(
+        tag_no_case::<_, _, VE<'_>>(", where x is "),
+        nom::combinator::rest,
+    )
+    .parse(rest)
+    .ok()?;
     let (_, qty) =
         super::oracle_nom::quantity::parse_quantity_ref_complete(qty_text.trim()).ok()?;
     Some((keyword, Some(qty)))
@@ -374,6 +481,7 @@ pub(crate) fn parse_spells_have_keyword(tp: &TextPair<'_>, text: &str) -> Option
     {
         let (base_filter, rest) = parse_type_phrase(subject);
         if rest.trim().is_empty() && target_filter_is_your_graveyard(&base_filter) {
+            let keyword = finalize_graveyard_zone_grant_keyword(keyword, where_x.clone());
             let mut def = StaticDefinition::continuous()
                 .affected(base_filter)
                 .modifications(vec![ContinuousModification::AddKeyword { keyword }])

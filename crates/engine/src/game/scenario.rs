@@ -1528,6 +1528,9 @@ impl GameRunner {
                 crate::types::game_state::AlternativeCastKeyword::Mutate => {
                     "AlternativeCastChoice(Mutate)"
                 }
+                crate::types::game_state::AlternativeCastKeyword::Prowl => {
+                    "AlternativeCastChoice(Prowl)"
+                }
             },
             WaitingFor::MutateMergeChoice { .. } => "MutateMergeChoice",
             WaitingFor::CipherEncodeChoice { .. } => "CipherEncodeChoice",

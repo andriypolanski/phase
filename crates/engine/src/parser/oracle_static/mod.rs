@@ -140,7 +140,7 @@ pub(crate) use evasion::classify_block_exception;
 pub(crate) use keyword_grant::{
     classify_quoted_inner, parse_chosen_qualifier_subject, parse_continuous_modifications,
     parse_quoted_ability_modifications, split_keyword_list,
-    try_parse_graveyard_keyword_grant_clause,
+    try_parse_graveyard_keyword_grant_clause, try_parse_graveyard_keyword_grant_static,
 };
 pub(crate) use mana_transform::try_parse_retain_unspent_mana_static;
 pub(crate) use restriction::parse_cant_be_activated_exemption_in_text;

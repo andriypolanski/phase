@@ -1436,6 +1436,7 @@ fn detect_dynamic_qty(
         // Replicate "cost equal to its mana cost" — encoded as a dynamic
         // mana-cost reference rather than a fixed cost.
         "SelfManaCost",
+        "SelfManaValue",
         "TargetManaCost",
         // CR 702.20a: "assigns combat damage equal to its toughness
         // rather than its power" — Brontodon class. Encoded as a typed

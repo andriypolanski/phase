@@ -884,7 +884,10 @@ fn finish_pending_cost_or_cast(
     }
 
     if pending.activation_ability_index.is_some()
-        && !matches!(pending.cost, ManaCost::NoCost | ManaCost::SelfManaCost)
+        && !matches!(
+            pending.cost,
+            ManaCost::NoCost | ManaCost::SelfManaCost | ManaCost::SelfManaValue
+        )
     {
         state.pending_cast = Some(Box::new(pending));
         return enter_payment_step(state, player, None, events);
@@ -6296,7 +6299,7 @@ fn auto_tap_mana_sources_inner(
         .unwrap_or_else(|| cost.clone());
 
     let (shards, generic) = match &residual {
-        ManaCost::NoCost | ManaCost::SelfManaCost => return,
+        ManaCost::NoCost | ManaCost::SelfManaCost | ManaCost::SelfManaValue => return,
         ManaCost::Cost { shards, generic } if shards.is_empty() && *generic == 0 => return,
         ManaCost::Cost { shards, generic } => (shards.as_slice(), *generic),
     };

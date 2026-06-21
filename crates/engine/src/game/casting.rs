@@ -96,11 +96,12 @@ fn runtime_granted_graveyard_activated_abilities(
         .into_iter()
         .filter(|keyword| !obj.base_keywords.iter().any(|printed| printed == keyword))
         .filter_map(|keyword| {
-            // CR 702.128a / CR 702.129a: Embalm / Eternalize granted with a
-            // self-cost ("the embalm cost is equal to its mana cost") carry
-            // `ManaCost::SelfManaCost`; concretize it to the card's mana cost
-            // before synthesizing the activated ability (the activated-ability
-            // payment path would otherwise treat SelfManaCost as free).
+            // CR 702.128a / CR 702.129a / CR 702.141a: Embalm / Eternalize / Encore
+            // granted with a self-referential cost ("equal to its mana cost" or
+            // "where X is its mana value") carry `ManaCost::SelfManaCost` or
+            // `ManaCost::SelfManaValue`; concretize before synthesizing the
+            // activated ability (the activated-ability payment path would
+            // otherwise treat those placeholders as free).
             let keyword = super::keywords::resolve_self_cost_graveyard_activated_keyword(
                 state, source_id, &keyword,
             );
@@ -854,6 +855,29 @@ fn an_opponent_lost_life_this_turn(state: &GameState, caster: PlayerId) -> bool 
         .players
         .iter()
         .any(|p| p.id != caster && p.life_lost_this_turn > 0)
+}
+
+/// CR 702.76a: Prowl's gate — whether `player` controlled a creature that dealt
+/// combat damage to a player this turn while having one of `object_id`'s
+/// creature types. The per-turn creature-type ledger
+/// (`creature_types_dealt_combat_damage_this_turn`) is snapshot at damage time.
+/// Single authority shared by the candidate path and the normal-vs-prowl
+/// alternative-cast choice so both agree on legality.
+fn prowl_damage_ledger_satisfied(state: &GameState, player: PlayerId, object_id: ObjectId) -> bool {
+    let Some(obj) = state.objects.get(&object_id) else {
+        return false;
+    };
+    state
+        .creature_types_dealt_combat_damage_this_turn
+        .iter()
+        .any(|(controller, creature_type)| {
+            *controller == player
+                && obj
+                    .card_types
+                    .subtypes
+                    .iter()
+                    .any(|spell_type| spell_type == creature_type)
+        })
 }
 
 fn foretell_cost(obj: &crate::game::game_object::GameObject) -> Option<ManaCost> {
@@ -3244,17 +3268,7 @@ fn casting_variant_candidates(
         && effective_spell_keywords(state, player, object_id)
             .iter()
             .any(|k| matches!(k, Keyword::Prowl(_)))
-        && state
-            .creature_types_dealt_combat_damage_this_turn
-            .iter()
-            .any(|(controller, creature_type)| {
-                *controller == player
-                    && obj
-                        .card_types
-                        .subtypes
-                        .iter()
-                        .any(|spell_type| spell_type == creature_type)
-            })
+        && prowl_damage_ledger_satisfied(state, player, object_id)
     {
         candidates.push(CastingVariant::Prowl);
     }
@@ -4341,9 +4355,10 @@ fn prepare_spell_cast_with_variant_override_inner(
                         generic: tax,
                     };
                 }
-                crate::types::mana::ManaCost::SelfManaCost => {
-                    // SelfManaCost should have been resolved before reaching here;
-                    // treat as no-op for commander tax purposes.
+                crate::types::mana::ManaCost::SelfManaCost
+                | crate::types::mana::ManaCost::SelfManaValue => {
+                    // Self-referential placeholders should have been resolved before
+                    // reaching here; treat as no-op for commander tax purposes.
                 }
             }
         }
@@ -4658,7 +4673,7 @@ pub(super) fn apply_cost_modifiers_to_base(
                         generic: tax,
                     };
                 }
-                ManaCost::SelfManaCost => {}
+                ManaCost::SelfManaCost | ManaCost::SelfManaValue => {}
             }
         }
     }
@@ -5420,7 +5435,7 @@ fn apply_cost_floor_inner(
             ManaCost::NoCost => {
                 *mana_cost = ManaCost::generic(delta);
             }
-            ManaCost::SelfManaCost => {}
+            ManaCost::SelfManaCost | ManaCost::SelfManaValue => {}
         }
     }
 }
@@ -6887,6 +6902,36 @@ pub fn handle_spectacle_cost_choice_with_payment_mode(
     continue_cast_from_prepared(state, player, object_id, payment_mode, events)
 }
 
+/// CR 702.76a: Resolve the player's Prowl cost choice. Mirrors
+/// `handle_spectacle_cost_choice_with_payment_mode` — `Alternative` opts into
+/// `CastingVariant::Prowl` (which substitutes the prowl mana cost), and `Normal`
+/// casts for the printed cost. Prowl is a pure cost substitution (CR 702.76a);
+/// the prowl provenance tag is applied at resolution (stack.rs). The
+/// dealt-combat-damage gate is enforced at offer time, so reaching this handler
+/// means the option was legal.
+pub fn handle_prowl_cost_choice_with_payment_mode(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    _card_id: CardId,
+    decision: crate::types::actions::AlternativeCastDecision,
+    payment_mode: CastPaymentMode,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    use crate::types::actions::AlternativeCastDecision;
+    if matches!(decision, AlternativeCastDecision::Alternative) {
+        let mut prepared = prepare_spell_cast_with_variant_override(
+            state,
+            player,
+            object_id,
+            Some(CastingVariant::Prowl),
+        )?;
+        prepared.payment_mode = payment_mode;
+        return continue_with_prepared(state, player, prepared, events);
+    }
+    continue_cast_from_prepared(state, player, object_id, payment_mode, events)
+}
+
 /// Shared continuation: call prepare_spell_cast and run the standard casting
 /// pipeline (modal → targeting → payment). Extracted so handle_warp_cost_choice
 /// and handle_cast_spell can share the same post-prepare logic.
@@ -8075,6 +8120,63 @@ pub fn handle_cast_spell_with_payment_mode(
                 }
                 if !normal_affordable && spectacle_affordable {
                     return handle_spectacle_cost_choice_with_payment_mode(
+                        state,
+                        player,
+                        object_id,
+                        card_id,
+                        crate::types::actions::AlternativeCastDecision::Alternative,
+                        payment_mode,
+                        events,
+                    );
+                }
+                // Otherwise (normal-only or neither): fall through to normal cast.
+            }
+        }
+    }
+
+    // CR 702.76a + CR 118.9: Prowl — opt-in pure-mana alternative cost from
+    // hand, available only if a creature the caster controlled dealt combat
+    // damage to a player this turn while sharing one of the spell's creature
+    // types. When the gate holds and both the printed and prowl costs are
+    // affordable, present the choice; auto-route when only the prowl cost is
+    // payable. Mirrors the Spectacle opt-in flow — prowl is a pure cost
+    // substitution; its provenance is tagged at resolution (stack.rs) so "if its
+    // prowl cost was paid" intervening-ifs can read it.
+    if let Some(obj) = state.objects.get(&object_id) {
+        if obj.zone == Zone::Hand && prowl_damage_ledger_satisfied(state, player, object_id) {
+            if let Some(prowl_cost) = effective_spell_keywords(state, player, object_id)
+                .into_iter()
+                .find_map(|k| match k {
+                    crate::types::keywords::Keyword::Prowl(cost) => Some(cost),
+                    _ => None,
+                })
+            {
+                // CR 601.2f: affordability and displayed costs reflect active
+                // cost modifiers, applied to both the printed and prowl costs.
+                let normal_cost =
+                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
+                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let prowl_eff =
+                    apply_cost_modifiers_to_base(state, player, object_id, prowl_cost.clone())
+                        .unwrap_or(prowl_cost);
+                let normal_affordable =
+                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
+                let prowl_affordable =
+                    can_pay_cost_after_auto_tap(state, player, object_id, &prowl_eff);
+                if normal_affordable && prowl_affordable {
+                    return Ok(WaitingFor::AlternativeCastChoice {
+                        player,
+                        object_id,
+                        card_id,
+                        payment_mode,
+                        keyword: crate::types::game_state::AlternativeCastKeyword::Prowl,
+                        normal_cost,
+                        alternative_cost: Some(prowl_eff),
+                        alternative_additional_cost: None,
+                    });
+                }
+                if !normal_affordable && prowl_affordable {
+                    return handle_prowl_cost_choice_with_payment_mode(
                         state,
                         player,
                         object_id,
@@ -9656,7 +9758,7 @@ fn reduce_harmonize_cost_for_creature_power(cost: &ManaCost, power: u32) -> Mana
             shards: shards.clone(),
             generic: generic.saturating_sub(power),
         },
-        ManaCost::NoCost | ManaCost::SelfManaCost => cost.clone(),
+        ManaCost::NoCost | ManaCost::SelfManaCost | ManaCost::SelfManaValue => cost.clone(),
     }
 }
 
@@ -10311,9 +10413,9 @@ fn can_feasibly_pay_mana_cost_without_x(
     );
 
     let (residual_shards, residual_generic) = match &residual {
-        crate::types::mana::ManaCost::NoCost | crate::types::mana::ManaCost::SelfManaCost => {
-            return true
-        }
+        crate::types::mana::ManaCost::NoCost
+        | crate::types::mana::ManaCost::SelfManaCost
+        | crate::types::mana::ManaCost::SelfManaValue => return true,
         crate::types::mana::ManaCost::Cost { shards, generic } => (shards, *generic),
     };
 
@@ -24173,6 +24275,141 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, AbilityCost::Mana { cost } if *cost == card_cost)),
             "embalm mana sub-cost must equal the card's mana cost, got {costs:?}"
+        );
+    }
+
+    /// CR 702.141a + CR 604.1: Encore granted with `SelfManaValue` (Sliver
+    /// Gravemother class) must synthesize a graveyard activated ability whose
+    /// mana sub-cost equals the card's mana value as generic mana.
+    #[test]
+    fn granted_self_mana_value_encore_surfaces_graveyard_ability_at_mana_value() {
+        let mut state = setup_game_at_main_phase();
+
+        let grantor = create_object(
+            &mut state,
+            CardId(9500),
+            PlayerId(0),
+            "Sliver Gravemother".to_string(),
+            Zone::Battlefield,
+        );
+        let card_cost = ManaCost::Cost {
+            generic: 2,
+            shards: vec![ManaCostShard::Red, ManaCostShard::Green],
+        };
+        let expected_encore_cost = ManaCost::generic(4);
+        let creature = create_object(
+            &mut state,
+            CardId(9501),
+            PlayerId(0),
+            "Graveyard Sliver".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&creature).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Sliver".into());
+            obj.base_card_types = obj.card_types.clone();
+            obj.mana_cost = card_cost.clone();
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+        }
+
+        state.add_transient_continuous_effect(
+            grantor,
+            PlayerId(0),
+            crate::types::ability::Duration::UntilEndOfTurn,
+            TargetFilter::SpecificObject { id: creature },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Encore(ManaCost::SelfManaValue),
+            }],
+            None,
+        );
+
+        let abilities = activated_ability_definitions(&state, creature);
+        let (_, encore) = abilities
+            .iter()
+            .find(|(_, a)| matches!(&*a.effect, Effect::Encore))
+            .expect("granted encore must surface a graveyard activated ability");
+        assert_eq!(
+            encore.activation_zone,
+            Some(Zone::Graveyard),
+            "encore ability must function only from the graveyard"
+        );
+        let Some(AbilityCost::Composite { costs }) = &encore.cost else {
+            panic!("encore cost must be a Composite, got {:?}", encore.cost);
+        };
+        assert!(
+            costs
+                .iter()
+                .any(|c| matches!(c, AbilityCost::Mana { cost } if *cost == expected_encore_cost)),
+            "encore mana sub-cost must equal the card's mana value, got {costs:?}"
+        );
+    }
+
+    /// CR 702.141a + CR 604.1: Encore granted with `SelfManaCost` (Wire Surgeons
+    /// class) must synthesize a graveyard activated ability whose mana sub-cost
+    /// equals the card's own mana cost — not a free self-referential placeholder.
+    #[test]
+    fn granted_self_cost_encore_surfaces_graveyard_ability_at_card_mana_cost() {
+        let mut state = setup_game_at_main_phase();
+
+        let grantor = create_object(
+            &mut state,
+            CardId(9500),
+            PlayerId(0),
+            "Wire Surgeons".to_string(),
+            Zone::Battlefield,
+        );
+        let card_cost = ManaCost::Cost {
+            generic: 2,
+            shards: vec![ManaCostShard::Red, ManaCostShard::Green],
+        };
+        let creature = create_object(
+            &mut state,
+            CardId(9501),
+            PlayerId(0),
+            "Graveyard Artifact Creature".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&creature).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Sliver".into());
+            obj.base_card_types = obj.card_types.clone();
+            obj.mana_cost = card_cost.clone();
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+        }
+
+        state.add_transient_continuous_effect(
+            grantor,
+            PlayerId(0),
+            crate::types::ability::Duration::UntilEndOfTurn,
+            TargetFilter::SpecificObject { id: creature },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Encore(ManaCost::SelfManaCost),
+            }],
+            None,
+        );
+
+        let abilities = activated_ability_definitions(&state, creature);
+        let (_, encore) = abilities
+            .iter()
+            .find(|(_, a)| matches!(&*a.effect, Effect::Encore))
+            .expect("granted encore must surface a graveyard activated ability");
+        assert_eq!(
+            encore.activation_zone,
+            Some(Zone::Graveyard),
+            "encore ability must function only from the graveyard"
+        );
+        let Some(AbilityCost::Composite { costs }) = &encore.cost else {
+            panic!("encore cost must be a Composite, got {:?}", encore.cost);
+        };
+        assert!(
+            costs
+                .iter()
+                .any(|c| matches!(c, AbilityCost::Mana { cost } if *cost == card_cost)),
+            "encore mana sub-cost must equal the card's mana cost, got {costs:?}"
         );
     }
 
