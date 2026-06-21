@@ -91,7 +91,7 @@ pub fn resolve(
         cast_transformed,
         alt_ability_cost,
         constraint,
-        duration,
+        _duration,
         driver,
     ) = match &ability.effect {
         Effect::CastFromZone {
@@ -253,25 +253,7 @@ pub fn resolve(
         && target_ids.len() == 1
         && target_is_in_other_players_graveyard(state, target_ids[0], ability.controller);
 
-    // CR 702.62a + CR 608.2g: Suspend's last-counter free cast of the suspended
-    // card itself must happen during resolution, not via a lingering permission
-    // the controller cannot act on at upkeep (Search for Tomorrow, issue #3271).
-    // Structural fallback for card-data that predates `CastFromZoneDriver` (issue
-    // #1520). Rebound (CR 702.88a) shares SelfRef + free-from-exile but carries
-    // `duration: Some(UntilEndOfTurn)` and must remain on the lingering path.
-    let suspend_last_counter_free_cast = without_paying
-        && alt_ability_cost.is_none()
-        && target_ids.len() == 1
-        && suspend_last_counter_self_free_cast(
-            state,
-            target_ids[0],
-            ability.controller,
-            ability.source_id,
-            target_filter,
-            &duration,
-        );
-
-    if driver_free_cast || foreign_graveyard_free_cast || suspend_last_counter_free_cast {
+    if driver_free_cast || foreign_graveyard_free_cast {
         return cast_single_target_during_resolution(
             state,
             ability,
@@ -306,32 +288,6 @@ fn target_is_in_other_players_graveyard(
         .objects
         .get(&card)
         .is_some_and(|obj| obj.zone == Zone::Graveyard && obj.owner != controller)
-}
-
-/// CR 702.62a + CR 608.2g: True when `card` is the suspended source object in
-/// its controller's exile — the suspend last-counter free-cast shape. Used as a
-/// structural fallback when `CastFromZoneDriver` was not serialized (issue
-/// #1520 / #3271). Rebound's upkeep recast is excluded via `duration`.
-fn suspend_last_counter_self_free_cast(
-    state: &GameState,
-    card: ObjectId,
-    controller: crate::types::player::PlayerId,
-    source_id: ObjectId,
-    target_filter: &TargetFilter,
-    duration: &Option<Duration>,
-) -> bool {
-    duration.is_none()
-        && card == source_id
-        && matches!(target_filter, TargetFilter::SelfRef)
-        && state.objects.get(&card).is_some_and(|obj| {
-            obj.zone == Zone::Exile
-                && obj.owner == controller
-                && crate::game::keywords::object_has_effective_keyword_kind(
-                    state,
-                    card,
-                    crate::types::keywords::KeywordKind::Suspend,
-                )
-        })
 }
 
 /// CR 608.2g + CR 601.2a: After a resolution-time hand pick for a free
@@ -867,61 +823,6 @@ mod tests {
         assert!(
             state.players.iter().all(|p| p.mana_pool.total() == 0),
             "the free cast must not require or consume mana"
-        );
-    }
-
-    /// Issue #3271 — card-data that still carries the default
-    /// `LingeringPermission` driver (pre-`CastFromZoneDriver` export) must still
-    /// cast suspend's last-counter free cast during resolution via the
-    /// structural SelfRef + Suspend-in-exile fallback.
-    #[test]
-    fn suspend_last_counter_lingering_driver_still_casts_during_resolution() {
-        use crate::types::keywords::Keyword;
-        use crate::types::mana::ManaCost as MC;
-
-        let mut state = GameState::new_two_player(42);
-        let suspended = create_object(
-            &mut state,
-            CardId(7002),
-            PlayerId(0),
-            "Search for Tomorrow".to_string(),
-            Zone::Exile,
-        );
-        {
-            let obj = state.objects.get_mut(&suspended).unwrap();
-            obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.base_card_types = obj.card_types.clone();
-            obj.mana_cost = MC::generic(2);
-            obj.keywords.push(Keyword::Suspend {
-                count: 0,
-                cost: MC::zero(),
-            });
-            obj.base_keywords = obj.keywords.clone();
-        }
-
-        let cast_ability = ResolvedAbility::new(
-            Effect::CastFromZone {
-                target: TargetFilter::SelfRef,
-                without_paying_mana_cost: true,
-                mode: CardPlayMode::Cast,
-                cast_transformed: false,
-                alt_ability_cost: None,
-                constraint: None,
-                duration: None,
-                driver: CastFromZoneDriver::LingeringPermission,
-            },
-            vec![TargetRef::Object(suspended)],
-            suspended,
-            PlayerId(0),
-        );
-
-        let mut events = Vec::new();
-        resolve(&mut state, &cast_ability, &mut events).unwrap();
-
-        assert_eq!(state.stack.len(), 1);
-        assert_eq!(
-            state.objects.get(&suspended).map(|o| o.zone),
-            Some(Zone::Stack)
         );
     }
 
