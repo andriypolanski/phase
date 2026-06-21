@@ -2357,6 +2357,12 @@ pub enum FilterProp {
     Untapped,
     /// CR 702.171b: Matches permanents with the saddled designation.
     IsSaddled,
+    /// CR 702.171c: Matches a creature that saddled the filter source this turn
+    /// (i.e. was tapped to pay the source's saddle cost — recorded in the
+    /// source's `saddled_by` and cleared at end of turn). Source-relative sibling
+    /// of `BlockingSource`; used by "choose a creature that saddled it this turn"
+    /// (Calamity, Galloping Inferno).
+    SaddledSource,
     /// CR 310.8a + CR 310.8e: Matches battles whose protector satisfies
     /// `controller` relative to the ability source ("each battle they protect").
     ProtectorMatches {
@@ -3308,6 +3314,16 @@ pub enum TargetFilter {
     TriggeringPlayer,
     /// CR 603.7c: Resolves to the source object of the triggering event.
     TriggeringSource,
+    /// CR 603.7c + CR 109.4 + CR 110.2: Resolves to the *controller* of the
+    /// triggering event's source object — the player-level counterpart of
+    /// `TriggeringSource`, mirroring how `TriggeringSpellController` is the
+    /// controller of `StackSpell`. Used by "the attacking player" / "its
+    /// controller" anaphors on `DamageReceived` triggers where the wanted
+    /// player is the controller of the creature that dealt combat damage, not
+    /// the damaged player (`TriggeringPlayer`). Powers Contested Game Ball
+    /// ("Whenever you're dealt combat damage, the attacking player gains
+    /// control of this artifact and untaps it.").
+    TriggeringSourceController,
     /// Resolves to the same target(s) as the parent ability.
     /// Used for anaphoric "it"/"that creature"/"that player" in compound effects
     /// (e.g., "tap target creature and put a stun counter on it").
@@ -12247,6 +12263,8 @@ pub enum AbilityTag {
     Backup,
     /// CR 602.5b + CR 602.1: This ability originated from a Power-up keyword definition.
     PowerUp,
+    /// CR 702.6a: This ability originated from an Equip keyword definition.
+    Equip,
 }
 
 impl AbilityTag {
@@ -12263,6 +12281,7 @@ impl AbilityTag {
             AbilityTag::Cycling => "cycling",
             AbilityTag::Backup => "backup",
             AbilityTag::PowerUp => "power-up",
+            AbilityTag::Equip => "equip",
         }
     }
 }
@@ -12859,11 +12878,13 @@ impl SubAbilityLink {
 /// `repeat_for` (a fixed `QuantityExpr` count) — this predicate decides
 /// per-iteration whether to re-follow the resolving ability's instructions.
 ///
-/// Currently a single-variant enum: only the controller-decision form ("you
-/// may repeat this process any number of times") is modeled. The game-state
-/// predicate form ("if you do, repeat this process" — Primal Surge) is a
-/// separately-tracked deferred unit; it will add a `While(...)` variant once
-/// the optional-put pause semantics it depends on are designed.
+/// Three forms are modeled: the controller-decision form ("you may repeat this
+/// process any number of times", `ControllerChoice`), the stop-predicate form
+/// ("repeat this process until …", `UntilStopConditions`, Tainted Pact), and
+/// the game-state-predicate form ("[if condition,] repeat this process
+/// [once]", `WhileCondition`). The optional-put pause semantics that the
+/// `WhileCondition` loop depends on are shared with `UntilStopConditions` via
+/// the `pending_repeat_until` resume path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum RepeatContinuation {
@@ -12879,6 +12900,22 @@ pub enum RepeatContinuation {
     UntilStopConditions {
         stop_on_put_to_hand: bool,
         stop_on_duplicate_exiled_names: bool,
+    },
+    /// CR 608.2c: "[if <condition>,] repeat this process [once]" — after each
+    /// iteration fully resolves, the engine re-evaluates `condition` against the
+    /// just-resolved game state (the same `evaluate_condition` path used by
+    /// sub-ability gates) and auto-repeats while it holds. `condition` references
+    /// the iteration's freshly-resolved state (e.g. `RevealedHasCardType` reads
+    /// the card moved this iteration via `last_zone_changed_ids`; `QuantityCheck`
+    /// reads current battlefield counts). `max_iterations` caps the number of
+    /// *additional* iterations beyond the first ("once" → `Some(1)`, bare →
+    /// `None`). Sin, Spira's Punishment ("if the exiled card is a land card,
+    /// repeat this process"); Claim Jumper ("if an opponent controls more lands
+    /// than you, repeat this process once").
+    WhileCondition {
+        condition: Box<AbilityCondition>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_iterations: Option<u32>,
     },
 }
 
@@ -13369,6 +13406,11 @@ pub enum AbilityCondition {
     /// CR 500.8 + CR 506.1 + CR 608.2c: "if it's the first combat phase of the turn".
     /// Gates a follow-up effect on whether this is the first combat phase started this turn.
     FirstCombatPhaseOfTurn,
+    /// CR 500.8 + CR 513.1 + CR 608.2c: "if it's the first end step of the turn".
+    /// Gates a follow-up effect on whether this is the first end step started this
+    /// turn (Y'shtola Rhul's additional-end-step loop guard). End-step sibling of
+    /// `FirstCombatPhaseOfTurn`; both read a per-turn phase-occurrence counter.
+    FirstEndStepOfTurn,
     /// CR 608.2c: "If a [noun] was [verb]ed this way" — sub_ability executes only if
     /// the parent effect produced a zone change involving an object matching the filter.
     /// Evaluated by checking `state.last_zone_changed_ids` against the filter.

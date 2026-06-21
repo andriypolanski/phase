@@ -48,6 +48,20 @@ pub fn resolve(
                     | ContinuousModification::AddDynamicKeyword { value, .. } => {
                         *value = snapshot_resolution_context_quantity(value, events);
                     }
+                    // CR 611.2d: A resolution-created continuous effect that
+                    // grants a `ModifyCost` static keyed to a variable X (Rowan,
+                    // Scion of War / Will, Scion of Peace: "cost {X} less … where
+                    // X is the amount of life you lost/gained this turn") fixes X
+                    // once, here, on resolution. Without this, the granted
+                    // static's `dynamic_count` would be re-resolved at every
+                    // later cast (casting.rs::collect_self_cost_modifiers),
+                    // letting same-turn life changes retroactively move the
+                    // already-locked reduction. Snapshot the dynamic count into a
+                    // concrete `amount` so the grant behaves as a fixed-X
+                    // continuous effect for the rest of the turn (CR 611.2c).
+                    ContinuousModification::GrantStaticAbility { definition } => {
+                        snapshot_granted_cost_modifier(state, ability, definition);
+                    }
                     _ => {}
                 }
             }
@@ -610,6 +624,45 @@ fn snapshot_resolution_context_quantity(expr: &QuantityExpr, events: &[GameEvent
             right: Box::new(snapshot_resolution_context_quantity(right, events)),
         },
     }
+}
+
+/// CR 611.2d + CR 608.2h: Fix a granted cost-modification static's variable X
+/// once, at resolution.
+///
+/// When a resolving ability creates a turn-duration continuous effect that
+/// grants a [`StaticMode::ModifyCost`] keyed to a dynamic game-state quantity
+/// (Rowan, Scion of War / Will, Scion of Peace: "Spells you cast this turn …
+/// cost {X} less … where X is the amount of life you lost/gained this turn"),
+/// CR 611.2d requires X to be determined exactly once, on resolution — not
+/// re-read at each later cast. The parser lowers X as
+/// `ModifyCost { amount, dynamic_count: Some(LifeLostThisTurn/…), .. }`, where
+/// the effective reduction is `amount * resolve_quantity(dynamic_count)`
+/// (casting.rs::collect_self_cost_modifiers). We resolve that multiplier here
+/// and fold it into a concrete `amount` (via [`ManaCost::scaled`], matching the
+/// generic-and-shard scaling `apply_cost_mod_to_mana` would have applied), then
+/// clear `dynamic_count` so the grant is a fixed-X continuous effect for the
+/// rest of the turn (CR 611.2c). Statics with no `dynamic_count` are untouched.
+fn snapshot_granted_cost_modifier(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    definition: &mut StaticDefinition,
+) {
+    use crate::types::statics::StaticMode;
+
+    let StaticMode::ModifyCost {
+        amount,
+        dynamic_count,
+        ..
+    } = &mut definition.mode
+    else {
+        return;
+    };
+    let Some(qty) = dynamic_count.take() else {
+        return;
+    };
+    let multiplier =
+        resolve_quantity_with_targets(state, &QuantityExpr::Ref { qty }, ability).max(0) as u32;
+    *amount = amount.scaled(multiplier);
 }
 
 #[cfg(test)]
@@ -2774,6 +2827,143 @@ mod tests {
         assert!(
             state.transient_continuous_effects.is_empty(),
             "no keyword present on any creature → zero TCEs registered"
+        );
+    }
+
+    /// CR 205.3m + CR 702.11a + CR 702.12a (Selfless Safewright): the grant
+    /// "Other permanents you control of that type gain hexproof and
+    /// indestructible until end of turn" — parsed from real Oracle text — must
+    /// route "of that type" to `FilterProp::IsChosenCreatureType`, bind only to
+    /// your other permanents whose subtypes include the source's chosen creature
+    /// type, and grant both keywords through `evaluate_layers`.
+    ///
+    /// REVERT-PROOF: reverting the "of that type" suffix arm in
+    /// `oracle_target.rs` leaves the grant clause `Effect::Unimplemented` (the
+    /// `match` below panics — no `GenericEffect`), and even reaching resolution,
+    /// the non-matching Goblin and the source itself must NOT gain the keywords.
+    #[test]
+    fn selfless_safewright_grants_to_chosen_type_permanents_only() {
+        use crate::game::layers::evaluate_layers;
+        use crate::types::ability::ChosenAttribute;
+
+        let mut state = GameState::new_two_player(42);
+
+        // Source permanent that "chose Elf".
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Selfless Safewright".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Elf".to_string());
+            obj.chosen_attributes
+                .push(ChosenAttribute::CreatureType("Elf".to_string()));
+        }
+
+        // Another Elf you control — must be granted.
+        let elf = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Llanowar Elves".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&elf).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Elf".to_string());
+        }
+
+        // A Goblin you control — wrong type, must NOT be granted.
+        let goblin = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Goblin".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&goblin).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Goblin".to_string());
+        }
+
+        // An opponent's Elf — wrong controller, must NOT be granted.
+        let opp_elf = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(1),
+            "Enemy Elf".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&opp_elf).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Elf".to_string());
+        }
+
+        // Parse the grant clause through the REAL effect parser.
+        let mut effect = crate::parser::oracle_effect::parse_effect(
+            "Other permanents you control of that type gain hexproof and indestructible until end of turn",
+        );
+        match &mut effect {
+            Effect::GenericEffect {
+                static_abilities, ..
+            } => {
+                let modifications = &static_abilities
+                    .first()
+                    .expect("grant must produce a static")
+                    .modifications;
+                assert!(
+                    modifications.contains(&ContinuousModification::AddKeyword {
+                        keyword: Keyword::Hexproof
+                    }) && modifications.contains(&ContinuousModification::AddKeyword {
+                        keyword: Keyword::Indestructible
+                    }),
+                    "grant must add hexproof and indestructible, got {modifications:?}"
+                );
+            }
+            other => panic!("expected GenericEffect from grant parser, got {other:?}"),
+        }
+
+        let ability = ResolvedAbility::new(effect, vec![], source, PlayerId(0))
+            .duration(Duration::UntilEndOfTurn);
+        resolve(&mut state, &ability, &mut Vec::new()).unwrap();
+        evaluate_layers(&mut state);
+
+        let elf_obj = state.objects.get(&elf).unwrap();
+        assert!(
+            elf_obj.has_keyword(&Keyword::Hexproof)
+                && elf_obj.has_keyword(&Keyword::Indestructible),
+            "another Elf you control must gain both keywords"
+        );
+        assert!(
+            !state
+                .objects
+                .get(&source)
+                .unwrap()
+                .has_keyword(&Keyword::Hexproof),
+            "the source must be excluded by the 'other' (Another) constraint"
+        );
+        assert!(
+            !state
+                .objects
+                .get(&goblin)
+                .unwrap()
+                .has_keyword(&Keyword::Hexproof),
+            "a Goblin must NOT gain the keywords (wrong chosen type)"
+        );
+        assert!(
+            !state
+                .objects
+                .get(&opp_elf)
+                .unwrap()
+                .has_keyword(&Keyword::Hexproof),
+            "an opponent's Elf must NOT gain the keywords (wrong controller)"
         );
     }
 }

@@ -267,17 +267,35 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
         let rest = rest.trim().trim_end_matches(['.', '"']).trim();
         let rest_lower = rest.to_lowercase();
 
-        // CR 603.7c + CR 106.3: "add one mana of any type that land produced"
-        // (Vorinclex, Voice of Hunger; Dictate of Karametra). Only meaningful
-        // inside a TapsForMana trigger context; resolves the mana color from
-        // the triggering `ManaAdded` event at resolution time.
+        // CR 603.7c + CR 106.3: "add one mana of any type that <source> produced"
+        // (Vorinclex, Voice of Hunger: "land"; Roxanne, Starfall Savant: "Oasis or
+        // artifact token"). The trailing `<source>` is an anaphor to the trigger
+        // subject; only meaningful inside a TapsForMana trigger context, where the
+        // mana color is read from the triggering `ManaAdded` event at resolution.
         if let Some((_, _)) = nom_on_lower(rest, &rest_lower, |i| {
             preceded(
                 tag("mana of any type that "),
-                alt((
-                    value((), tag("land produced")),
-                    value((), tag("permanent produced")),
-                )),
+                terminated(
+                    alt((
+                        value((), tag("land")),
+                        value((), tag("permanent")),
+                        // CR 603.7c + CR 106.3: Roxanne, Starfall Savant — the
+                        // anaphor names the tapped mana source, which is an Oasis
+                        // OR an artifact token ("that Oasis or artifact token
+                        // produced"). Same resolution: the added mana's type is
+                        // read from the triggering ManaAdded event, so the source
+                        // subtype is immaterial to the runtime. Composed as
+                        // "<subtype>[ or <subtype>]" so any future composite
+                        // source list is one more `tag` arm, not a flat
+                        // permutation.
+                        value(
+                            (),
+                            (tag("oasis"), opt((tag(" or "), tag("artifact token")))),
+                        ),
+                        value((), tag("artifact token")),
+                    )),
+                    tag(" produced"),
+                ),
             )
             .parse(i)
         }) {
@@ -1350,13 +1368,35 @@ fn parse_activation_source_quality(input: &str) -> OracleResult<'_, String> {
     Ok((rest, normalize_restricted_source_phrase(phrase.trim())))
 }
 
-fn parse_activation_tail_after_or(input: &str) -> OracleResult<'_, Option<String>> {
+/// The qualifier parsed from an "activate …" tail. Distinguishes between
+/// a type-scoped qualifier ("abilities of X") and a keyword-tagged qualifier
+/// ("equip abilities").
+enum ActivationQualifier {
+    /// "abilities of [source quality]" — type-scoped.
+    OfType(String),
+    /// "equip abilities" / "an equip ability" — keyword-tagged.
+    Tagged(AbilityTag),
+}
+
+fn parse_activation_tail_after_or(input: &str) -> OracleResult<'_, Option<ActivationQualifier>> {
     let (input, _) = opt(tag("to ")).parse(input)?;
     let (input, _) = tag("activate ").parse(input)?;
+    // CR 702.6: "equip abilities" / "an equip ability" — keyword-qualified
+    // activation forms that refer to equip abilities on Equipment permanents.
+    // Recognize before the generic "an ability" / "abilities" alternatives so
+    // the keyword qualifier is not swallowed by the broader match.
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, OracleError<'_>>("equip abilities"),
+        tag("an equip ability"),
+    ))
+    .parse(input)
+    {
+        return Ok((rest, Some(ActivationQualifier::Tagged(AbilityTag::Equip))));
+    }
     let (input, _) = alt((tag("an ability"), tag("abilities"))).parse(input)?;
     let (input, source_quality) =
         opt(preceded(tag(" of "), parse_activation_source_quality)).parse(input)?;
-    Ok((input, source_quality))
+    Ok((input, source_quality.map(ActivationQualifier::OfType)))
 }
 
 /// The ability-activation tail of a "cast [X] spell …" spend restriction.
@@ -1367,6 +1407,10 @@ enum ActivationTail {
     Any,
     /// "… or activate abilities of [source quality]" — abilities of that type.
     OfType(String),
+    /// "… or activate equip abilities" — only equip-tagged abilities.
+    /// CR 702.6a: Lowered to `ActivateTagged(AbilityTag::Equip)` so the
+    /// restriction is keyword-precise rather than source-type-permissive.
+    Tagged(AbilityTag),
 }
 
 fn split_restricted_spell_and_activation(rest: &str) -> (&str, ActivationTail) {
@@ -1386,11 +1430,13 @@ fn split_restricted_spell_and_activation(rest: &str) -> (&str, ActivationTail) {
     )))
     .parse(rest)
     .map(|(_, (spell_part, source_quality))| (spell_part.trim(), source_quality));
-    if let Ok((spell_part, source_quality)) = activation_tail {
-        return (
-            spell_part,
-            source_quality.map_or(ActivationTail::Any, ActivationTail::OfType),
-        );
+    if let Ok((spell_part, qualifier)) = activation_tail {
+        let tail = match qualifier {
+            None => ActivationTail::Any,
+            Some(ActivationQualifier::OfType(s)) => ActivationTail::OfType(s),
+            Some(ActivationQualifier::Tagged(t)) => ActivationTail::Tagged(t),
+        };
+        return (spell_part, tail);
     }
 
     (rest.trim(), ActivationTail::None)
@@ -1604,6 +1650,13 @@ fn parse_single_cast_clause(rest: &str) -> Option<ManaSpendRestriction> {
             spell_type: type_phrase,
             ability: AbilityActivationScope::Any,
         }),
+        // CR 702.6a: "cast Equipment spells or activate equip abilities" —
+        // disjunction of a spell-type restriction and a keyword-tagged
+        // activation restriction. Precise: only equip-tagged abilities qualify.
+        ActivationTail::Tagged(ability_tag) => Some(ManaSpendRestriction::Any(vec![
+            ManaSpendRestriction::SpellType(type_phrase),
+            ManaSpendRestriction::ActivateTagged(ability_tag),
+        ])),
         ActivationTail::None => Some(ManaSpendRestriction::SpellType(type_phrase)),
     }
 }
@@ -1656,10 +1709,10 @@ fn parse_disjunctive_clause(clause: &str) -> Option<ManaSpendRestriction> {
     })
     .is_some()
     {
-        let (_, source_quality) = all_consuming(parse_activation_tail_after_or)
+        let (_, qualifier) = all_consuming(parse_activation_tail_after_or)
             .parse(clause_lower.as_str())
             .ok()?;
-        return Some(match source_quality {
+        return Some(match qualifier {
             // CR 106.6: "activate an ability of an X source" — abilities of
             // permanents of type X. There is no pure "activate abilities of type
             // X" `ManaRestriction`; the closest self-evaluable reading is
@@ -1667,10 +1720,16 @@ fn parse_disjunctive_clause(clause: &str) -> Option<ManaSpendRestriction> {
             // half is exactly "abilities of type X" (and whose spell half also
             // allows X spells — harmless inside a disjunction that already lists
             // the matching X cast clause, e.g. Brotherhood Headquarters).
-            Some(quality) => ManaSpendRestriction::SpellTypeOrAbilityActivation {
-                spell_type: quality,
-                ability: AbilityActivationScope::OfSpellType,
-            },
+            Some(ActivationQualifier::OfType(quality)) => {
+                ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                    spell_type: quality,
+                    ability: AbilityActivationScope::OfSpellType,
+                }
+            }
+            // CR 702.6a: "activate equip abilities" — keyword-tagged.
+            Some(ActivationQualifier::Tagged(ability_tag)) => {
+                ManaSpendRestriction::ActivateTagged(ability_tag)
+            }
             // CR 106.6: "to activate an ability" with no qualifier — any ability.
             None => ManaSpendRestriction::ActivateOnly,
         });
@@ -2423,6 +2482,33 @@ mod tests {
                 ..
             }) => Some(options),
             _ => None,
+        }
+    }
+
+    /// CR 603.7c + CR 106.3: Roxanne, Starfall Savant — the mana-echo anaphor
+    /// names the tapped source, which is an Oasis OR an artifact token. The actual
+    /// printed text is "add one mana of any type that Oasis or artifact token
+    /// produced"; the bare "artifact token produced" and "Oasis produced" forms
+    /// must also resolve. All reuse the same `TriggerEventManaType` production as
+    /// the land/permanent forms (runtime covered by the land tests). Reverting the
+    /// composite arm makes the real Roxanne text return None (a parser gap).
+    #[test]
+    fn roxanne_mana_echo_source_variants_parse_as_trigger_event_mana_type() {
+        for echo in [
+            "add one mana of any type that Oasis or artifact token produced",
+            "add one mana of any type that artifact token produced",
+            "add one mana of any type that Oasis produced",
+        ] {
+            assert!(
+                matches!(
+                    try_parse_add_mana_effect(echo),
+                    Some(Effect::Mana {
+                        produced: ManaProduction::TriggerEventManaType,
+                        ..
+                    })
+                ),
+                "mana-echo must reuse TriggerEventManaType for {echo:?}"
+            );
         }
     }
 
@@ -3566,14 +3652,6 @@ mod tests {
             .map(|(r, _)| r),
             None,
         );
-        // Freya Crescent: Equipment-spell or activate-an-equip-ability.
-        assert_eq!(
-            parse_mana_spend_restriction(
-                "spend this mana only to cast an equipment spell or activate an equip ability",
-            )
-            .map(|(r, _)| r),
-            None,
-        );
         // Tin Street Gossip: face-down spells or turn creatures face up.
         assert_eq!(
             parse_mana_spend_restriction(
@@ -3588,5 +3666,43 @@ mod tests {
                 .map(|(r, _)| r),
             None,
         );
+    }
+
+    // CR 702.6a: Ronin, Shadow Stalker — plural "equip abilities" in the
+    // activation tail maps to `Any([SpellType("Equipment"), ActivateTagged(Equip)])`.
+    // Keyword-precise: only equip-tagged abilities qualify, not arbitrary
+    // activated abilities on Equipment permanents.
+    #[test]
+    fn mana_spend_restriction_equip_abilities_plural() {
+        let (restriction, grants) = parse_mana_spend_restriction(
+            "spend this mana only to cast equipment spells or activate equip abilities",
+        )
+        .expect("equip abilities plural must parse");
+        assert_eq!(
+            restriction,
+            ManaSpendRestriction::Any(vec![
+                ManaSpendRestriction::SpellType("Equipment".to_string()),
+                ManaSpendRestriction::ActivateTagged(AbilityTag::Equip),
+            ])
+        );
+        assert!(grants.is_empty());
+    }
+
+    // CR 702.6a: Freya Crescent — singular "an equip ability" in the activation
+    // tail maps to the same `Any([SpellType("Equipment"), ActivateTagged(Equip)])`.
+    #[test]
+    fn mana_spend_restriction_equip_ability_singular() {
+        let (restriction, grants) = parse_mana_spend_restriction(
+            "spend this mana only to cast an equipment spell or activate an equip ability",
+        )
+        .expect("equip ability singular must parse");
+        assert_eq!(
+            restriction,
+            ManaSpendRestriction::Any(vec![
+                ManaSpendRestriction::SpellType("Equipment".to_string()),
+                ManaSpendRestriction::ActivateTagged(AbilityTag::Equip),
+            ])
+        );
+        assert!(grants.is_empty());
     }
 }

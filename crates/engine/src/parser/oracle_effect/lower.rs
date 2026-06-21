@@ -1669,24 +1669,31 @@ fn rewire_cross_sentence_token_counter_attach(def: &mut AbilityDefinition) {
 /// it") — the bare-"it" host anaphor must target `LastCreated`, not
 /// `ParentTarget` (the token-creating effect has no parent target slot).
 fn rewire_token_attach_sibling(def: &mut AbilityDefinition) {
-    if !matches!(&*def.effect, Effect::Token { .. }) {
-        return;
-    }
-    let Some(attach_sub) = def.sub_ability.as_mut() else {
-        return;
-    };
-    // Token → PutCounter → Attach is owned by `rewire_cross_sentence_token_counter_attach`.
-    if matches!(&*attach_sub.effect, Effect::PutCounter { .. }) {
-        return;
-    }
-    let Effect::Attach { target, .. } = attach_sub.effect.as_mut() else {
-        return;
-    };
-    if matches!(
-        target,
-        TargetFilter::ParentTarget | TargetFilter::TriggeringSource
-    ) {
-        *target = TargetFilter::LastCreated;
+    // Walk the whole sub-ability chain: the token + bare-Attach pair is not
+    // always at the root. Field-Tested Frying Pan ("create a Food token, then
+    // create a 1/1 white Halfling creature token and attach this Equipment to
+    // it") nests the Attach under the *second* token, so a root-only check would
+    // miss it and leave "it" bound to ParentTarget/TriggeringSource (which has no
+    // referent here) instead of the just-created token.
+    let mut node: Option<&mut AbilityDefinition> = Some(def);
+    while let Some(current) = node {
+        if matches!(&*current.effect, Effect::Token { .. }) {
+            if let Some(sub) = current.sub_ability.as_mut() {
+                // Token → PutCounter → Attach is owned by
+                // `rewire_cross_sentence_token_counter_attach`.
+                if !matches!(&*sub.effect, Effect::PutCounter { .. }) {
+                    if let Effect::Attach { target, .. } = sub.effect.as_mut() {
+                        if matches!(
+                            target,
+                            TargetFilter::ParentTarget | TargetFilter::TriggeringSource
+                        ) {
+                            *target = TargetFilter::LastCreated;
+                        }
+                    }
+                }
+            }
+        }
+        node = current.sub_ability.as_deref_mut();
     }
 }
 
@@ -3414,6 +3421,17 @@ pub(super) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                 },
                 tag("at this turn's next end of combat, "),
             ),
+            // CR 511.2 + CR 603.7a: bare "at end of combat, …" prefix — the
+            // companion of the existing suffix arm in `strip_temporal_suffix`.
+            // An attack/combat trigger whose effect body is deferred to the
+            // end-of-combat step (Fortune, Loyal Steed: "Whenever Fortune
+            // attacks while saddled, at end of combat, exile it and …").
+            value(
+                DelayedTriggerCondition::AtNextPhase {
+                    phase: Phase::EndCombat,
+                },
+                tag("at end of combat, "),
+            ),
         ))
         .parse(i)
     }) {
@@ -3509,11 +3527,29 @@ pub(crate) fn extract_verb_up_to_multi_target(text: &str) -> Option<MultiTargetS
     multi_target
 }
 
+/// CR 115.1: the "controlled by different players" target-set constraint phrase.
+/// Single source of truth shared by the detector
+/// (`parse_controlled_by_different_players_target_constraint`) and the per-slot
+/// stripper (`strip_controlled_by_different_players` →
+/// `try_parse_exchange_control_targets`).
+pub(crate) const CONTROLLED_BY_DIFFERENT_PLAYERS: &str = " controlled by different players";
+
+/// Locate the `CONTROLLED_BY_DIFFERENT_PLAYERS` constraint with a `take_until`
+/// combinator and return the span BEFORE it (trimmed). Returns `None` when the
+/// constraint is absent, so callers keep the original span. Composed from the
+/// shared constraint phrase so the detector and the stripper can never drift.
+pub(crate) fn strip_controlled_by_different_players(span: &str) -> Option<&str> {
+    take_until::<_, _, OracleError<'_>>(CONTROLLED_BY_DIFFERENT_PLAYERS)
+        .parse(span)
+        .ok()
+        .map(|(_, before)| before.trim_end())
+}
+
 fn parse_controlled_by_different_players_target_constraint(text: &str) -> bool {
     let lower = text.to_lowercase();
     let mut parser = preceded(
-        take_until::<_, _, OracleError<'_>>(" controlled by different players"),
-        tag(" controlled by different players"),
+        take_until::<_, _, OracleError<'_>>(CONTROLLED_BY_DIFFERENT_PLAYERS),
+        tag(CONTROLLED_BY_DIFFERENT_PLAYERS),
     );
     parser.parse(lower.as_str()).is_ok()
 }
@@ -4692,7 +4728,15 @@ pub(super) fn try_parse_damage_with_remainder<'a>(
             },
             &after[consumed..],
         )
-    } else if let Ok((rem, _)) = tag::<_, _, OracleError<'_>>("that much damage").parse(after_lower)
+    } else if let Ok((rem, _)) = alt((
+        tag::<_, _, OracleError<'_>>("that much damage"),
+        // CR 120.1: "that amount of damage" is the synonym used when the
+        // antecedent reads "N damage" rather than "this much damage" (Fear of
+        // Burning Alive: "deals that amount of damage to target creature that
+        // player controls"). Both anaphors resolve to the just-dealt amount.
+        tag("that amount of damage"),
+    ))
+    .parse(after_lower)
     {
         let consumed = after_lower.len() - rem.len();
         (

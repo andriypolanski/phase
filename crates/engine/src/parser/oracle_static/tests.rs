@@ -2638,6 +2638,71 @@ fn self_cost_reduction_if_control_wizard_still_uses_presence_condition() {
 }
 
 #[test]
+fn self_cost_reduction_leading_if_keeps_condition() {
+    let def = parse_static_line(
+        "If an opponent has no cards in hand, this spell costs {6} less to cast.",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        def.mode,
+        StaticMode::ModifyCost {
+            mode: CostModifyMode::Reduce,
+            amount: ManaCost::Cost { generic: 6, .. },
+            ..
+        }
+    ));
+    assert!(matches!(def.affected, Some(TargetFilter::SelfRef)));
+    assert_eq!(
+        def.active_zones,
+        crate::types::zones::self_spell_cost_mod_active_zones()
+    );
+    assert!(matches!(
+        def.condition,
+        Some(StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::HandSize {
+                    player: PlayerScope::Opponent {
+                        aggregate: AggregateFunction::Min
+                    }
+                }
+            },
+            comparator: Comparator::EQ,
+            rhs: QuantityExpr::Fixed { value: 0 },
+        })
+    ));
+}
+
+#[test]
+fn self_cost_reduction_leading_if_supports_avatar_cycle_conditions() {
+    for text in [
+        "If you have 3 or less life, this spell costs {6} less to cast.",
+        "If an opponent controls at least four more creatures than you, this spell costs {6} less to cast.",
+        "If there are ten or more creature cards total in all graveyards, this spell costs {6} less to cast.",
+        "If you weren't the starting player, this spell costs {1} less to cast.",
+    ] {
+        let def =
+            parse_static_line(text).unwrap_or_else(|| panic!("expected cost static for {text:?}"));
+        assert!(
+            matches!(
+                def.mode,
+                StaticMode::ModifyCost {
+                    mode: CostModifyMode::Reduce,
+                    ..
+                }
+            ),
+            "expected Reduce cost static for {text:?}, got {:?}",
+            def.mode
+        );
+        assert!(
+            def.condition.is_some(),
+            "leading condition must not be dropped for {text:?}"
+        );
+        assert!(matches!(def.affected, Some(TargetFilter::SelfRef)));
+    }
+}
+
+#[test]
 fn static_this_spell_cost_less_if_it_targets_creature_filter() {
     let def = parse_static_line("This spell costs {2} less to cast if it targets a red creature.")
         .unwrap();
@@ -19346,5 +19411,246 @@ fn top_of_library_frequency_display_roundtrip() {
     assert_eq!(
         StaticMode::from_str("TopOfLibraryCastPermission").unwrap(),
         unlimited
+    );
+}
+
+/// CR 613.4b + CR 208.1: Porcelain Gallery's "Creatures you control have base
+/// power and toughness each equal to the number of creatures you control" is a
+/// layer-7b dynamic base-P/T set on a controller-scoped group. The dynamic
+/// value routes through the shared CDA quantity grammar to an `ObjectCount`,
+/// proving the base-P/T set composes with arbitrary count quantities (not just
+/// "its mana value"). Each tick re-evaluates the count via the layer system.
+#[test]
+fn porcelain_gallery_base_pt_equal_to_creature_count() {
+    let def = parse_static_line(
+        "Creatures you control have base power and toughness each equal to the number of creatures you control.",
+    )
+    .expect("Porcelain Gallery static must parse");
+
+    // Group scope: creatures you control.
+    match &def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert!(tf.type_filters.contains(&TypeFilter::Creature));
+            assert_eq!(tf.controller, Some(ControllerRef::You));
+        }
+        other => panic!("expected creatures-you-control scope, got {other:?}"),
+    }
+
+    let expected = QuantityExpr::Ref {
+        qty: QuantityRef::ObjectCount {
+            filter: TargetFilter::Typed(
+                TypedFilter::default()
+                    .with_type(TypeFilter::Creature)
+                    .controller(ControllerRef::You),
+            ),
+        },
+    };
+    assert!(
+        def.modifications
+            .contains(&ContinuousModification::SetPowerDynamic {
+                value: expected.clone(),
+            }),
+        "missing SetPowerDynamic(creature count) in {:?}",
+        def.modifications
+    );
+    assert!(
+        def.modifications
+            .contains(&ContinuousModification::SetToughnessDynamic { value: expected }),
+        "missing SetToughnessDynamic(creature count) in {:?}",
+        def.modifications
+    );
+}
+
+/// CR 105.2: A "that are <color> and/or <color>" relative clause is a color
+/// disjunction (Rowan/Will, Scion of …). The `and/or` separator was previously
+/// absent from `parse_color_disjunction`, so "black and/or red" parsed only
+/// "black", stranded " and/or red", and the whole spell filter was dropped to
+/// `None` (over-reducing EVERY spell). This pins the disjunction shape for the
+/// class so the regression cannot recur.
+#[test]
+fn cost_mod_color_and_or_disjunction_builds_anyof_filter() {
+    use crate::types::ability::TargetFilter as TF;
+    use crate::types::mana::ManaColor;
+
+    let def = parse_static_line(
+        "Spells you cast this turn that are black and/or red cost {X} less to cast, where X is the amount of life you lost this turn.",
+    )
+    .unwrap();
+
+    let StaticMode::ModifyCost {
+        mode: CostModifyMode::Reduce,
+        amount,
+        spell_filter,
+        dynamic_count,
+    } = def.mode
+    else {
+        panic!("expected ModifyCost{{Reduce}}, got {:?}", def.mode);
+    };
+    assert_eq!(amount, ManaCost::generic(1));
+    assert_eq!(
+        dynamic_count,
+        Some(QuantityRef::LifeLostThisTurn {
+            player: PlayerScope::Controller,
+        }),
+    );
+
+    // The discriminating assertion: the color disjunction is NOT dropped. The
+    // pre-fix parser produced `spell_filter: None`.
+    let Some(TF::Typed(tf)) = spell_filter else {
+        panic!("expected a typed color-disjunction spell_filter, got None/other");
+    };
+    assert!(
+        tf.properties.iter().any(|p| matches!(
+            p,
+            FilterProp::AnyOf { props }
+                if props.contains(&FilterProp::HasColor { color: ManaColor::Black })
+                    && props.contains(&FilterProp::HasColor { color: ManaColor::Red })
+        )),
+        "spell_filter must carry AnyOf(HasColor Black, HasColor Red), got {:?}",
+        tf.properties
+    );
+}
+
+/// CR 601.2f + CR 611.2c + CR 119.3: Rowan, Scion of War's activated ability
+/// parses with zero `Unimplemented` nodes and lowers the cost-modification
+/// effect clause to a turn-duration `GenericEffect` that grants a `ModifyCost`
+/// static keyed to life LOST this turn for black/red spells.
+#[test]
+fn rowan_scion_of_war_activated_ability_parses_clean() {
+    use crate::types::ability::{ContinuousModification, Effect, TargetFilter as TF};
+    use crate::types::mana::ManaColor;
+
+    let parsed = crate::parser::parse_oracle_text(
+        "Menace\n{T}: Spells you cast this turn that are black and/or red cost {X} less to cast, where X is the amount of life you lost this turn. Activate only as a sorcery.",
+        "Rowan, Scion of War",
+        &["Menace".to_string()],
+        &["Legendary".to_string(), "Creature".to_string()],
+        &["Human".to_string()],
+    );
+    assert!(
+        parsed
+            .abilities
+            .iter()
+            .all(|a| !crate::parser::oracle::has_unimplemented(a)),
+        "Rowan must have zero Unimplemented abilities, got {:?}",
+        parsed
+            .abilities
+            .iter()
+            .map(|a| &a.effect)
+            .collect::<Vec<_>>()
+    );
+
+    let cost_ability = parsed
+        .abilities
+        .iter()
+        .find(|a| matches!(*a.effect, Effect::GenericEffect { .. }))
+        .expect("expected a GenericEffect cost-modification ability");
+    assert_eq!(cost_ability.duration, Some(Duration::UntilEndOfTurn));
+    let Effect::GenericEffect {
+        static_abilities, ..
+    } = &*cost_ability.effect
+    else {
+        unreachable!()
+    };
+    let [granting] = static_abilities.as_slice() else {
+        panic!("expected exactly one granting static, got {static_abilities:?}");
+    };
+    let [ContinuousModification::GrantStaticAbility { definition }] =
+        granting.modifications.as_slice()
+    else {
+        panic!(
+            "expected a single GrantStaticAbility, got {:?}",
+            granting.modifications
+        );
+    };
+    let StaticMode::ModifyCost {
+        dynamic_count: Some(QuantityRef::LifeLostThisTurn { .. }),
+        spell_filter: Some(TF::Typed(tf)),
+        ..
+    } = &definition.mode
+    else {
+        panic!(
+            "expected ModifyCost keyed to LifeLostThisTurn, got {:?}",
+            definition.mode
+        );
+    };
+    assert!(
+        tf.properties.iter().any(|p| matches!(
+            p,
+            FilterProp::AnyOf { props }
+                if props.contains(&FilterProp::HasColor { color: ManaColor::Black })
+                    && props.contains(&FilterProp::HasColor { color: ManaColor::Red })
+        )),
+        "granted static must reduce only black/red spells, got {:?}",
+        tf.properties
+    );
+}
+
+/// CR 601.2f + CR 611.2c + CR 119.3: Will, Scion of Peace mirrors Rowan with the
+/// white/blue color axis and life GAINED this turn.
+#[test]
+fn will_scion_of_peace_activated_ability_parses_clean() {
+    use crate::types::ability::{ContinuousModification, Effect, TargetFilter as TF};
+    use crate::types::mana::ManaColor;
+
+    let parsed = crate::parser::parse_oracle_text(
+        "Vigilance\n{T}: Spells you cast this turn that are white and/or blue cost {X} less to cast, where X is the amount of life you gained this turn. Activate only as a sorcery.",
+        "Will, Scion of Peace",
+        &["Vigilance".to_string()],
+        &["Legendary".to_string(), "Creature".to_string()],
+        &["Human".to_string()],
+    );
+    assert!(
+        parsed
+            .abilities
+            .iter()
+            .all(|a| !crate::parser::oracle::has_unimplemented(a)),
+        "Will must have zero Unimplemented abilities, got {:?}",
+        parsed
+            .abilities
+            .iter()
+            .map(|a| &a.effect)
+            .collect::<Vec<_>>()
+    );
+
+    let cost_ability = parsed
+        .abilities
+        .iter()
+        .find(|a| matches!(*a.effect, Effect::GenericEffect { .. }))
+        .expect("expected a GenericEffect cost-modification ability");
+    let Effect::GenericEffect {
+        static_abilities, ..
+    } = &*cost_ability.effect
+    else {
+        unreachable!()
+    };
+    let [granting] = static_abilities.as_slice() else {
+        panic!("expected exactly one granting static, got {static_abilities:?}");
+    };
+    let [ContinuousModification::GrantStaticAbility { definition }] =
+        granting.modifications.as_slice()
+    else {
+        panic!("expected a single GrantStaticAbility");
+    };
+    let StaticMode::ModifyCost {
+        dynamic_count: Some(QuantityRef::LifeGainedThisTurn { .. }),
+        spell_filter: Some(TF::Typed(tf)),
+        ..
+    } = &definition.mode
+    else {
+        panic!(
+            "expected ModifyCost keyed to LifeGainedThisTurn, got {:?}",
+            definition.mode
+        );
+    };
+    assert!(
+        tf.properties.iter().any(|p| matches!(
+            p,
+            FilterProp::AnyOf { props }
+                if props.contains(&FilterProp::HasColor { color: ManaColor::White })
+                    && props.contains(&FilterProp::HasColor { color: ManaColor::Blue })
+        )),
+        "granted static must reduce only white/blue spells, got {:?}",
+        tf.properties
     );
 }

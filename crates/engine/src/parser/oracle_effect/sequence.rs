@@ -373,6 +373,19 @@ fn plotted_grant_target(previous: &AbilityDefinition) -> TargetFilter {
     }
 }
 
+/// CR 205.1a + CR 613.1d: the "become(s) " animation/type-change verb in both
+/// conjugations (conjugated "becomes " and imperative "become "). Single source
+/// of truth for the bare-become conjunct split in `split_clause_sequence` — used
+/// both for the remainder peek and the word-boundary antecedent scan so the two
+/// conjugations are never enumerated in two places.
+fn parse_become_verb(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        alt((tag::<_, _, OracleError<'_>>("becomes "), tag("become "))),
+    )
+    .parse(input)
+}
+
 fn parse_becomes_plotted_continuation(lower: &str) -> bool {
     // allow-noncombinator: punctuation cleanup before all_consuming
     let text = lower.trim().trim_end_matches('.').trim();
@@ -810,6 +823,29 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                             && starts_prefix_clause(
                                 trimmed_before.trim_end_matches(',').trim_end(),
                             );
+                        // CR 205.1a + CR 613.1d: a bare "becomes <descriptor>" conjunct
+                        // splits off as its OWN become clause only when the antecedent is
+                        // ALSO a become predicate (a compound-become like Alacrian Armory's
+                        // "becomes saddled … and becomes an artifact creature …"). When the
+                        // antecedent is a continuous-modification predicate ("This creature
+                        // gets +3/+3 and becomes a Bear Berserker until end of turn"), the
+                        // "becomes" is a TYPE-CHANGE modifier on the same continuous effect
+                        // (CR 613.1d Layer 4), absorbed by `parse_continuous_modifications` —
+                        // not a separate clause. Suppress the bare-become split in that case
+                        // so the single GenericEffect carries both the pump and the subtype
+                        // change. The antecedent is a become predicate iff its text already
+                        // contains a "become(s) " verb. A single `parse_become_verb`
+                        // combinator (`alt` of the two conjugations) is the source of truth
+                        // for both the remainder peek and the word-boundary antecedent scan,
+                        // so the two conjugations are never enumerated twice.
+                        let bare_becomes_remainder = parse_become_verb(remainder_trimmed).is_ok();
+                        let antecedent_is_become = nom_primitives::scan_at_word_boundaries(
+                            &before_lower,
+                            parse_become_verb,
+                        )
+                        .is_some();
+                        let bare_becomes_continuation =
+                            bare_becomes_remainder && !antecedent_is_become;
                         let suppress = (nom_primitives::scan_contains(&before_lower, "from among")
                         && !sacrifice_rest_remainder)
                         || is_inside_temporal_prefix(&before_lower)
@@ -825,6 +861,7 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                         || have_base_pt_continuation
                         || continuous_modifier_conjunct
                         || roll_die_modifier_continuation
+                        || bare_becomes_continuation
                         || inside_prefix_comma_and_continuation;
                         if !suppress && starts_bare_and_clause(remainder_trimmed) {
                             push_clause_chunk(&mut chunks, before_and, Some(ClauseBoundary::Comma));
@@ -1179,6 +1216,11 @@ fn starts_prefix_clause(current_lower: &str) -> bool {
         tag("if not"),
         tag("the next time "),
         tag("at the beginning "),
+        // CR 511.2 + CR 603.7a: bare "at end of combat, …" delayed-trigger prefix
+        // — companion of the suffix form. Keep the deferred body attached so it
+        // reaches `strip_temporal_prefix` instead of splitting at the comma
+        // (Fortune, Loyal Steed: "at end of combat, exile it and …").
+        tag("at end of combat"),
         tag("for as long as "),
         // CR 508.6: "During any turn [you attacked with X], [effect]" — temporal
         // attack-history gate (Neyali, Neriv, Boros Strike-Captain). Keep the
@@ -1662,6 +1704,15 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
     // exceeds the 2-word cap.
     .or(value((), tag("reveal ")))
     .or(value((), tag("returns ")))
+    // CR 701.26b + CR 701.26a + CR 608.2c: third-person "untaps"/"taps"
+    // conjugation. Control-handoff class: "the attacking player gains control
+    // of ~ and untaps it" (Contested Game Ball) — the followup tap-state clause
+    // must split as its own conjunct so it deconjugates ("untaps it" → "untap
+    // it") and reaches the tap dispatcher. Mirrors the imperative `untap `/`tap
+    // ` axis above, different conjugation; sits in the `.or()` chain because the
+    // first `alt()` tuple is at nom's 21-arm limit.
+    .or(value((), tag("untaps ")))
+    .or(value((), tag("taps ")))
     // CR 122.1 + CR 608.2c: third-person "puts" conjugation. Oversimplify
     // class: "Each player creates a … token and puts a number of +1/+1
     // counters on it equal to …" — the subject ("Each player") iterates and
@@ -1674,8 +1725,14 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
     // 21-arm limit; adding it inline would push the cluster over and trip
     // the `Choice<...>` trait-bound check at compile time.
     .or(value((), tag("puts ")))
-    // CR 608.2c: "put … and attach an Equipment that was attached …" (Zack Fair).
-    .or(value((), tag("attach an equipment that was attached ")))
+    // CR 301.5b + CR 608.2c: these attach forms are imperative game actions,
+    // not noun-phrase continuations. Keep the matcher narrow so name-based
+    // chains like "put counters on it and attach Fractal Harness to it" stay
+    // available to the token-counter attach rewriter.
+    .or(alt((
+        value((), tag("attach this equipment ")),
+        value((), tag("attach an equipment that was attached ")),
+    )))
     .or(alt((
         // CR 608.2c: Subject-prefixed verb patterns — "you [verb]" is always a clause start.
         value((), tag("you gain ")),
@@ -1875,6 +1932,23 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
     // `starts_target_continuous_clause_lower`) so the `alt(...)` cluster stays
     // under nom's 21-arm limit.
     .or(value((), starts_each_player_predicate_clause_lower))
+    // CR 205.1a + CR 613.1d + CR 702.171b: a bare "becomes <descriptor>"
+    // conjunct joined by " and " is a second animation/designation predicate whose
+    // subject is carried over (anaphorically) from the prior conjunct — the same
+    // demonstrative subject the first "becomes" clause used. Alacrian Armory:
+    // "that permanent becomes saddled if it's a Mount and becomes an artifact
+    // creature if it's a Vehicle" — without this split the compound stays one
+    // chunk, the trailing-conditional peel only catches the LAST "if it's a …"
+    // gate, and the residual fails closed to an Unimplemented effect named
+    // "become". Splitting routes the second conjunct through `parse_clause_ast` →
+    // `try_parse_subject_become_clause`, where the empty (carried-over) subject
+    // resolves to the parent target and each conjunct's "if it's a <type>" gate
+    // parses exactly as the standalone "[subject] becomes <descriptor> if it's a
+    // <type>" clause does. A bare conjugated "becomes" (or imperative "become") is
+    // always a verb predicate, never a noun-phrase continuation, so the split is
+    // safe. Reuses the shared `parse_become_verb` combinator. Mirrors the anaphoric
+    // "it becomes " arm above for the subject-carried form.
+    .or(parse_become_verb)
     .parse(s)
     .is_ok();
     if has_verb_prefix {
@@ -5615,6 +5689,25 @@ mod tests {
         // Lotho: "you lose 1 life and create a Treasure token"
         let chunks = clause_texts("you lose 1 life and create a Treasure token");
         assert_eq!(chunks, vec!["you lose 1 life", "create a Treasure token"]);
+    }
+
+    #[test]
+    fn bare_and_splits_create_token_and_attach() {
+        // Field-Tested Frying Pan (#835): "create a 1/1 white Halfling creature
+        // token and attach this Equipment to it" — "attach " is an imperative game
+        // action, so the conjunct must peel into its own clause and lower to a
+        // Token -> Attach sibling (rewire_token_attach_sibling rebinds onto
+        // LastCreated). Without the split the attach is silently dropped.
+        let chunks = clause_texts(
+            "create a 1/1 white Halfling creature token and attach this Equipment to it",
+        );
+        assert_eq!(
+            chunks,
+            vec![
+                "create a 1/1 white Halfling creature token",
+                "attach this Equipment to it"
+            ]
+        );
     }
 
     #[test]
