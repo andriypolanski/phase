@@ -462,12 +462,16 @@ pub(crate) fn is_specialized_you_may_retarget_phrase(rest_lower: &str) -> bool {
 /// later payment permission, not an optional resolution choice on the licid
 /// activation itself (issue #4000).
 pub(crate) fn is_you_may_pay_to_end_effect_phrase(rest_lower: &str) -> bool {
-    nom_on_lower(rest_lower, rest_lower, |input| {
-        let (input, _) = tag("pay ").parse(input)?;
-        let (input, _) = take_until(" to end this effect").parse(input)?;
-        tag(" to end this effect").parse(input)
-    })
-    .is_some()
+    value(
+        (),
+        (
+            tag::<_, _, OracleError<'_>>("pay "),
+            take_until(" to end this effect"),
+            tag(" to end this effect"),
+        ),
+    )
+    .parse(rest_lower)
+    .is_ok()
 }
 
 pub(crate) fn is_specialized_you_may_phrase(rest_lower: &str) -> bool {

@@ -37871,7 +37871,7 @@ mod tests {
             }
             def.sub_ability
                 .as_ref()
-                .is_some_and(ability_tree_has_optional)
+                .is_some_and(|sub| ability_tree_has_optional(sub))
                 || def
                     .else_ability
                     .as_ref()
