@@ -4,7 +4,7 @@ use crate::parser::oracle_nom::error::{OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
 use nom::character::complete::char;
-use nom::combinator::{all_consuming, opt, value};
+use nom::combinator::{all_consuming, opt, peek, value};
 use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
@@ -992,12 +992,12 @@ fn parse_its_a_card_type_gate_body<'a>(
             after_type,
         ));
     }
-    let (type_str, after_type) = if let Some(type_end) = rest.find(" card") {
-        (&rest[..type_end], &rest[type_end + " card".len()..])
-    } else {
-        let comma_pos = rest.find(", ")?;
-        (&rest[..comma_pos], &rest[comma_pos..])
-    };
+    let (after_type, type_str) = alt((
+        terminated(take_until(" card"), tag::<_, _, OracleError<'_>>(" card")),
+        terminated(take_until(", "), peek(tag(", "))),
+    ))
+    .parse(rest)
+    .ok()?;
     let type_word = type_str.rsplit(' ').next().unwrap_or(type_str);
     let capitalized = format!("{}{}", &type_word[..1].to_uppercase(), &type_word[1..]);
     // CR 608.2c: "permanent" is not a CoreType (it spans CR 110.1's permanent card
@@ -1075,7 +1075,7 @@ pub(super) fn strip_card_type_conditional(text: &str) -> (Option<AbilityConditio
     else {
         return (None, text.to_string());
     };
-    let remainder = after_type.strip_prefix(", ").unwrap_or(after_type);
+    let remainder = remainder_after_optional_comma(after_type);
     let offset = text.len() - remainder.len();
     (Some(condition), text[offset..].to_string())
 }
