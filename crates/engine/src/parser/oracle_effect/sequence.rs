@@ -1949,6 +1949,20 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
     // safe. Reuses the shared `parse_become_verb` combinator. Mirrors the anaphoric
     // "it becomes " arm above for the subject-carried form.
     .or(parse_become_verb)
+    // CR 608.2c + CR 400.7i: "may play <card-anaphor>" / "may cast
+    // <card-anaphor>" — a bare optional play/cast grant whose subject was
+    // established by the prior conjunct (Lightstall Inquisitor: "each opponent
+    // exiles a card from their hand and may play that card for as long as it
+    // remains exiled"). "may play"/"may cast" always begins a verb phrase,
+    // never a noun-phrase continuation of the prior conjunct, so the split
+    // routes the conjunct to the per-grantee play-from-exile grant parser
+    // (`try_parse_per_grantee_play_grant`). The "you may " subject-led form is
+    // already covered by the `you may ` arm above; this arm catches the
+    // subject-elided form after a player-scoped exile.
+    .or(alt((
+        value((), tag::<_, _, OracleError<'_>>("may play ")),
+        value((), tag("may cast ")),
+    )))
     .parse(s)
     .is_ok();
     if has_verb_prefix {

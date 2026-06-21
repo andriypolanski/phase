@@ -7426,6 +7426,25 @@ fn try_parse_per_grantee_play_grant(tp: TextPair<'_>) -> Option<ParsedEffectClau
         tag("each player may cast the card they exiled this way"),
         tag("each player may play the cards they exiled this way"),
         tag("each player may cast the cards they exiled this way"),
+        // CR 611.2a + CR 108.3 + CR 400.7i: Subject-elided owner-binding grant
+        // — Lightstall Inquisitor's "each opponent exiles a card from their hand
+        // **and may play that card** for as long as it remains exiled". The
+        // chunk loop split the compound at the bare " and " (see
+        // `starts_bare_and_clause`) and peels only "you may " — never a bare
+        // "may " — so a leading bare "may play"/"may cast" here is the
+        // subject-elided continuation of a player-scoped exile. The elided
+        // subject is the exiling player (the card's owner), so the grant binds
+        // per-card via `PermissionGrantee::ObjectOwner`. The "you may " /
+        // impulse-draw form is stripped to a bare "play that card" before
+        // reaching this function, so it never collides with this arm.
+        tag("may play that card"),
+        tag("may cast that card"),
+        tag("may play that spell"),
+        tag("may cast that spell"),
+        tag("may play those cards"),
+        tag("may cast those cards"),
+        tag("may play it"),
+        tag("may cast it"),
     ))
     .parse(lower)
     .is_ok()
@@ -7449,9 +7468,19 @@ fn try_parse_per_grantee_play_grant(tp: TextPair<'_>) -> Option<ParsedEffectClau
         return None;
     };
 
-    // Duration: default to UntilEndOfTurn if unspecified (matches impulse-draw default).
-    let (_, dur) = strip_trailing_duration(tp.original);
-    let duration = dur.unwrap_or(Duration::UntilEndOfTurn);
+    // CR 400.7i + CR 611.2a: "for as long as it remains exiled" persists until
+    // the exile-scoped permission is cleared on zone exit
+    // (`zones::apply_zone_exit_cleanup`) — the same Permanent encoding the
+    // impulse `try_parse_play_from_exile` path uses (Lightstall Inquisitor).
+    // Otherwise default to UntilEndOfTurn (matches impulse-draw default).
+    let duration = if scan_contains_phrase(tp.lower, "remain exiled")
+        || scan_contains_phrase(tp.lower, "remains exiled")
+    {
+        Duration::Permanent
+    } else {
+        let (_, dur) = strip_trailing_duration(tp.original);
+        dur.unwrap_or(Duration::UntilEndOfTurn)
+    };
 
     Some(parsed_clause(Effect::GrantCastingPermission {
         permission: CastingPermission::PlayFromExile {
@@ -7465,6 +7494,8 @@ fn try_parse_per_grantee_play_grant(tp: TextPair<'_>) -> Option<ParsedEffectClau
             card_filter: None,
             single_use_group: None,
             single_use: false,
+            cast_cost_raise: None,
+            land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
         },
         target: TargetFilter::TrackedSet {
             id: TrackedSetId(0),
@@ -7582,6 +7613,8 @@ fn try_parse_cast_from_tracked_exile_grant(tp: TextPair<'_>) -> Option<ParsedEff
             card_filter,
             single_use_group: None,
             single_use,
+            cast_cost_raise: None,
+            land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
         },
         // CR 603.7 + CR 608.2c: TrackedSet sentinel — the runtime resolver
         // normalizes `TrackedSetId(0)` to the most recently published set
@@ -7671,6 +7704,8 @@ fn try_parse_exile_play_grant_with_any_mana(tp: TextPair<'_>) -> Option<ParsedEf
             card_filter: None,
             single_use_group: None,
             single_use: false,
+            cast_cost_raise: None,
+            land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
         },
         target,
         grantee,
@@ -7871,6 +7906,8 @@ fn try_parse_play_from_exile(tp: TextPair, ctx: &ParseContext) -> Option<ParsedE
             card_filter: None,
             single_use_group: None,
             single_use: false,
+            cast_cost_raise: None,
+            land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
         },
         // CR 603.7 + CR 611.2a: The grant must reach the tracked exile set
         // (the cards exiled by the prior clause) rather than fall back to the
@@ -7910,6 +7947,8 @@ fn try_parse_play_the_exiled_card_grant(tp: TextPair) -> Option<ParsedEffectClau
             card_filter: None,
             single_use_group: None,
             single_use: false,
+            cast_cost_raise: None,
+            land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
         },
         target: tracked_set_filter(),
         grantee: Default::default(),
@@ -8016,6 +8055,8 @@ pub(crate) fn try_parse_exile_top_each_library_with_collection_counter(
                 card_filter: None,
                 single_use_group: None,
                 single_use: false,
+                cast_cost_raise: None,
+                land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
             },
             target: TargetFilter::TrackedSet {
                 id: TrackedSetId(0),

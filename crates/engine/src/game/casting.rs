@@ -1744,6 +1744,51 @@ pub(crate) fn play_from_exile_permission_source(
     })
 }
 
+/// CR 601.2f: The printed mana-cost increase a spell incurs when it is cast via
+/// an active [`CastingPermission::PlayFromExile`] grant that carries
+/// `cast_cost_raise` ("Each spell cast this way costs {N} more to cast." —
+/// Lightstall Inquisitor). Returns the increase from the first grant that
+/// authorizes `player`. Mirrors the grantee gate used by
+/// [`player_can_spend_as_any_color_for_spell`] for `mana_spend_permission`: the
+/// spell object retains its exile-play permissions while it is on the stack, so
+/// the raise is readable throughout cost determination (CR 601.2b–f). The cost
+/// raise is a property of the grant, not a board-wide static, so it applies only
+/// to spells cast via this permission.
+fn exile_play_cast_cost_raise(
+    obj: &crate::game::game_object::GameObject,
+    player: PlayerId,
+) -> Option<ManaCost> {
+    obj.casting_permissions.iter().find_map(|p| match p {
+        CastingPermission::PlayFromExile {
+            granted_to,
+            cast_cost_raise: Some(raise),
+            ..
+        } if *granted_to == player => Some(raise.clone()),
+        _ => None,
+    })
+}
+
+/// CR 614.1c: Whether a land played via an active `PlayFromExile` grant must
+/// enter the battlefield tapped ("Each land played this way enters tapped." —
+/// Lightstall Inquisitor). Mirrors the grantee gate of
+/// [`exile_play_cast_cost_raise`]; consumed by `handle_play_land` to seed the
+/// tap state on the land's entry event.
+pub(crate) fn exile_play_land_enters_tapped(
+    obj: &crate::game::game_object::GameObject,
+    player: PlayerId,
+) -> bool {
+    obj.casting_permissions.iter().any(|p| {
+        matches!(
+            p,
+            CastingPermission::PlayFromExile {
+                granted_to,
+                land_enter_tapped: crate::types::zones::EtbTapState::Tapped,
+                ..
+            } if *granted_to == player
+        )
+    })
+}
+
 /// CR 601.2a + CR 603.7 + CR 611.2a: Returns the tracked-set identity of a `single_use`
 /// [`CastingPermission::PlayFromExile`] on `obj` that authorizes `player` and
 /// has not yet been consumed, if any. Used at cast finalization to record that
@@ -1761,6 +1806,8 @@ pub(crate) fn single_use_play_from_exile_group(
             card_filter,
             single_use_group,
             single_use: true,
+            cast_cost_raise: None,
+            land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
             ..
         } if *granted_to == player => {
             let group = single_use_group.as_ref()?;
@@ -1795,6 +1842,8 @@ pub(crate) fn consume_single_use_play_from_exile(state: &mut GameState, group: T
                     crate::types::ability::CastingPermission::PlayFromExile {
                         single_use_group,
                         single_use: true,
+                        cast_cost_raise: None,
+                        land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                         ..
                     } if *single_use_group == Some(group)
                 )
@@ -4460,6 +4509,17 @@ fn apply_non_floor_cost_modifiers(
     object_id: ObjectId,
     mana_cost: &mut ManaCost,
 ) {
+    // CR 601.2f: A spell cast via a `PlayFromExile` grant may carry a printed
+    // cost increase ("Each spell cast this way costs {N} more to cast." —
+    // Lightstall Inquisitor). Apply it FIRST, as an increase, so a later
+    // reduction cannot be applied to the pre-raise cost — CR 601.2f determines
+    // the total as base + increases − reductions, and a reduction can never take
+    // the mana component below {0}.
+    if let Some(obj) = state.objects.get(&object_id) {
+        if let Some(raise) = exile_play_cast_cost_raise(obj, player) {
+            *mana_cost = super::restrictions::add_mana_cost(mana_cost, &raise);
+        }
+    }
     // CR 601.2f: collect self-spell statics ("This spell costs
     // {N} less ...") and battlefield statics together so all increases apply
     // before any reductions across both passes.
@@ -13662,6 +13722,8 @@ mod tests {
                     card_filter: None,
                     single_use_group: None,
                     single_use: false,
+                    cast_cost_raise: None,
+                    land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 });
         }
         let cost = state.objects[&spell].mana_cost.clone();
@@ -19952,6 +20014,103 @@ mod tests {
         );
     }
 
+    fn play_from_exile_raise(granted_to: PlayerId, raise: Option<ManaCost>) -> CastingPermission {
+        CastingPermission::PlayFromExile {
+            duration: Duration::Permanent,
+            granted_to,
+            frequency: CastFrequency::Unlimited,
+            source_id: None,
+            exiled_by_ability_controller: None,
+            mana_spend_permission: None,
+            card_filter: None,
+            single_use_group: None,
+            single_use: false,
+            cast_cost_raise: raise,
+            land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+        }
+    }
+
+    /// CR 601.2f: A spell cast via a `PlayFromExile` grant carrying
+    /// `cast_cost_raise: Some({1})` (Lightstall Inquisitor: "Each spell cast this
+    /// way costs {1} more to cast.") has its total cost raised by {1}: {6}{B}
+    /// becomes {7}{B}. Reverting the `apply_non_floor_cost_modifiers` raise leaves
+    /// generic at 6 and flips this assertion.
+    #[test]
+    fn play_from_exile_cast_cost_raise_increases_generic() {
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_black_sorcery_with_keywords(
+            &mut state,
+            16012,
+            "Exile-Play Spell",
+            6,
+            Vec::new(),
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.zone = Zone::Exile;
+        obj.casting_permissions.push(play_from_exile_raise(
+            PlayerId(0),
+            Some(ManaCost::Cost {
+                shards: vec![],
+                generic: 1,
+            }),
+        ));
+
+        let mut mana_cost = state.objects.get(&obj_id).unwrap().mana_cost.clone();
+        super::super::casting::apply_non_floor_cost_modifiers(
+            &state,
+            PlayerId(0),
+            obj_id,
+            &mut mana_cost,
+        );
+        assert_eq!(
+            mana_cost,
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Black],
+                generic: 7,
+            },
+            "the exile-play cast_cost_raise of {{1}} must raise {{6}}{{B}} to {{7}}{{B}}",
+        );
+    }
+
+    /// CR 601.2f + CR 611.2a: The raise is scoped to the grantee — a permission
+    /// granted to a different player must not tax P0's cast.
+    #[test]
+    fn play_from_exile_cast_cost_raise_only_applies_to_grantee() {
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_black_sorcery_with_keywords(
+            &mut state,
+            16013,
+            "Other-Grantee Spell",
+            6,
+            Vec::new(),
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.zone = Zone::Exile;
+        obj.casting_permissions.push(play_from_exile_raise(
+            PlayerId(1),
+            Some(ManaCost::Cost {
+                shards: vec![],
+                generic: 1,
+            }),
+        ));
+
+        let mut mana_cost = state.objects.get(&obj_id).unwrap().mana_cost.clone();
+        super::super::casting::apply_non_floor_cost_modifiers(
+            &state,
+            PlayerId(0),
+            obj_id,
+            &mut mana_cost,
+        );
+        assert_eq!(
+            mana_cost,
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Black],
+                generic: 6,
+            },
+            "a raise granted to P1 must not tax P0's cast",
+        );
+    }
+
     /// CR 702.125a + CR 702.125c: In a four-player game, each Undaunted
     /// instance reduces by {1} for each of P0's three opponents. Two instances
     /// therefore reduce {8}{B} by {6}, leaving {2}{B}.
@@ -25399,6 +25558,8 @@ mod tests {
                     card_filter: None,
                     single_use_group: None,
                     single_use: false,
+                    cast_cost_raise: None,
+                    land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 });
         }
 
@@ -25498,6 +25659,8 @@ mod tests {
                     card_filter: None,
                     single_use_group: None,
                     single_use: false,
+                    cast_cost_raise: None,
+                    land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 });
         }
 
@@ -25667,6 +25830,8 @@ mod tests {
                     card_filter: None,
                     single_use_group: None,
                     single_use: false,
+                    cast_cost_raise: None,
+                    land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 });
         }
         add_mana(&mut state, PlayerId(0), ManaType::Red, 1);
@@ -26109,6 +26274,8 @@ mod tests {
                     card_filter: None,
                     single_use_group: None,
                     single_use: false,
+                    cast_cost_raise: None,
+                    land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 });
         }
 
@@ -26179,6 +26346,8 @@ mod tests {
                     card_filter: None,
                     single_use_group: None,
                     single_use: false,
+                    cast_cost_raise: None,
+                    land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 });
         }
 
@@ -44092,6 +44261,8 @@ mod tests {
                 })),
                 single_use_group: Some(single_use_group),
                 single_use: true,
+                cast_cost_raise: None,
+                land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
             });
         exiled
     }
@@ -44457,6 +44628,8 @@ mod tests {
                 card_filter: None,
                 single_use_group: None,
                 single_use: false,
+                cast_cost_raise: None,
+                land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
             });
 
         assert!(
