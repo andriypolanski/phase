@@ -994,10 +994,9 @@ fn parse_its_a_card_type_gate_body<'a>(
     }
     let (type_str, after_type) = if let Some(type_end) = rest.find(" card") {
         (&rest[..type_end], &rest[type_end + " card".len()..])
-    } else if let Some(comma_pos) = rest.find(", ") {
-        (&rest[..comma_pos], &rest[comma_pos..])
     } else {
-        return None;
+        let comma_pos = rest.find(", ")?;
+        (&rest[..comma_pos], &rest[comma_pos..])
     };
     let type_word = type_str.rsplit(' ').next().unwrap_or(type_str);
     let capitalized = format!("{}{}", &type_word[..1].to_uppercase(), &type_word[1..]);
