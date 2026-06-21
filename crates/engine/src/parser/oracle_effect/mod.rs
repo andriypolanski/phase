@@ -13186,15 +13186,21 @@ fn player_filter_from_anchor_for_chooser(anchor: &TargetFilter) -> Option<Player
 /// "then shuffle" inherit the earlier subject ("its controller").
 ///
 /// Only overwrites effects whose player target is the caster default
-/// (`Controller`) and only when the anchor is a player-scope filter. Does not
-/// touch effects that already carry an explicit non-caster subject.
+/// (`Controller`), a bare "that player" placeholder (`Player`), or the generic
+/// subject-parser default (`ParentTargetController`). Does not touch effects
+/// that already carry an explicit owner anaphor (`ParentTargetOwner`).
 fn apply_anchor_subject(effect: &mut Effect, anchor: &TargetFilter) {
     if !target_filter_can_target_player(anchor) {
         return;
     }
     match effect {
         Effect::Shuffle { target }
-            if matches!(*target, TargetFilter::Controller | TargetFilter::Player) =>
+            if matches!(
+                *target,
+                TargetFilter::Controller
+                    | TargetFilter::Player
+                    | TargetFilter::ParentTargetController
+            ) =>
         {
             *target = anchor.clone();
         }
@@ -49582,10 +49588,10 @@ mod tests {
         false
     }
 
-    /// CR 201.2 + CR 400.7 + CR 701.23 + CR 701.24: Name-hate spells search GY,
-    /// hand, and library for all cards sharing the exiled/countered/chosen card's
-    /// name and exile them, then shuffle. Issue #3436 — the runtime infra already
-    /// existed (`MultiZoneSameNameExile`); these cards gap'd on parser routing.
+    /// CR 201.2 + CR 400.7 + CR 701.23 + CR 701.24: Mandatory "all cards"
+    /// name-hate spells search GY, hand, and library and exile every match,
+    /// then shuffle. Issue #3436 — the runtime infra already existed
+    /// (`MultiZoneSameNameExile`); these cards gap'd on parser routing.
     #[test]
     fn name_hate_spells_parse_multi_zone_same_name_exile_chain() {
         for (label, text) in [
@@ -49601,14 +49607,6 @@ mod tests {
                 "Counterbore",
                 "Counter target spell. Search its controller's graveyard, hand, and library for all cards with the same name as that spell and exile them. Then that player shuffles.",
             ),
-            (
-                "Crumble to Dust",
-                "Exile target nonbasic land. Search its controller's graveyard, hand, and library for any number of cards with the same name as that land and exile them. Then that player shuffles.",
-            ),
-            (
-                "Surgical Extraction",
-                "Choose target card in a graveyard. Search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them. Then that player shuffles.",
-            ),
         ] {
             let def = parse_effect_chain(text, AbilityKind::Spell);
             assert!(
@@ -49622,23 +49620,71 @@ mod tests {
             );
         }
 
-        let surgical = parse_effect_chain(
-            "Choose target card in a graveyard. Search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them. Then that player shuffles.",
+        let eradicate = parse_effect_chain(
+            "Exile target nonblack creature. Search its controller's graveyard, hand, and library for all cards with the same name as that creature and exile them. Then that player shuffles.",
             AbilityKind::Spell,
         );
-        let mut cursor = Some(&surgical);
+        let mut cursor = Some(&eradicate);
         while let Some(def) = cursor {
             if let Effect::Shuffle { target } = &*def.effect {
                 assert_eq!(
                     *target,
-                    TargetFilter::ParentTargetOwner,
-                    "Surgical Extraction shuffle must target the parent card's owner"
+                    TargetFilter::ParentTargetController,
+                    "Eradicate shuffle must target the parent creature's controller"
                 );
                 return;
             }
             cursor = def.sub_ability.as_deref();
         }
-        panic!("expected Shuffle sub-ability in Surgical Extraction chain");
+        panic!("expected Shuffle sub-ability in Eradicate chain");
+    }
+
+    /// CR 107.1c: "Any number of cards" multi-zone name-hate must not auto-exile.
+    #[test]
+    fn name_hate_any_number_spells_do_not_auto_exile() {
+        for (label, text) in [
+            (
+                "Crumble to Dust",
+                "Exile target nonbasic land. Search its controller's graveyard, hand, and library for any number of cards with the same name as that land and exile them. Then that player shuffles.",
+            ),
+            (
+                "Surgical Extraction",
+                "Choose target card in a graveyard. Search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them. Then that player shuffles.",
+            ),
+        ] {
+            let def = parse_effect_chain(text, AbilityKind::Spell);
+            assert!(
+                !chain_contains_multi_zone_same_name_exile(&def),
+                "{label}: any-number variant must not lower to unconditional ChangeZoneAll: {def:#?}"
+            );
+        }
+    }
+
+    /// CR 608.2c + CR 108.3: Owner-axis "all cards" name-hate must propagate
+    /// ParentTargetOwner into the trailing shuffle clause.
+    #[test]
+    fn name_hate_owner_axis_shuffle_inherits_parent_target_owner() {
+        let def = parse_effect_chain(
+            "Choose target card in a graveyard. Search its owner's graveyard, hand, and library for all cards with the same name as that card and exile them. Then that player shuffles.",
+            AbilityKind::Spell,
+        );
+        assert!(
+            chain_contains_multi_zone_same_name_exile(&def),
+            "owner-axis all-cards search must parse: {def:#?}"
+        );
+        let mut cursor = Some(&def);
+        while let Some(sub) = cursor {
+            if let Effect::Shuffle { target } = &*sub.effect {
+                assert_eq!(
+                    *target,
+                    TargetFilter::ParentTargetOwner,
+                    "owner-axis name-hate shuffle must target the parent card's owner"
+                );
+                return;
+            }
+            cursor = sub.sub_ability.as_deref();
+        }
+        panic!("expected Shuffle sub-ability in owner-axis name-hate chain");
     }
 
     /// CR 701.12a: Tree of Perdition / Tree of Redemption / Evra — "exchange

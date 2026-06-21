@@ -1899,9 +1899,13 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
 /// ```text
 /// "search " <possessive>
 ///     ("graveyard, hand, and library" | <permutation>)
-///     " for " ("any number of cards" | "all cards" | "a card")
+///     " for " "all cards"
 ///     " with that name and exile them"
 /// ```
+///
+/// Only the mandatory "all cards" quantifier is lowered here. "Any number of
+/// cards" / "a card" variants require an interactive search choice and must
+/// not auto-exile every match (Surgical Extraction, Crumble to Dust).
 ///
 /// Returns `Some(owner)` on match — the lowering step constructs the
 /// `Effect::ChangeZoneAll` directly (multi-zone origin + filter + destination
@@ -1936,14 +1940,9 @@ pub(super) fn try_parse_multi_zone_same_name_exile(lower: &str) -> Option<Contro
             tag("library, graveyard, and hand"),
         ))
         .parse(input)?;
-        // for [any number of] cards with that name and exile them
+        // for all cards with that name and exile them
         let (input, _) = tag::<_, _, OracleError<'_>>(" for ").parse(input)?;
-        let (input, _) = alt((
-            value((), tag::<_, _, OracleError<'_>>("any number of cards")),
-            value((), tag("all cards")),
-            value((), tag("a card")),
-        ))
-        .parse(input)?;
+        let (input, _) = tag::<_, _, OracleError<'_>>("all cards").parse(input)?;
         // Match the trailing same-name suffix. The name source is either a
         // previously-named card ("with that name", Lost Legacy / Deadly Cover-Up)
         // or the spell's exiled/countered target referenced by its card type
@@ -13704,41 +13703,18 @@ mod tests {
     }
 
     /// CR 400.7 + CR 701.23: Multi-zone same-name exile combinator covers
-    /// the whole sibling class (Deadly Cover-Up, Lost Legacy, Cranial
-    /// Extraction, Memoricide, Surgical Extraction). Both "with that name"
-    /// and "with the same name as that card" forms are accepted.
+    /// the mandatory "all cards" sibling class (Eradicate, Quash, Counterbore).
+    /// Both "with that name" and "with the same name as that card" forms are
+    /// accepted. "Any number of cards" / "a card" quantifiers are rejected here.
     #[test]
     fn parse_multi_zone_same_name_exile_pattern() {
         let positives = [
-            (
-                "search its owner's graveyard, hand, and library for any number of cards with that name and exile them",
-                ControllerRef::ParentTargetOwner,
-            ),
-            (
-                "search target player's graveyard, hand, and library for any number of cards with that name and exile them",
-                ControllerRef::TargetPlayer,
-            ),
             (
                 "search target player's graveyard, hand, and library for all cards with that name and exile them",
                 ControllerRef::TargetPlayer,
             ),
             (
-                "search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them",
-                ControllerRef::ParentTargetOwner,
-            ),
-            (
-                "search their graveyard, hand, and library for a card with that name and exile them",
-                ControllerRef::TargetPlayer,
-            ),
-            // CR 201.2a: "its controller's" possessive + card-type name source —
-            // Eradicate ("that creature"), Crumble to Dust ("that land"),
-            // Counterbore ("that spell"), Deicide ("its controller's … that card").
-            (
                 "search its controller's graveyard, hand, and library for all cards with the same name as that creature and exile them",
-                ControllerRef::ParentTargetController,
-            ),
-            (
-                "search its controller's graveyard, hand, and library for any number of cards with the same name as that land and exile them",
                 ControllerRef::ParentTargetController,
             ),
             (
@@ -13746,8 +13722,8 @@ mod tests {
                 ControllerRef::ParentTargetController,
             ),
             (
-                "search its controller's graveyard, hand, and library for any number of cards with the same name as that card and exile them",
-                ControllerRef::ParentTargetController,
+                "search its owner's graveyard, hand, and library for all cards with the same name as that card and exile them",
+                ControllerRef::ParentTargetOwner,
             ),
         ];
         for (text, owner) in positives {
@@ -13759,6 +13735,12 @@ mod tests {
         }
 
         let negatives = [
+            // Interactive-quantity variants — not auto-exile.
+            "search its owner's graveyard, hand, and library for any number of cards with that name and exile them",
+            "search target player's graveyard, hand, and library for any number of cards with that name and exile them",
+            "search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them",
+            "search their graveyard, hand, and library for a card with that name and exile them",
+            "search its controller's graveyard, hand, and library for any number of cards with the same name as that land and exile them",
             // Library-only — handled by the regular SearchLibrary branch.
             "search your library for a card",
             // Two-zone permutation we don't recognize (deliberate scope cut).

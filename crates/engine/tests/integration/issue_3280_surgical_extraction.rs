@@ -1,6 +1,10 @@
-//! Regression for issue #3280: Surgical Extraction must exile all copies of the
-//! chosen graveyard card's name from its owner's graveyard, hand, and library,
-//! then shuffle that player's library.
+//! Regression for issue #3280: owner-axis mandatory "all cards" name-hate must
+//! exile every same-name copy from the parent target's owner's graveyard, hand,
+//! and library, then shuffle that player's library.
+//!
+//! Surgical Extraction itself uses "any number of cards" and still requires
+//! SearchChoice before it can be marked supported — this test uses the owner-axis
+//! "all cards" grammar to lock in the shuffle propagation fix from #3280.
 //!
 //! https://github.com/phase-rs/phase/issues/3280
 
@@ -10,7 +14,7 @@ use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
 
-const SURGICAL_EXTRACTION_ORACLE: &str = "Choose target card in a graveyard. Search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them. Then that player shuffles.";
+const OWNER_AXIS_ALL_CARDS_NAME_HATE_ORACLE: &str = "Choose target card in a graveyard. Search its owner's graveyard, hand, and library for all cards with the same name as that card and exile them. Then that player shuffles.";
 
 fn floating_mana(n: usize, ty: ManaType) -> Vec<ManaUnit> {
     (0..n)
@@ -19,7 +23,7 @@ fn floating_mana(n: usize, ty: ManaType) -> Vec<ManaUnit> {
 }
 
 #[test]
-fn surgical_extraction_exiles_same_name_cards_and_shuffles_owner_library() {
+fn owner_axis_name_hate_exiles_all_same_name_cards_and_shuffles_owner_library() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
 
@@ -38,7 +42,12 @@ fn surgical_extraction_exiles_same_name_cards_and_shuffles_owner_library() {
         .id();
 
     let surgical = scenario
-        .add_spell_to_hand_from_oracle(P0, "Surgical Extraction", true, SURGICAL_EXTRACTION_ORACLE)
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Owner-Axis Name Hate",
+            true,
+            OWNER_AXIS_ALL_CARDS_NAME_HATE_ORACLE,
+        )
         .id();
     scenario.with_mana_pool(P0, floating_mana(1, ManaType::Black));
 
