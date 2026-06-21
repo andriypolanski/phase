@@ -30,18 +30,12 @@ fn surgical_extraction_exiles_same_name_cards_and_shuffles_owner_library() {
         .add_spell_to_graveyard(P1, "Lightning Bolt", true)
         .id();
     let bolt_hand = scenario.add_spell_to_hand(P1, "Lightning Bolt", true).id();
-    let bolt_lib = scenario.add_spell_to_hand(P1, "Lightning Bolt", true).id();
-    {
-        let state = scenario.state_mut();
-        state.players[1].hand.retain(|&id| id != bolt_lib);
-        state.players[1].library.push(bolt_lib);
-        state.objects.get_mut(&bolt_lib).unwrap().zone = Zone::Library;
-    }
+    let bolt_lib = scenario
+        .add_spell_to_library_top(P1, "Lightning Bolt", true)
+        .id();
     let counterspell_gy = scenario
         .add_spell_to_graveyard(P1, "Counterspell", true)
         .id();
-
-    let lib_before = scenario.state().players[1].library.clone();
 
     let surgical = scenario
         .add_spell_to_hand_from_oracle(P0, "Surgical Extraction", true, SURGICAL_EXTRACTION_ORACLE)
@@ -49,6 +43,7 @@ fn surgical_extraction_exiles_same_name_cards_and_shuffles_owner_library() {
     scenario.with_mana_pool(P0, floating_mana(1, ManaType::Black));
 
     let mut runner = scenario.build();
+    let lib_before = runner.state().players[1].library.len();
     let outcome = runner
         .cast(surgical)
         .target_objects(&[target_bolt])
@@ -64,7 +59,7 @@ fn surgical_extraction_exiles_same_name_cards_and_shuffles_owner_library() {
     );
     assert_eq!(
         runner.state().players[1].library.len(),
-        lib_before.len(),
+        lib_before,
         "library size must be preserved after the mandatory shuffle"
     );
 }
