@@ -4210,8 +4210,13 @@ fn apply_continuous_effect_filtered(
             // subtypes (e.g., creature subtypes on Land Creatures) are preserved.
             // Abilities granted by other effects are re-added in Layer 6.
             // Intrinsic mana abilities are derived from subtypes in mana_sources.rs.
+            // CR 613.1f: mirror RemoveAllAbilities — suppress the recipient's
+            // own printed continuous statics for the rest of this pass so layer
+            // 6 cannot re-install rules-text abilities the subtype change removed
+            // (Song of the Dryads class — issue #3279).
             ContinuousModification::SetBasicLandType { land_type } => {
                 set_land_subtype_replacing(obj, land_type.as_subtype_str().to_string());
+                abilities_suppressed.insert(id);
             }
             // CR 305.7 + CR 305.6: Set the land's subtype to the basic land type
             // chosen by the granting source (Phantasmal Terrain, Convincing
@@ -4225,6 +4230,7 @@ fn apply_continuous_effect_filtered(
             ContinuousModification::SetChosenBasicLandType => {
                 if let Some(ref subtype) = chosen_subtype {
                     set_land_subtype_replacing(obj, subtype.clone());
+                    abilities_suppressed.insert(id);
                 }
             }
             // CR 707.9a: Retain the source's printed trigger on the copy.
@@ -10287,6 +10293,49 @@ mod tests {
                 .iter()
                 .any(|ability| matches!(&*ability.effect, Effect::GainLife { .. })),
             "CR 305.7: attach_to must flush layers so rules-text abilities are removed"
+        );
+    }
+
+    #[test]
+    fn song_of_dryads_from_oracle_strips_host_triggers_and_statics() {
+        use crate::game::effects::attach::attach_to;
+
+        let mut scenario = GameScenario::new();
+        let host = {
+            let mut card = scenario.add_creature(PlayerId(0), "Obuun, Mul Daya Ancestor", 3, 3);
+            card.from_oracle_text(
+                "At the beginning of combat on your turn, up to one target land you control becomes an X/X Elemental creature with trample and haste until end of turn, where X is Obuun's power. It's still a land.\nLandfall — Whenever a land you control enters, put a +1/+1 counter on target creature.",
+            );
+            card.with_trigger(TriggerMode::Attacks);
+            card.id()
+        };
+        let song = scenario
+            .add_creature(PlayerId(0), "Song of the Dryads", 0, 0)
+            .as_enchantment()
+            .from_oracle_text("Enchant permanent\nEnchanted permanent is a colorless Forest land.")
+            .id();
+
+        let mut state = scenario.build().state().clone();
+        state
+            .objects
+            .get_mut(&song)
+            .unwrap()
+            .card_types
+            .subtypes
+            .push("Aura".to_string());
+
+        attach_to(&mut state, song, host);
+
+        let host_obj = state.objects.get(&host).unwrap();
+        assert_eq!(host_obj.card_types.core_types, vec![CoreType::Land]);
+        assert!(host_obj.card_types.subtypes.contains(&"Forest".to_string()));
+        assert!(
+            host_obj.trigger_definitions.is_empty(),
+            "CR 305.7: printed triggers must be removed"
+        );
+        assert!(
+            host_obj.static_definitions.is_empty(),
+            "CR 305.7: printed statics must be removed"
         );
     }
 
