@@ -7,6 +7,7 @@ use engine::game::casting::spell_objects_available_to_cast;
 use engine::game::scenario::{GameScenario, P0};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::actions::GameAction;
+use engine::types::card_type::{CoreType, Supertype};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
@@ -107,6 +108,47 @@ fn crystal_skull_surfaces_historic_artifact_on_library_top() {
             .iter()
             .any(|a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == top_id)),
         "legal_actions must expose CastSpell for a historic library top"
+    );
+}
+
+/// CR 305.1 + CR 700.6: historic lands on top of library must surface as
+/// playable while Crystal Skull is in play.
+#[test]
+fn crystal_skull_surfaces_historic_land_on_library_top() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let _skull = scenario
+        .add_creature(P0, "Crystal Skull, Isu Spyglass", 0, 0)
+        .as_artifact()
+        .from_oracle_text(CRYSTAL_SKULL_ORACLE)
+        .id();
+    let top_id = scenario.add_card_to_library_top(P0, "Legendary Test Land");
+    let mut runner = scenario.build();
+    {
+        let obj = runner.state_mut().objects.get_mut(&top_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.card_types.supertypes.push(Supertype::Legendary);
+        obj.base_card_types = obj.card_types.clone();
+    }
+
+    let legal = engine::ai_support::legal_actions(runner.state());
+    assert!(
+        legal
+            .iter()
+            .any(|a| matches!(a, GameAction::PlayLand { object_id, .. } if *object_id == top_id)),
+        "legal_actions must expose PlayLand for a historic library top"
+    );
+
+    let card_id = runner.state().objects.get(&top_id).unwrap().card_id;
+    runner
+        .act(GameAction::PlayLand {
+            object_id: top_id,
+            card_id,
+        })
+        .expect("Crystal Skull should allow playing the historic land");
+    assert_eq!(
+        runner.state().objects.get(&top_id).unwrap().zone,
+        Zone::Battlefield
     );
 }
 
