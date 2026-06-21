@@ -57,7 +57,7 @@ fn adamaro_cda_parses_opponent_max_hand_size_extremum() {
     );
 
     let cda = parsed
-        .static_abilities
+        .statics
         .iter()
         .find(|s| s.characteristic_defining)
         .expect("Adamaro must parse a characteristic-defining static");
