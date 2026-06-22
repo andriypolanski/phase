@@ -552,7 +552,7 @@ pub enum BlockExceptionKind {
 
 /// CR 601.2f: Direction/semantic axis for mana-cost modification statics.
 /// All three modes are applied in the CR 601.2f cost-locking step.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CostModifyMode {
     /// Subtractive — reduce generic mana (floor: 0).
     Reduce,
@@ -561,6 +561,13 @@ pub enum CostModifyMode {
     /// Floor — cost cannot fall below `amount` after all Reduce/Raise settle.
     /// CR 601.2f last-step floor. Trinisphere class.
     Minimum,
+}
+
+/// Serde default for the `mode` field on activation-cost statics: the original
+/// subtractive (`Reduce`) form, so card-data serialized before the directional
+/// field was added still deserializes as a reduction (CR 118.7).
+fn cost_modify_mode_reduce() -> CostModifyMode {
+    CostModifyMode::Reduce
 }
 
 /// CR 601.2f: Whether a static-imposed additional cost applies to spell casting.
@@ -802,18 +809,34 @@ pub enum StaticMode {
         spell_filter: Option<TargetFilter>,
         action: AdditionalCostTaxAction,
     },
-    /// CR 601.2f: Reduces the generic mana cost of activated abilities matching a keyword type.
-    /// E.g., "Ninjutsu abilities you activate cost {1} less to activate."
-    /// `keyword` identifies which ability type is reduced (e.g., "ninjutsu", "equip", "cycling").
-    /// `amount` is the fixed generic mana reduction per activation.
+    /// CR 601.2f + CR 118.7: Modifies the generic mana cost of activated abilities
+    /// matching a keyword type, in the direction given by `mode`.
+    /// E.g., "Ninjutsu abilities you activate cost {1} less to activate." (`Reduce`)
+    /// or "Activated abilities of sources with the chosen name cost {2} more to
+    /// activate." (`Raise`, Skyseer's Chariot).
+    /// `keyword` identifies which ability type is modified — `"activated"` matches
+    /// every activated ability, or a tagged keyword (e.g. "ninjutsu", "equip",
+    /// "cycling", "power-up") matches the activating ability's `AbilityTag`.
+    /// `amount` is the fixed generic mana adjustment per activation.
+    ///
+    /// Directional parameterization (not a `Raise`-only sibling): the
+    /// `CostModifyMode` axis is shared with [`StaticMode::ModifyCost`] (the
+    /// cast-cost analogue). `Minimum` is not meaningful here — only `Reduce`
+    /// (CR 118.7) and `Raise` (CR 118.7 increase) are emitted/applied.
     ReduceAbilityCost {
+        /// CR 118.7: Direction of the adjustment. `#[serde(default)]` keeps
+        /// already-serialized card-data (which predates this field) reading as
+        /// the original subtractive form.
+        #[serde(default = "cost_modify_mode_reduce")]
+        mode: CostModifyMode,
         keyword: String,
         amount: u32,
         /// "This effect can't reduce the mana in that cost to less than one mana."
+        /// Only meaningful for `Reduce` — `Raise` never floors.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         minimum_mana: Option<u32>,
-        /// CR 601.2f: Dynamic multiplier for cost reduction (e.g., "for each Dragon you control").
-        /// When present, the total reduction is `amount * resolve_quantity(dynamic_count)`.
+        /// CR 601.2f: Dynamic multiplier for the adjustment (e.g., "for each Dragon you control").
+        /// When present, the total adjustment is `amount * resolve_quantity(dynamic_count)`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dynamic_count: Option<QuantityRef>,
     },
@@ -1402,9 +1425,24 @@ pub enum StaticMode {
     SkipStep {
         step: Phase,
     },
-    /// CR 609.4b: "You may spend mana as though it were mana of any color."
-    /// Allows the controller to pay colored mana costs with mana of any color.
-    SpendManaAsAnyColor,
+    /// CR 609.4b: "You may spend mana as though it were mana of any color" /
+    /// "You may spend mana of any type to cast [filtered] spells." Allows the
+    /// controller to pay colored mana costs with mana of any type or color.
+    ///
+    /// `spell_filter` is the leaf parameterization of the spell-class axis (same
+    /// CR 609.4b section, so a field, not a sibling variant):
+    /// - `None` — board-wide (Chromatic Orrery / Joiner Adept): the concession
+    ///   applies to every cost the controller pays (spell casts, effect
+    ///   payments, activations).
+    /// - `Some(filter)` — scoped to spells the controller casts that match the
+    ///   filter (Vizier of the Menagerie: "creature spells"). The concession is
+    ///   re-derived against the spell object at spend time and never applies to
+    ///   non-spell payments. Consulted by
+    ///   `casting::player_can_spend_as_any_color_for_optional_spell`.
+    SpendManaAsAnyColor {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spell_filter: Option<TargetFilter>,
+    },
     /// CR 107.4f: "For each {C} in a cost, you may pay 2 life rather than pay
     /// that mana." Player-scope payment substitution; the indicated color may
     /// be paid as 2 life instead of 1 colored mana, with the same 1-color-or-2-life
@@ -1553,11 +1591,13 @@ impl Hash for StaticMode {
         std::mem::discriminant(self).hash(state);
         match self {
             StaticMode::ReduceAbilityCost {
+                mode,
                 keyword,
                 amount,
                 minimum_mana,
                 ..
             } => {
+                mode.hash(state);
                 keyword.hash(state);
                 amount.hash(state);
                 minimum_mana.hash(state);
@@ -1790,7 +1830,7 @@ impl StaticMode {
             | StaticMode::SpeedCanIncreaseBeyondFour
             | StaticMode::DefilerCostReduction { .. }
             | StaticMode::SkipStep { .. }
-            | StaticMode::SpendManaAsAnyColor
+            | StaticMode::SpendManaAsAnyColor { .. }
             | StaticMode::PayLifeAsColoredMana { .. }
             | StaticMode::StepEndUnspentMana { .. }
             | StaticMode::CanAttackWithDefender
@@ -1862,15 +1902,26 @@ impl fmt::Display for StaticMode {
                 AdditionalCostTaxAction::Cast => write!(f, "ImposeAdditionalCastCost"),
             },
             StaticMode::ReduceAbilityCost {
+                mode,
                 keyword,
                 amount,
                 minimum_mana,
                 ..
             } => {
+                // CR 118.7: Encode the direction so the registry round-trip is
+                // lossless. A leading "+"/"-" marks Raise/Reduce; legacy strings
+                // with no marker default to Reduce in `from_str` for back-compat.
+                let sign = match mode {
+                    CostModifyMode::Raise => "+",
+                    _ => "-",
+                };
                 if let Some(minimum_mana) = minimum_mana {
-                    write!(f, "ReduceAbilityCost({keyword},{amount},{minimum_mana})")
+                    write!(
+                        f,
+                        "ReduceAbilityCost({sign}{keyword},{amount},{minimum_mana})"
+                    )
                 } else {
-                    write!(f, "ReduceAbilityCost({keyword},{amount})")
+                    write!(f, "ReduceAbilityCost({sign}{keyword},{amount})")
                 }
             }
             StaticMode::ModifyActivationLimit { keyword, new_limit } => {
@@ -2103,7 +2154,7 @@ impl fmt::Display for StaticMode {
                 write!(f, "DefilerCostReduction({color:?})")
             }
             StaticMode::SkipStep { step } => write!(f, "SkipStep({step:?})"),
-            StaticMode::SpendManaAsAnyColor => write!(f, "SpendManaAsAnyColor"),
+            StaticMode::SpendManaAsAnyColor { .. } => write!(f, "SpendManaAsAnyColor"),
             // CR 107.4f: K'rrik-class life-for-color payment substitution.
             StaticMode::PayLifeAsColoredMana { color } => {
                 write!(f, "PayLifeAsColoredMana({color:?})")
@@ -2198,7 +2249,9 @@ impl FromStr for StaticMode {
                 dynamic_count: None,
             },
             s if s.starts_with("ReduceAbilityCost(") => {
-                // Parse "ReduceAbilityCost(keyword,amount)"
+                // Parse "ReduceAbilityCost([+|-]keyword,amount[,minimum_mana])".
+                // CR 118.7: a leading "+"/"-" on the keyword marks Raise/Reduce;
+                // legacy strings without a marker default to Reduce.
                 let inner = s
                     .strip_prefix("ReduceAbilityCost(")
                     .and_then(|s| s.strip_suffix(')'));
@@ -2206,8 +2259,16 @@ impl FromStr for StaticMode {
                     let mut parts = inner.split(',');
                     if let (Some(kw), Some(amt), extra) = (parts.next(), parts.next(), parts.next())
                     {
+                        let (mode, keyword) = if let Some(rest) = kw.strip_prefix('+') {
+                            (CostModifyMode::Raise, rest)
+                        } else if let Some(rest) = kw.strip_prefix('-') {
+                            (CostModifyMode::Reduce, rest)
+                        } else {
+                            (CostModifyMode::Reduce, kw)
+                        };
                         StaticMode::ReduceAbilityCost {
-                            keyword: kw.to_string(),
+                            mode,
+                            keyword: keyword.to_string(),
                             amount: amt.parse().unwrap_or(1),
                             minimum_mana: extra.and_then(|value| value.parse().ok()),
                             dynamic_count: None,
@@ -2757,8 +2818,8 @@ pub fn block_only_creatures_with_flying_filter() -> TargetFilter {
 /// # Why not `FromStr`?
 /// `FromStr` for `StaticMode` does not enumerate every unit variant by its
 /// exact Rust identifier (it's a separate parser for human-facing strings).
-/// Using `FromStr` would map known variants like `"SpendManaAsAnyColor"` to
-/// `Other("SpendManaAsAnyColor")` whenever they aren't explicitly listed,
+/// Using `FromStr` would map known variants like `"Flying"` to
+/// `Other("Flying")` whenever they aren't explicitly listed,
 /// breaking coverage and registry lookups for those cards.
 pub fn deserialize_static_mode_fwd<'de, D>(d: D) -> Result<StaticMode, D::Error>
 where
@@ -2777,7 +2838,10 @@ where
                 });
             }
             // Try the derived deserializer so all known unit variants
-            // (e.g. "SpendManaAsAnyColor", "Flying", …) round-trip correctly.
+            // (e.g. "CantTap", "Flying", …) round-trip correctly. Struct/
+            // parameterized variants (e.g. the now-struct `SpendManaAsAnyColor`)
+            // are serialized as objects; a bare string for them legitimately
+            // falls through to `Other(s)` below.
             // If the derived impl rejects the string (unknown variant from a newer
             // engine build), fall back to Other(s) so the card still loads.
             match serde_json::from_value::<StaticMode>(serde_json::Value::String(s.clone())) {
@@ -3202,6 +3266,60 @@ mod tests {
         let json2 = r#"{"mode":"GrantsExtraVote"}"#;
         let w2: Wrapper = serde_json::from_str(json2).unwrap();
         assert_eq!(w2.mode, StaticMode::GrantsExtraVote);
+    }
+
+    /// CR 609.4b: `SpendManaAsAnyColor` widened from a unit variant to a struct
+    /// variant carrying `spell_filter: Option<TargetFilter>` (Vizier of the
+    /// Menagerie spell-class scoping). This pins three serde behaviors:
+    ///
+    /// (a) the board-wide `None` shape serializes to the externally-tagged
+    ///     struct form `{"SpendManaAsAnyColor":{}}` (the `spell_filter` field is
+    ///     `skip_serializing_if = "Option::is_none"`) and round-trips;
+    /// (b) the spell-filtered `Some(Typed(creature))` shape round-trips;
+    /// (c) a LEGACY bare string `"SpendManaAsAnyColor"` (serialized by a
+    ///     pre-widening binary that wrote a unit variant) can no longer be read
+    ///     as a struct variant — the derived deserializer rejects the string and
+    ///     `deserialize_static_mode_fwd` DOWNGRADES it to
+    ///     `Other("SpendManaAsAnyColor")`. This is asserted explicitly so the
+    ///     downgrade is documented and intentional, not a silent surprise.
+    #[test]
+    fn spend_mana_as_any_color_struct_serde_and_legacy_downgrade() {
+        use super::super::ability::{TargetFilter, TypedFilter};
+
+        // (a) board-wide None: exact serialized form + round-trip.
+        let board_wide = StaticMode::SpendManaAsAnyColor { spell_filter: None };
+        let json = serde_json::to_string(&board_wide).unwrap();
+        assert_eq!(
+            json, r#"{"SpendManaAsAnyColor":{}}"#,
+            "the None shape must serialize as the externally-tagged struct form with the \
+             skipped-if-None spell_filter field omitted"
+        );
+        let back: StaticMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, board_wide);
+
+        // (b) spell-filtered Some(Typed(creature)): round-trip preserves the filter.
+        let filtered = StaticMode::SpendManaAsAnyColor {
+            spell_filter: Some(TargetFilter::Typed(TypedFilter::creature())),
+        };
+        let json = serde_json::to_string(&filtered).unwrap();
+        let back: StaticMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, filtered, "the spell-filtered shape must round-trip");
+
+        // (c) legacy bare string downgrades to Other through the fwd-compat path.
+        #[derive(serde::Deserialize, PartialEq, Debug)]
+        struct Wrapper {
+            #[serde(deserialize_with = "deserialize_static_mode_fwd")]
+            mode: StaticMode,
+        }
+        let legacy = r#"{"mode":"SpendManaAsAnyColor"}"#;
+        let w: Wrapper = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            w.mode,
+            StaticMode::Other("SpendManaAsAnyColor".to_string()),
+            "a legacy bare-string SpendManaAsAnyColor must DOWNGRADE to Other now that the \
+             variant is a struct — the derived deserializer cannot read a struct variant from a \
+             plain string, so deserialize_static_mode_fwd falls back to Other"
+        );
     }
 
     #[test]
