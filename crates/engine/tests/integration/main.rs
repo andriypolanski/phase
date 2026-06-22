@@ -273,6 +273,7 @@ mod issue_3271_search_for_tomorrow_suspend;
 mod issue_3272_lightstall_inquisitor;
 mod issue_3274_elder_deep_fiend;
 mod issue_3279_song_of_dryads;
+mod issue_3281_uro_escape;
 mod issue_3282_consign_to_memory_counter;
 mod issue_3283_sevinne_reclamation_copy_no_self_copy;
 mod issue_3285_face_down_public_zone;

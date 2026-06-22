@@ -1022,6 +1022,49 @@ mod tests {
         );
     }
 
+    /// CR 702.138a (#3281): card-data export for Uro must carry a compound escape
+    /// cost (mana + graveyard exile residual), not the bare MTGJSON placeholder.
+    #[test]
+    fn uro_card_db_effective_escape_data() {
+        use crate::database::CardDatabase;
+        use crate::game::deck_loading::create_object_from_card_face;
+        use crate::types::keywords::{EscapeCost, KeywordKind};
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("client")
+            .join("public")
+            .join("card-data.json");
+        let db = CardDatabase::from_export(&path).expect("card-data.json");
+        let face = db
+            .get_face_by_name("Uro, Titan of Nature's Wrath")
+            .expect("Uro face");
+
+        let escape_kw = face
+            .keywords
+            .iter()
+            .find(|kw| kw.kind() == KeywordKind::Escape)
+            .expect("Uro must export Escape keyword");
+        assert!(
+            matches!(escape_kw, Keyword::Escape(EscapeCost::NonMana(_))),
+            "Uro escape must be compound NonMana, not bare placeholder: {escape_kw:?}"
+        );
+
+        let mut state = GameState::new_two_player(1);
+        let id = create_object_from_card_face(&mut state, face, PlayerId(0));
+        crate::game::zones::move_to_zone(&mut state, id, Zone::Graveyard, &mut Vec::new());
+
+        assert!(
+            object_has_effective_keyword_kind(&state, id, KeywordKind::Escape),
+            "graveyard Uro must have effective Escape"
+        );
+        assert!(
+            effective_escape_data(&state, id).is_some(),
+            "effective_escape_data must resolve Uro's compound escape cost"
+        );
+    }
+
     /// CR 702.138a: a bare-mana escape with no exile residual is a parse failure
     /// / `FromStr` placeholder, not a legal cost-free escape. `effective_escape_data`
     /// must refuse it (return `None`) so the mis-parse can't produce an illegal
