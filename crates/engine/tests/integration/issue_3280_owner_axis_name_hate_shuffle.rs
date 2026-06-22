@@ -52,10 +52,7 @@ fn owner_axis_name_hate_exiles_all_same_name_cards_and_shuffles_owner_library() 
 
     let mut runner = scenario.build();
     let lib_before = runner.state().players[1].library.len();
-    let outcome = runner
-        .cast(spell)
-        .target_objects(&[target_bolt])
-        .resolve();
+    let outcome = runner.cast(spell).target_objects(&[target_bolt]).resolve();
 
     for &id in &[target_bolt, other_bolt_gy, bolt_hand, bolt_lib] {
         outcome.assert_zone(&[id], Zone::Exile);
