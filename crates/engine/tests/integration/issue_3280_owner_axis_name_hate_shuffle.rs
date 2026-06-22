@@ -1,10 +1,9 @@
-//! Regression for issue #3280: owner-axis mandatory "all cards" name-hate must
+//! Regression for #3280 (partial): owner-axis mandatory "all cards" name-hate must
 //! exile every same-name copy from the parent target's owner's graveyard, hand,
 //! and library, then shuffle that player's library.
 //!
-//! Surgical Extraction itself uses "any number of cards" and still requires
-//! SearchChoice before it can be marked supported — this test uses the owner-axis
-//! "all cards" grammar to lock in the shuffle propagation fix from #3280.
+//! Surgical Extraction uses "any number of cards" and remains unsupported until
+//! SearchChoice is implemented — this test locks in shuffle propagation only.
 //!
 //! https://github.com/phase-rs/phase/issues/3280
 
@@ -41,7 +40,7 @@ fn owner_axis_name_hate_exiles_all_same_name_cards_and_shuffles_owner_library() 
         .add_spell_to_graveyard(P1, "Counterspell", true)
         .id();
 
-    let surgical = scenario
+    let spell = scenario
         .add_spell_to_hand_from_oracle(
             P0,
             "Owner-Axis Name Hate",
@@ -54,7 +53,7 @@ fn owner_axis_name_hate_exiles_all_same_name_cards_and_shuffles_owner_library() 
     let mut runner = scenario.build();
     let lib_before = runner.state().players[1].library.len();
     let outcome = runner
-        .cast(surgical)
+        .cast(spell)
         .target_objects(&[target_bolt])
         .resolve();
 
