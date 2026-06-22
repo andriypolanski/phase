@@ -33,6 +33,9 @@ fn owner_axis_name_hate_exiles_all_same_name_cards_and_shuffles_owner_library() 
         .add_spell_to_graveyard(P1, "Lightning Bolt", true)
         .id();
     let bolt_hand = scenario.add_spell_to_hand(P1, "Lightning Bolt", true).id();
+    let filler_lib = scenario
+        .add_spell_to_library_top(P1, "Counterspell", true)
+        .id();
     let bolt_lib = scenario
         .add_spell_to_library_top(P1, "Lightning Bolt", true)
         .id();
@@ -58,6 +61,7 @@ fn owner_axis_name_hate_exiles_all_same_name_cards_and_shuffles_owner_library() 
         outcome.assert_zone(&[id], Zone::Exile);
     }
     outcome.assert_zone(&[counterspell_gy], Zone::Graveyard);
+    outcome.assert_zone(&[filler_lib], Zone::Library);
     assert_eq!(
         runner.state().players[1].graveyard,
         vec![counterspell_gy].into(),
@@ -65,7 +69,7 @@ fn owner_axis_name_hate_exiles_all_same_name_cards_and_shuffles_owner_library() 
     );
     assert_eq!(
         runner.state().players[1].library.len(),
-        lib_before,
-        "library size must be preserved after the mandatory shuffle"
+        lib_before - 1,
+        "matching library cards must be exiled before shuffle; non-matching cards remain"
     );
 }
