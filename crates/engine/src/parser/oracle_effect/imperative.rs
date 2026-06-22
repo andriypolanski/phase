@@ -13841,7 +13841,7 @@ mod tests {
     #[test]
     fn parse_search_creation_lowering_emits_change_zone_all_with_same_name_as_parent_target() {
         use crate::types::ability::FilterProp;
-        let text = "search its owner's graveyard, hand, and library for any number of cards with that name and exile them";
+        let text = "search its owner's graveyard, hand, and library for all cards with that name and exile them";
         let ast = parse_search_and_creation_ast(text, text, &mut ParseContext::default())
             .expect("multi-zone same-name exile must parse");
         let effect = lower_search_and_creation_ast(ast);
@@ -13878,6 +13878,13 @@ mod tests {
             }
             other => panic!("Expected ChangeZoneAll, got {other:?}"),
         }
+
+        let any_number = "search its owner's graveyard, hand, and library for any number of cards with that name and exile them";
+        assert!(
+            parse_search_and_creation_ast(any_number, any_number, &mut ParseContext::default())
+                .is_none(),
+            "any-number multi-zone same-name exile must not auto-lower"
+        );
     }
 
     /// CR 113.3 + CR 604.1: `gain "<quoted ability>"` in a sub_ability context
