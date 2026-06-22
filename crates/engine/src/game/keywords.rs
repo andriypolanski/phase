@@ -1028,10 +1028,10 @@ mod tests {
     #[test]
     fn compound_escape_export_hydrates_effective_escape_data() {
         use crate::game::deck_loading::create_object_from_card_face;
-        use crate::types::card::{CardFace, CardType};
-        use crate::types::card_type::CoreType;
+        use crate::types::card::CardFace;
+        use crate::types::card_type::{CardType, CoreType, Supertype};
         use crate::types::keywords::{EscapeCost, KeywordKind};
-        use crate::types::mana::PtValue;
+        use crate::types::PtValue;
 
         // Byte-shaped like Uro's `keywords[0]` entry in card-data export.
         let escape_kw: Keyword = serde_json::from_value(serde_json::json!({
@@ -1080,7 +1080,7 @@ mod tests {
                 shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
             },
             card_type: CardType {
-                supertypes: vec!["Legendary".to_string()],
+                supertypes: vec![Supertype::Legendary],
                 core_types: vec![CoreType::Creature],
                 subtypes: vec!["Elder".to_string(), "Giant".to_string()],
             },
