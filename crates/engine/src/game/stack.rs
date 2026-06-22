@@ -3635,6 +3635,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
         }
 
@@ -6315,7 +6316,7 @@ mod tests {
             use crate::types::replacements::ReplacementEvent;
             let mut def = ReplacementDefinition::new(ReplacementEvent::CreateToken);
             def.mode = ReplacementMode::Optional { decline: None };
-            def.quantity_modification = Some(QuantityModification::Double);
+            def.quantity_modification = Some(QuantityModification::DOUBLE);
             def
         }
 
@@ -6328,7 +6329,7 @@ mod tests {
             use crate::types::replacements::ReplacementEvent;
             let mut def = ReplacementDefinition::new(ReplacementEvent::CreateToken);
             def.mode = ReplacementMode::Mandatory;
-            def.quantity_modification = Some(QuantityModification::Double);
+            def.quantity_modification = Some(QuantityModification::DOUBLE);
             def
         }
 
