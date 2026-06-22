@@ -2,15 +2,20 @@
 //!
 //! https://github.com/phase-rs/phase/issues/3281
 
-use super::support::shared_card_db;
 use engine::game::casting::spell_objects_available_to_cast;
-use engine::game::scenario::{GameScenario, P0};
-use engine::game::scenario_db::GameScenarioDbExt;
+use engine::game::deck_loading::create_object_from_card_face;
+use engine::game::scenario::{GameRunner, GameScenario, P0};
+use engine::game::zones::{add_to_zone, remove_from_zone};
 use engine::types::actions::GameAction;
+use engine::types::card::CardFace;
+use engine::types::card_type::{CardType, CoreType, Supertype};
 use engine::types::game_state::{CastPaymentMode, CastingVariant, PayCostKind, WaitingFor};
-use engine::types::mana::{ManaType, ManaUnit};
+use engine::types::identifiers::ObjectId;
+use engine::types::keywords::Keyword;
+use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::{ExileCostSourceZone, Zone};
+use engine::types::PtValue;
 
 fn mana(color: ManaType, n: usize) -> Vec<ManaUnit> {
     (0..n)
@@ -25,21 +30,78 @@ fn mana(color: ManaType, n: usize) -> Vec<ManaUnit> {
         .collect()
 }
 
+fn exported_uro_face() -> CardFace {
+    let escape_kw: Keyword = serde_json::from_value(serde_json::json!({
+        "Escape": {
+            "type": "NonMana",
+            "data": {
+                "type": "Composite",
+                "costs": [
+                    {
+                        "type": "Mana",
+                        "cost": {
+                            "type": "Cost",
+                            "shards": ["Green", "Green", "Blue", "Blue"],
+                            "generic": 0
+                        }
+                    },
+                    {
+                        "type": "Exile",
+                        "count": 5,
+                        "zone": "Graveyard",
+                        "filter": {
+                            "type": "Typed",
+                            "type_filters": ["Card"],
+                            "controller": "You",
+                            "properties": [
+                                {"type": "Another"},
+                                {"type": "InZone", "zone": "Graveyard"}
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+    }))
+    .expect("card-data export escape keyword shape");
+
+    CardFace {
+        name: "Uro, Titan of Nature's Wrath".to_string(),
+        mana_cost: ManaCost::Cost {
+            generic: 2,
+            shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
+        },
+        card_type: CardType {
+            supertypes: vec![Supertype::Legendary],
+            core_types: vec![CoreType::Creature],
+            subtypes: vec!["Elder".to_string(), "Giant".to_string()],
+        },
+        power: Some(PtValue::Fixed(6)),
+        toughness: Some(PtValue::Fixed(6)),
+        keywords: vec![escape_kw],
+        ..CardFace::default()
+    }
+}
+
+fn add_exported_uro_to_graveyard(runner: &mut GameRunner) -> ObjectId {
+    let id = create_object_from_card_face(runner.state_mut(), &exported_uro_face(), P0);
+    remove_from_zone(runner.state_mut(), id, Zone::Library, P0);
+    add_to_zone(runner.state_mut(), id, Zone::Graveyard, P0);
+    runner.state_mut().objects.get_mut(&id).unwrap().zone = Zone::Graveyard;
+    id
+}
+
 #[test]
 fn uro_escape_castable_from_graveyard_with_five_other_cards() {
-    let Some(db) = shared_card_db() else {
-        return;
-    };
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
-
-    let uro_id = scenario.add_real_card(P0, "Uro, Titan of Nature's Wrath", Zone::Graveyard, db);
-
     for idx in 0..5 {
         scenario.add_creature_to_graveyard(P0, &format!("Filler {idx}"), 1, 1);
     }
 
-    let castable = spell_objects_available_to_cast(scenario.build().state(), P0);
+    let mut runner = scenario.build();
+    let uro_id = add_exported_uro_to_graveyard(&mut runner);
+    let castable = spell_objects_available_to_cast(runner.state(), P0);
     assert!(
         castable.contains(&uro_id),
         "Uro should be castable via escape with 5 other graveyard cards; castable={castable:?}"
@@ -48,19 +110,15 @@ fn uro_escape_castable_from_graveyard_with_five_other_cards() {
 
 #[test]
 fn uro_escape_not_castable_with_only_four_other_graveyard_cards() {
-    let Some(db) = shared_card_db() else {
-        return;
-    };
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
-
-    let uro_id = scenario.add_real_card(P0, "Uro, Titan of Nature's Wrath", Zone::Graveyard, db);
-
     for idx in 0..4 {
         scenario.add_creature_to_graveyard(P0, &format!("Filler {idx}"), 1, 1);
     }
 
-    let castable = spell_objects_available_to_cast(scenario.build().state(), P0);
+    let mut runner = scenario.build();
+    let uro_id = add_exported_uro_to_graveyard(&mut runner);
+    let castable = spell_objects_available_to_cast(runner.state(), P0);
     assert!(
         !castable.contains(&uro_id),
         "Uro must not be castable via escape with only four other graveyard cards"
@@ -69,9 +127,6 @@ fn uro_escape_not_castable_with_only_four_other_graveyard_cards() {
 
 #[test]
 fn uro_escape_full_cast_pauses_for_graveyard_exile_payment() {
-    let Some(db) = shared_card_db() else {
-        return;
-    };
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_mana_pool(
@@ -82,7 +137,6 @@ fn uro_escape_full_cast_pauses_for_graveyard_exile_payment() {
             .collect(),
     );
 
-    let uro_id = scenario.add_real_card(P0, "Uro, Titan of Nature's Wrath", Zone::Graveyard, db);
     let filler: Vec<_> = (0..5)
         .map(|idx| {
             scenario
@@ -92,6 +146,7 @@ fn uro_escape_full_cast_pauses_for_graveyard_exile_payment() {
         .collect();
 
     let mut runner = scenario.build();
+    let uro_id = add_exported_uro_to_graveyard(&mut runner);
     let card_id = runner.state().objects[&uro_id].card_id;
     let result = runner
         .act(GameAction::CastSpell {
