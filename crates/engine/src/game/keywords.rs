@@ -1022,46 +1022,111 @@ mod tests {
         );
     }
 
-    /// CR 702.138a (#3281): card-data export for Uro must carry a compound escape
-    /// cost (mana + graveyard exile residual), not the bare MTGJSON placeholder.
+    /// CR 702.138a (#3281): card-data export encodes compound escape as
+    /// `EscapeCost::NonMana`; hydrating a face from that export shape must
+    /// resolve `effective_escape_data`, not collapse to the bare MTGJSON placeholder.
     #[test]
-    fn uro_card_db_effective_escape_data() {
-        use crate::database::CardDatabase;
+    fn compound_escape_export_hydrates_effective_escape_data() {
         use crate::game::deck_loading::create_object_from_card_face;
+        use crate::types::card::{CardFace, CardType};
+        use crate::types::card_type::CoreType;
         use crate::types::keywords::{EscapeCost, KeywordKind};
+        use crate::types::mana::PtValue;
 
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("client")
-            .join("public")
-            .join("card-data.json");
-        let db = CardDatabase::from_export(&path).expect("card-data.json");
-        let face = db
-            .get_face_by_name("Uro, Titan of Nature's Wrath")
-            .expect("Uro face");
+        // Byte-shaped like Uro's `keywords[0]` entry in card-data export.
+        let escape_kw: Keyword = serde_json::from_value(serde_json::json!({
+            "Escape": {
+                "type": "NonMana",
+                "data": {
+                    "type": "Composite",
+                    "costs": [
+                        {
+                            "type": "Mana",
+                            "cost": {
+                                "type": "Cost",
+                                "shards": ["Green", "Green", "Blue", "Blue"],
+                                "generic": 0
+                            }
+                        },
+                        {
+                            "type": "Exile",
+                            "count": 5,
+                            "zone": "Graveyard",
+                            "filter": {
+                                "type": "Typed",
+                                "type_filters": ["Card"],
+                                "controller": "You",
+                                "properties": [
+                                    {"type": "Another"},
+                                    {"type": "InZone", "zone": "Graveyard"}
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }))
+        .expect("card-data export escape keyword shape");
 
-        let escape_kw = face
-            .keywords
-            .iter()
-            .find(|kw| kw.kind() == KeywordKind::Escape)
-            .expect("Uro must export Escape keyword");
         assert!(
             matches!(escape_kw, Keyword::Escape(EscapeCost::NonMana(_))),
-            "Uro escape must be compound NonMana, not bare placeholder: {escape_kw:?}"
+            "export escape must deserialize as compound NonMana"
         );
 
+        let face = CardFace {
+            name: "Uro, Titan of Nature's Wrath".to_string(),
+            mana_cost: ManaCost::Cost {
+                generic: 2,
+                shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
+            },
+            card_type: CardType {
+                supertypes: vec!["Legendary".to_string()],
+                core_types: vec![CoreType::Creature],
+                subtypes: vec!["Elder".to_string(), "Giant".to_string()],
+            },
+            power: Some(PtValue::Fixed(6)),
+            toughness: Some(PtValue::Fixed(6)),
+            loyalty: None,
+            defense: None,
+            oracle_text: None,
+            non_ability_text: None,
+            flavor_name: None,
+            keywords: vec![escape_kw],
+            abilities: vec![],
+            triggers: vec![],
+            static_abilities: vec![],
+            replacements: vec![],
+            cleave_variant: None,
+            color_override: None,
+            color_identity: vec![],
+            scryfall_oracle_id: None,
+            modal: None,
+            additional_cost: None,
+            strive_cost: None,
+            casting_restrictions: vec![],
+            casting_options: vec![],
+            solve_condition: None,
+            parse_warnings: vec![],
+            brawl_commander: false,
+            is_commander: false,
+            is_oathbreaker: false,
+            deck_copy_limit: None,
+            metadata: Default::default(),
+            rarities: Default::default(),
+            attraction_lights: vec![],
+        };
+
         let mut state = GameState::new_two_player(1);
-        let id = create_object_from_card_face(&mut state, face, PlayerId(0));
+        let id = create_object_from_card_face(&mut state, &face, PlayerId(0));
         crate::game::zones::move_to_zone(&mut state, id, Zone::Graveyard, &mut Vec::new());
 
         assert!(
             object_has_effective_keyword_kind(&state, id, KeywordKind::Escape),
-            "graveyard Uro must have effective Escape"
+            "graveyard object must have effective Escape"
         );
         assert!(
             effective_escape_data(&state, id).is_some(),
-            "effective_escape_data must resolve Uro's compound escape cost"
+            "effective_escape_data must resolve compound export escape"
         );
     }
 

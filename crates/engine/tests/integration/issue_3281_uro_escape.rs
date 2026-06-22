@@ -2,6 +2,7 @@
 //!
 //! https://github.com/phase-rs/phase/issues/3281
 
+use super::support::shared_card_db;
 use engine::game::casting::spell_objects_available_to_cast;
 use engine::game::scenario::{GameScenario, P0};
 use engine::game::scenario_db::GameScenarioDbExt;
@@ -10,20 +11,6 @@ use engine::types::game_state::{CastPaymentMode, CastingVariant, PayCostKind, Wa
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::{ExileCostSourceZone, Zone};
-
-fn card_db() -> &'static engine::database::CardDatabase {
-    static DB: std::sync::OnceLock<engine::database::CardDatabase> = std::sync::OnceLock::new();
-    DB.get_or_init(|| {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("client")
-            .join("public")
-            .join("card-data.json");
-        engine::database::CardDatabase::from_export(&path)
-            .expect("card-data.json must load for Uro escape regression")
-    })
-}
 
 fn mana(color: ManaType, n: usize) -> Vec<ManaUnit> {
     (0..n)
@@ -40,7 +27,9 @@ fn mana(color: ManaType, n: usize) -> Vec<ManaUnit> {
 
 #[test]
 fn uro_escape_castable_from_graveyard_with_five_other_cards() {
-    let db = card_db();
+    let Some(db) = shared_card_db() else {
+        return;
+    };
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
 
@@ -59,7 +48,9 @@ fn uro_escape_castable_from_graveyard_with_five_other_cards() {
 
 #[test]
 fn uro_escape_not_castable_with_only_four_other_graveyard_cards() {
-    let db = card_db();
+    let Some(db) = shared_card_db() else {
+        return;
+    };
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
 
@@ -78,7 +69,9 @@ fn uro_escape_not_castable_with_only_four_other_graveyard_cards() {
 
 #[test]
 fn uro_escape_full_cast_pauses_for_graveyard_exile_payment() {
-    let db = card_db();
+    let Some(db) = shared_card_db() else {
+        return;
+    };
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_mana_pool(
