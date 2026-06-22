@@ -58,9 +58,10 @@ fn owner_axis_name_hate_exiles_all_same_name_cards_and_shuffles_owner_library() 
         outcome.assert_zone(&[id], Zone::Exile);
     }
     outcome.assert_zone(&[counterspell_gy], Zone::Graveyard);
-    assert!(
-        runner.state().players[1].graveyard.is_empty(),
-        "opponent graveyard must be empty after exiling both Lightning Bolts"
+    assert_eq!(
+        runner.state().players[1].graveyard,
+        vec![counterspell_gy],
+        "only non-matching graveyard cards may remain after same-name exile"
     );
     assert_eq!(
         runner.state().players[1].library.len(),
