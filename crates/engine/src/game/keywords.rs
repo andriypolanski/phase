@@ -956,10 +956,12 @@ mod tests {
     use std::sync::Arc;
 
     use crate::ai_support::legal_actions;
+    use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, Effect, ManaContribution, ManaProduction,
+        AbilityDefinition, AbilityKind, Effect, ManaContribution, ManaProduction, TargetFilter,
     };
     use crate::types::actions::GameAction;
+    use crate::types::counter::CounterType;
     use crate::types::game_state::WaitingFor;
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
@@ -986,10 +988,6 @@ mod tests {
 
     #[test]
     fn resolve_self_mana_in_ability_cost_descends_per_counter_base() {
-        use crate::game::zones::create_object;
-        use crate::types::ability::TargetFilter;
-        use crate::types::counter::CounterType;
-
         let mut state = GameState::new_two_player(1);
         let source = create_object(
             &mut state,
@@ -1034,10 +1032,6 @@ mod tests {
 
     #[test]
     fn concretize_encore_mana_value_descends_per_counter_base() {
-        use crate::game::zones::create_object;
-        use crate::types::ability::TargetFilter;
-        use crate::types::counter::CounterType;
-
         let mut state = GameState::new_two_player(1);
         let source = create_object(
             &mut state,
