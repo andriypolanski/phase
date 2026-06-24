@@ -143,9 +143,7 @@ fn activation_ability_definition(
     source_id: ObjectId,
     ability_index: usize,
 ) -> Option<AbilityDefinition> {
-    let Some(obj) = state.objects.get(&source_id) else {
-        return None;
-    };
+    let obj = state.objects.get(&source_id)?;
     let mut ability = if let Some(ability) = obj.abilities.get(ability_index) {
         ability.clone()
     } else {

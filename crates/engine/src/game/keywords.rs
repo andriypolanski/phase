@@ -1744,7 +1744,6 @@ mod tests {
     }
 
     use crate::game::combat::{AttackerInfo, CombatState};
-    use crate::game::zones::create_object;
     use crate::types::events::GameEvent;
     use crate::types::game_state::GameState;
 
@@ -1957,7 +1956,6 @@ mod tests {
     #[test]
     fn ninjutsu_enter_as_copy_defers_combat_placement_until_copy_resolves() {
         use crate::game::engine::apply_as_current;
-        use crate::game::zones::create_object;
         use crate::types::ability::{
             AbilityDefinition, AbilityKind, ContinuousModification, Effect, ReplacementDefinition,
             ReplacementMode, TargetFilter, TargetRef, TypeFilter, TypedFilter,
