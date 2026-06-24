@@ -342,6 +342,7 @@ mod issue_3988_vaultborn_tyrant;
 mod issue_3989_bloodchiefs_thirst;
 mod issue_3991_carnage_interpreter;
 mod issue_3992_lotleth_regenerate_combat;
+mod issue_3993_delve_cancel_payment;
 mod issue_3994_malevolent_rumble;
 mod issue_3996_return_the_favor;
 mod issue_3998_marang_river_prowler;
