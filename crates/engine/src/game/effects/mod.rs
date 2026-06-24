@@ -1299,6 +1299,37 @@ fn freeze_reflexive_event_count(
     u32::try_from(count).ok().filter(|&c| c > 0)
 }
 
+/// CR 608.2c: A conditional clause's `else_ability` target slots are not
+/// collected when the trigger or spell ability is put on the stack — only the
+/// gated head's targets are announced (CR 603.3d). When the `if` branch fails
+/// and the else branch runs, bind its targets at resolution when exactly one
+/// legal combination exists (CR 115.4).
+fn try_assign_deferred_else_branch_targets(
+    state: &GameState,
+    else_resolved: &mut ResolvedAbility,
+) -> Result<(), EffectError> {
+    if !else_resolved.targets.is_empty() {
+        return Ok(());
+    }
+    let slots = crate::game::ability_utils::build_target_slots(state, else_resolved)
+        .map_err(|e| EffectError::InvalidParam(e.to_string()))?;
+    if slots.is_empty() {
+        return Ok(());
+    }
+    if let Some(selected) = crate::game::ability_utils::auto_select_targets_for_ability(
+        state,
+        else_resolved,
+        &slots,
+        &else_resolved.target_constraints,
+    )
+    .map_err(|e| EffectError::InvalidParam(e.to_string()))?
+    {
+        crate::game::ability_utils::assign_targets_in_chain(state, else_resolved, &selected)
+            .map_err(|e| EffectError::InvalidParam(e.to_string()))?;
+    }
+    Ok(())
+}
+
 /// CR 603.12: Begin reflexive target selection for a `WhenYouDo` /
 /// `QuantityCheck` ability whose targets were deferred to resolution time.
 /// Returns `true` when `WaitingFor::TriggerTargetSelection` (or inline random
@@ -5159,6 +5190,7 @@ fn resolve_chain_body(
                     else_resolved.targets = ability.targets.clone();
                 }
                 else_resolved.context = ability.context.clone();
+                try_assign_deferred_else_branch_targets(state, &mut else_resolved)?;
                 resolve_ability_chain(state, &else_resolved, events, depth + 1)?;
             } else if let Some(ref sub) = ability.sub_ability {
                 // CR 608.2c: A skipped `IfYouDo` head whose effect
@@ -6152,6 +6184,7 @@ fn resolve_chain_body(
                         ability,
                         effect_context_object.as_ref(),
                     );
+                    try_assign_deferred_else_branch_targets(state, &mut else_resolved)?;
                     resolve_ability_chain(state, &else_resolved, events, depth + 1)?;
                 } else if let Some(ref next) = sub.sub_ability {
                     // CR 608.2c: A separate-sentence sibling after the gated sub is

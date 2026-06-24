@@ -510,17 +510,6 @@ fn fire_caustic_bronco_attack(runner: &mut engine::game::scenario::GameRunner, b
 
 const WICK: &str = "Whenever Wick or another Rat you control enters, create a 1/1 black Snail creature token if you don't control a Snail. Otherwise, put a +1/+1 counter on a Snail you control.";
 
-/// STOP-AND-RETURN (out of scope): Wick's "create a token if you don't control a
-/// Snail. Otherwise, …" parses its condition correctly, but the trailing-`if` on
-/// the FIRST clause of a trigger is HOISTED to the trigger-level intervening-`if`
-/// (`TriggerDefinition.condition`, CR 603.4) instead of staying on the clause as
-/// `execute.condition`. With the condition at the trigger level, (a) the
-/// "Otherwise" plumbing finds no clause-level `condition.is_some()` anchor and
-/// (b) the whole trigger would only fire when you control no Snail (incorrect —
-/// Wick always triggers). The hoist-vs-rehome decision lives in
-/// `parser/oracle_effect/mod.rs` (NOT this change's scope, and currently under
-/// concurrent edit). Ignored until that placement is fixed; see the report.
-#[ignore = "trailing-if on first trigger clause is hoisted to trigger-level condition; fix lives in oracle_effect/mod.rs (out of scope)"]
 #[test]
 fn wick_no_snail_creates_token() {
     let mut scenario = GameScenario::new_n_player(2, 29);
@@ -544,10 +533,6 @@ fn wick_no_snail_creates_token() {
     );
 }
 
-/// STOP-AND-RETURN (out of scope): same trigger-level hoist as
-/// `wick_no_snail_creates_token`. Ignored until the clause-vs-trigger condition
-/// placement is fixed in `oracle_effect/mod.rs`.
-#[ignore = "trailing-if on first trigger clause is hoisted to trigger-level condition; fix lives in oracle_effect/mod.rs (out of scope)"]
 #[test]
 fn wick_with_snail_pumps_existing_snail() {
     let mut scenario = GameScenario::new_n_player(2, 29);
