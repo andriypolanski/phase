@@ -239,6 +239,65 @@ fn resolve_keyword_mana_cost(state: &GameState, object_id: ObjectId, cost: &Mana
     }
 }
 
+/// CR 602.1a + CR 702.141a: Resolve `SelfManaCost` / `SelfManaValue` placeholders
+/// anywhere in an activated ability's cost tree before legality or payment.
+/// The mana payment path treats those placeholders as free, so every activation
+/// fetch must concretize them against the source object (Sliver Gravemother class).
+pub(crate) fn resolve_self_mana_in_ability_cost(
+    state: &GameState,
+    source_id: ObjectId,
+    cost: &crate::types::ability::AbilityCost,
+) -> crate::types::ability::AbilityCost {
+    use crate::types::ability::AbilityCost;
+    match cost {
+        AbilityCost::Mana { cost: mana } => AbilityCost::Mana {
+            cost: resolve_keyword_mana_cost(state, source_id, mana),
+        },
+        AbilityCost::Composite { costs } => AbilityCost::Composite {
+            costs: costs
+                .iter()
+                .map(|sub| resolve_self_mana_in_ability_cost(state, source_id, sub))
+                .collect(),
+        },
+        AbilityCost::OneOf { costs } => AbilityCost::OneOf {
+            costs: costs
+                .iter()
+                .map(|sub| resolve_self_mana_in_ability_cost(state, source_id, sub))
+                .collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// CR 702.141a + CR 202.3: Encore grants that bind X to the card's mana value
+/// (Sliver Gravemother) must not enter `ChooseXValue` with X choosable at 0.
+/// When the synthesized cost still carries a symbolic `{X}` shard, concretize it
+/// to the source object's mana value before activation proceeds.
+pub(crate) fn concretize_encore_mana_value_in_ability_cost(
+    state: &GameState,
+    source_id: ObjectId,
+    cost: &mut crate::types::ability::AbilityCost,
+) {
+    use crate::game::casting_costs::cost_has_x;
+    use crate::types::ability::AbilityCost;
+    match cost {
+        AbilityCost::Mana { cost: mana } if cost_has_x(mana) => {
+            let mana_value = state
+                .objects
+                .get(&source_id)
+                .map(|obj| obj.mana_cost.mana_value())
+                .unwrap_or(0);
+            mana.concretize_x(mana_value);
+        }
+        AbilityCost::Composite { costs } | AbilityCost::OneOf { costs } => {
+            for sub in costs {
+                concretize_encore_mana_value_in_ability_cost(state, source_id, sub);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// CR 702.97a / CR 702.128a / CR 702.129a / CR 702.141a + CR 602.1a: Resolve a
 /// `ManaCost::SelfManaCost` or `ManaCost::SelfManaValue` payload carried by a
 /// granted graveyard activated keyword to the recipient card's concrete mana
