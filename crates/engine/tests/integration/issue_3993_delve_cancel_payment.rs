@@ -9,6 +9,7 @@
 use engine::game::scenario::{GameScenario, P0};
 use engine::types::actions::GameAction;
 use engine::types::game_state::{CastPaymentMode, ConvokeMode, WaitingFor};
+use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
@@ -17,16 +18,20 @@ const DELVE_DRAW_ORACLE: &str =
     "Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\n\
 Draw a card.";
 
-fn add_mana(runner: &mut engine::game::scenario::GameRunner, ty: ManaType, count: usize) {
-    let pool = &mut runner.state_mut().players[P0.0 as usize].mana_pool;
-    for _ in 0..count {
-        pool.add(ManaUnit::new(
-            ty,
-            engine::types::identifiers::ObjectId(0),
+fn mana_pool(generic: usize, red: usize) -> Vec<ManaUnit> {
+    let mut pool = Vec::new();
+    for _ in 0..generic {
+        pool.push(ManaUnit::new(
+            ManaType::Colorless,
+            ObjectId(0),
             false,
             vec![],
         ));
     }
+    for _ in 0..red {
+        pool.push(ManaUnit::new(ManaType::Red, ObjectId(0), false, vec![]));
+    }
+    pool
 }
 
 #[test]
@@ -36,16 +41,11 @@ fn issue_3993_cancel_during_delve_payment_returns_graveyard_cards() {
     let spell = scenario
         .add_spell_to_hand_from_oracle(P0, "Delve Draw", false, DELVE_DRAW_ORACLE)
         .id();
-    let delve_a = scenario
-        .add_spell_to_graveyard(P0, "Old Bolt", true)
-        .id();
-    let delve_b = scenario
-        .add_spell_to_graveyard(P0, "Old Shock", true)
-        .id();
+    let delve_a = scenario.add_spell_to_graveyard(P0, "Old Bolt", true).id();
+    let delve_b = scenario.add_spell_to_graveyard(P0, "Old Shock", true).id();
+    scenario.with_mana_pool(P0, mana_pool(3, 1));
 
     let mut runner = scenario.build();
-    add_mana(&mut runner, ManaType::Colorless, 3);
-    add_mana(&mut runner, ManaType::Red, 1);
 
     let card_id = runner.state().objects[&spell].card_id;
     runner
