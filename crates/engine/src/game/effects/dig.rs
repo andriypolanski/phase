@@ -2,7 +2,9 @@ use crate::game::filter::{
     matches_target_filter, target_filter_uses_unresolved_resolution_referent, FilterContext,
 };
 use crate::game::quantity::resolve_quantity_with_targets;
-use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter};
+use crate::types::ability::{
+    DigSource, Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter,
+};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, PendingDeferredDigChoice, WaitingFor};
 use crate::types::zones::Zone;
@@ -24,6 +26,7 @@ pub fn resolve(
         rest_dest,
         is_reveal,
         enter_tapped,
+        dig_source,
     ) = match &ability.effect {
         Effect::Dig {
             player,
@@ -35,6 +38,7 @@ pub fn resolve(
             rest_destination,
             reveal,
             enter_tapped,
+            source,
         } => {
             let resolved_count =
                 resolve_quantity_with_targets(state, count, ability).max(0) as usize;
@@ -55,6 +59,7 @@ pub fn resolve(
                 *rest_destination,
                 *reveal,
                 *enter_tapped,
+                *source,
             )
         }
         _ => (
@@ -67,10 +72,32 @@ pub fn resolve(
             None,
             false,
             false,
+            DigSource::Library,
         ),
     };
 
     let library_owner = super::resolve_player_for_context_ref(state, ability, library_owner_filter);
+
+    // CR 701.20e + CR 608.2c: PriorLook means the card set was already populated
+    // by a preceding look-only Dig (e.g. Birthing Ritual: sacrifice sits between
+    // the look step and the choice step). Read from private_look_ids so that
+    // effect_context_object (the sacrifice snapshot) is available when
+    // selectable_cards is computed.
+    if dig_source == DigSource::PriorLook {
+        return resolve_from_prior_look(
+            state,
+            ability,
+            events,
+            library_owner,
+            raw_keep_num,
+            is_up_to,
+            filter,
+            kept_dest,
+            rest_dest,
+            enter_tapped,
+        );
+    }
+
     let player = state
         .players
         .iter()
@@ -432,6 +459,7 @@ mod tests {
                 rest_destination: None,
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
             vec![],
             ObjectId(100),
@@ -513,6 +541,7 @@ mod tests {
                 rest_destination: None,
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
             vec![crate::types::ability::TargetRef::Player(PlayerId(1))],
             ObjectId(100),
@@ -564,6 +593,7 @@ mod tests {
                 rest_destination: None,
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
             vec![],
             ObjectId(100),
@@ -615,6 +645,7 @@ mod tests {
                 rest_destination: Some(Zone::Library),
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
             vec![],
             ObjectId(100),
@@ -1299,6 +1330,7 @@ mod tests {
                 rest_destination: None,
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
             vec![],
             ObjectId(100),
@@ -1373,6 +1405,7 @@ mod tests {
                 rest_destination: Some(Zone::Library),
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
             vec![],
             ObjectId(100),
@@ -1401,24 +1434,17 @@ mod tests {
         );
     }
 
-    /// Runtime regression test for issue #420 (Birthing Ritual). Drives the
-    /// real `resolve()` Dig pipeline with the ability the *parser* produces for
-    /// Birthing Ritual's triggered effect, and asserts the mana-value-relative
-    /// filter restricts the looked-at pile to creature cards with mana value
-    /// ≤ (sacrificed creature's mana value + 1).
+    /// Runtime regression test for issue #4273 (Birthing Ritual). The parser
+    /// now assembles: look-only Dig → Sacrifice → `from_prior_look` choice Dig.
+    /// The choice Dig reads `state.private_look_ids` and evaluates the CMC
+    /// filter AFTER the sacrifice snapshot is available in
+    /// `effect_context_object`.
     ///
-    /// CR 202.3 + CR 608.2k: the "where X is 1 plus the sacrificed creature's
-    /// mana value" bound resolves `QuantityRef::ObjectManaValue { CostPaidObject
-    /// }` against the sacrificed creature snapshot held in
-    /// `ResolvedAbility.effect_context_object`. CR 701.20e: the cards are looked
-    /// at (private), then a matching creature is put onto the battlefield.
-    ///
-    /// Pre-fix (#420): the parser dropped clause 3 into a bare
-    /// `ChangeZone { ParentTarget }`, leaving the `Dig` with `filter: Any` and
-    /// `destination: None` — every library creature would be selectable and the
-    /// `selectable_cards.len() == 1` assertion fails. Post-fix the `Dig` carries
-    /// `Cmc { LE, Offset { ObjectManaValue { CostPaidObject }, +1 } }`, so only
-    /// the mana-value-4 creature (≤ 3 + 1) is selectable.
+    /// CR 202.3 + CR 608.2c: the "where X is 1 plus the sacrificed creature's
+    /// mana value" bound resolves against the sacrificed creature snapshot held
+    /// in `ResolvedAbility.effect_context_object`. CR 701.20e: the look-only
+    /// step populates `private_look_ids`; the PriorLook step reads it and
+    /// presents WaitingFor::DigChoice with selectable_cards correctly filtered.
     #[test]
     fn birthing_ritual_runtime_dig_filter_respects_sacrificed_creature_mana_value() {
         use crate::parser::oracle_effect::parse_effect_chain;
@@ -1426,10 +1452,8 @@ mod tests {
         use crate::types::card_type::CoreType;
         use crate::types::mana::ManaCost;
 
-        // Parse the effect text of Birthing Ritual's triggered ability — the
-        // portion after the "At the beginning of your end step, if you control
-        // a creature, " trigger/intervening-if prefix. The first def in the
-        // chain is the looked-at-top-seven `Dig`.
+        // Parse the Birthing Ritual effect text and extract the from_prior_look
+        // choice Dig — it is wired as Sacrifice.sub_ability in the new chain.
         let def = parse_effect_chain(
             "look at the top seven cards of your library. Then you may sacrifice a creature. \
              If you do, you may put a creature card with mana value X or less from among those \
@@ -1437,10 +1461,25 @@ mod tests {
              Put the rest on the bottom of your library in a random order.",
             AbilityKind::Spell,
         );
+        // Chain: def(Dig, look-only) → sub(Sacrifice) → sub(Dig, PriorLook)
+        let sac_def = def
+            .sub_ability
+            .as_deref()
+            .expect("Dig must have Sacrifice as sub_ability");
+        let choice_def = sac_def
+            .sub_ability
+            .as_deref()
+            .expect("Sacrifice must have PriorLook Dig as sub_ability");
         assert!(
-            matches!(&*def.effect, Effect::Dig { .. }),
-            "parser must assemble a Dig as the first effect, got {:?}",
-            def.effect
+            matches!(
+                &*choice_def.effect,
+                Effect::Dig {
+                    source: DigSource::PriorLook,
+                    ..
+                }
+            ),
+            "Sacrifice.sub_ability must be a PriorLook Dig, got {:?}",
+            choice_def.effect
         );
 
         let mut state = GameState::new_two_player(42);
@@ -1468,8 +1507,10 @@ mod tests {
                 .snapshot_for_mana_spent(),
         };
 
-        // Library top: a mana-value-4 creature (selectable, 4 ≤ 4) and a
-        // mana-value-5 creature (NOT selectable, 5 > 4).
+        // The looked-at set (normally populated by the look-only Dig): a
+        // mana-value-4 creature (selectable, 4 ≤ 4) and a mana-value-5
+        // creature (NOT selectable, 5 > 4). Place them in Library so
+        // DigChoice's `library_owner` resolution still finds the player.
         let mv4 = create_object(
             &mut state,
             CardId(901),
@@ -1490,10 +1531,18 @@ mod tests {
             obj.mana_cost = ManaCost::generic(cmc as u32);
         }
 
-        // Build the ResolvedAbility from the parser-produced Dig, carrying the
-        // sacrificed creature snapshot the runtime reads for the CMC bound.
-        let mut ability =
-            ResolvedAbility::new((*def.effect).clone(), vec![], ObjectId(100), PlayerId(0));
+        // Simulate what the look-only Dig would have stored.
+        state.private_look_ids = vec![mv4, mv5];
+        state.private_look_player = Some(PlayerId(0));
+
+        // Build ResolvedAbility from the PriorLook choice Dig, carrying
+        // the sacrifice snapshot the runtime reads for the CMC bound.
+        let mut ability = ResolvedAbility::new(
+            (*choice_def.effect).clone(),
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
         ability.effect_context_object = Some(sac_snapshot);
 
         let mut events = Vec::new();
@@ -1509,7 +1558,7 @@ mod tests {
                 assert_eq!(
                     cards.len(),
                     2,
-                    "both library creatures are looked at (CR 701.20e)"
+                    "both looked-at creatures appear in the DigChoice (CR 701.20e)"
                 );
                 assert_eq!(
                     selectable_cards,
@@ -1528,6 +1577,92 @@ mod tests {
             }
             other => panic!("Expected DigChoice, got {:?}", other),
         }
+    }
+
+    /// CR 608.2c + CR 701.20e: decline branch — when the player declines the
+    /// optional sacrifice (Birthing Ritual), ALL looked-at cards must go to the
+    /// bottom of the library via the `PriorLook` Dig with `keep_count=0`
+    /// wired as the choice Dig's `else_ability`. No WaitingFor::DigChoice is
+    /// surfaced.
+    #[test]
+    fn birthing_ritual_decline_sacrifice_puts_all_looked_at_cards_on_bottom() {
+        use crate::parser::oracle_effect::parse_effect_chain;
+        use crate::types::ability::AbilityKind;
+
+        let def = parse_effect_chain(
+            "look at the top seven cards of your library. Then you may sacrifice a creature. \
+             If you do, you may put a creature card with mana value X or less from among those \
+             cards onto the battlefield, where X is 1 plus the sacrificed creature's mana value. \
+             Put the rest on the bottom of your library in a random order.",
+            AbilityKind::Spell,
+        );
+        let sac_def = def.sub_ability.as_deref().unwrap();
+        let choice_def = sac_def.sub_ability.as_deref().unwrap();
+        // The decline branch is the choice Dig's else_ability.
+        let decline_def = choice_def
+            .else_ability
+            .as_deref()
+            .expect("choice Dig must have else_ability (decline: all on bottom)");
+        assert!(
+            matches!(
+                &*decline_def.effect,
+                Effect::Dig {
+                    source: DigSource::PriorLook,
+                    keep_count: Some(0),
+                    ..
+                }
+            ),
+            "else_ability must be a PriorLook Dig with keep_count=0, got {:?}",
+            decline_def.effect
+        );
+
+        let mut state = GameState::new_two_player(42);
+
+        // Place two "looked at" cards at the library top and pre-populate
+        // private_look_ids so the decline-branch Dig sees them.
+        let card_a = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "CardA".into(),
+            Zone::Library,
+        );
+        let card_b = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "CardB".into(),
+            Zone::Library,
+        );
+        state.private_look_ids = vec![card_a, card_b];
+        state.private_look_player = Some(PlayerId(0));
+
+        let ability = ResolvedAbility::new(
+            (*decline_def.effect).clone(),
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // No interactive choice must be surfaced.
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::DigChoice { .. }),
+            "decline branch must not surface a DigChoice"
+        );
+        // Both cards must be at the library bottom (last positions).
+        let lib = &state.players[0].library;
+        assert!(
+            lib.last() == Some(&card_a) || lib.last() == Some(&card_b),
+            "declined looked-at cards must be at library bottom, got {lib:?}"
+        );
+        // private_look_ids is cleared after the decline branch.
+        assert!(
+            state.private_look_ids.is_empty(),
+            "private_look_ids must be cleared after decline-branch routing"
+        );
     }
 
     /// CR 201.2 + CR 201.2a: `FilterProp::NameMatchesAnyPermanent` must restrict
@@ -1574,6 +1709,7 @@ mod tests {
                 rest_destination: Some(Zone::Library),
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
             vec![],
             ObjectId(200),
@@ -1628,6 +1764,7 @@ mod tests {
                 rest_destination: Some(Zone::Library),
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
             vec![],
             ObjectId(201),
