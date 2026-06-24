@@ -1604,18 +1604,48 @@ fn exile_alt_cost_permission_grants_to_player(
     }
 }
 
+/// CR 601.2a + CR 118.9: Whether an `ExileWithAltCost` permission carries the
+/// casting card's own printed mana cost (Jace −3 class) rather than a fixed
+/// alternate cost or a free-cast zero.
+fn exile_alt_cost_permission_uses_casting_cards_mana_cost(
+    permission_cost: &ManaCost,
+    obj: &crate::game::game_object::GameObject,
+) -> bool {
+    match permission_cost {
+        ManaCost::SelfManaCost => true,
+        cost if cost.is_without_paying_mana() => false,
+        cost => {
+            if *cost == obj.mana_cost {
+                return true;
+            }
+            obj.back_face
+                .as_ref()
+                .is_some_and(|bf| *cost == bf.mana_cost)
+        }
+    }
+}
+
 /// CR 709.3 + CR 712.11b + CR 601.2a: `CastFromZone` and similar grants stamp
 /// `ExileWithAltCost { cost: obj.mana_cost }` when the card is permitted to be
 /// cast for its normal mana cost. Split cards and spell//spell MDFCs choose a
-/// face at cast time, so the payable cost is the active face's mana cost — not
-/// the front-face snapshot stored on the permission (#3987).
+/// face at cast time, so after face choice the payable cost is the active
+/// face's mana cost — not the front-face snapshot stored on the permission
+/// (#3987). Free-cast and fixed alternate costs must keep the stored permission
+/// cost (CR 118.9a).
 fn resolve_exile_with_alt_cost_permission_mana_cost(
     permission_cost: &ManaCost,
     obj: &crate::game::game_object::GameObject,
 ) -> ManaCost {
+    if permission_cost.is_without_paying_mana() {
+        return permission_cost.clone();
+    }
     match permission_cost {
         ManaCost::SelfManaCost => obj.mana_cost.clone(),
-        _ if obj.modal_back_face || cast_spell_face_choice_available(obj) => obj.mana_cost.clone(),
+        _ if obj.modal_back_face
+            && exile_alt_cost_permission_uses_casting_cards_mana_cost(permission_cost, obj) =>
+        {
+            obj.mana_cost.clone()
+        }
         other => other.clone(),
     }
 }

@@ -7,7 +7,7 @@
 use engine::game::scenario::{GameScenario, P0};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::ability::{CastingPermission, Duration};
-use engine::types::mana::{ManaType, ManaUnit};
+use engine::types::mana::{ManaCost, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
 
@@ -68,6 +68,58 @@ fn graveyard_split_card_cast_offers_face_choice_for_affordable_half() {
         .map(|e| &commit.state().objects[&e.source_id]);
     let Some(spell) = stack_spell else {
         panic!("Death half should reach the stack after graveyard face choice");
+    };
+    assert_eq!(spell.name, "Death");
+}
+
+#[test]
+fn exiled_split_card_free_cast_permission_stays_free_after_face_choice() {
+    let Some(db) = shared_card_db() else {
+        return;
+    };
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let life = scenario.add_real_card(P0, "Life", Zone::Exile, db);
+    let creature_in_gy = scenario.add_real_card(P0, "Grizzly Bears", Zone::Graveyard, db);
+
+    let mut runner = scenario.build();
+    engine::game::rehydrate_game_from_card_db(runner.state_mut(), db);
+
+    {
+        let obj = runner.state_mut().objects.get_mut(&life).unwrap();
+        obj.casting_permissions
+            .push(CastingPermission::ExileWithAltCost {
+                cost: ManaCost::zero(),
+                cast_transformed: false,
+                constraint: None,
+                granted_to: Some(P0),
+                resolution_cleanup: None,
+                duration: None,
+                exile_instead_of_graveyard_on_resolve: false,
+                enters_with_counter: None,
+            });
+    }
+
+    assert!(
+        engine::game::casting::can_cast_object_now(runner.state(), P0, life),
+        "free-cast split card must stay castable with no mana in pool"
+    );
+
+    let commit = runner
+        .cast(life)
+        .modal_back_face(true)
+        .target_object(creature_in_gy)
+        .commit();
+
+    let stack_spell = commit
+        .state()
+        .stack
+        .last()
+        .map(|e| &commit.state().objects[&e.source_id]);
+    let Some(spell) = stack_spell else {
+        panic!("Death half should reach the stack via a free exile permission");
     };
     assert_eq!(spell.name, "Death");
 }
