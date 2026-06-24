@@ -5541,23 +5541,9 @@ pub(crate) fn replacement_ordering_is_material(
     candidates: &[ReplacementId],
     proposed: &ProposedEvent,
 ) -> bool {
-    let proposed_to = match proposed {
-        ProposedEvent::ZoneChange { to, .. } => Some(*to),
-        _ => None,
-    };
-    // CR 616.1: classify each candidate. A set is material if either:
-    //  - any candidate is *unconditionally* material (zone redirect, controller
-    //    override, copy-as-it-enters, count/mana side-field modifier — shapes
-    //    that change another candidate's applicability or whose ordering is
-    //    unconditionally observable), or
-    //  - two or more candidates modify the *same* event field with
-    //    non-commuting modifications, so the order changes the outcome (tapland
-    //    + Spelunking both write `enter_tapped`; Doubling Season + Hardened
-    //    Scales both modify an `AddCounter` count). A single modifier of a field
-    //    has no conflict.
     let mut seen_writes: Vec<(EventField, CommuteClass)> = Vec::new();
     for rid in candidates {
-        match candidate_materiality(state, *rid, proposed_to) {
+        match candidate_materiality(state, *rid, proposed) {
             CandidateMateriality::Unconditional => return true,
             CandidateMateriality::Writes { field, commute } => {
                 for (seen_field, seen_commute) in &seen_writes {
@@ -5703,8 +5689,12 @@ enum CandidateMateriality {
 fn candidate_materiality(
     state: &GameState,
     rid: ReplacementId,
-    proposed_to: Option<Zone>,
+    proposed: &ProposedEvent,
 ) -> CandidateMateriality {
+    let proposed_to = match proposed {
+        ProposedEvent::ZoneChange { to, .. } => Some(*to),
+        _ => None,
+    };
     if is_compleated_replacement(rid) {
         return CandidateMateriality::Writes {
             field: EventField::Count,
@@ -5844,12 +5834,16 @@ fn candidate_materiality(
             // order-independent so they do NOT fall through to the conservative
             // material default below.
             Effect::PutCounter { .. } | Effect::Choose { .. } => {}
-            // CR 614.1a + CR 111.1: Full token substitution (`Effect::Token`
-            // execute) rewrites `CreateToken::spec` in the applier. Two different
+            // CR 614.1a + CR 111.1: Full token substitution on a CreateToken
+            // event rewrites `CreateToken::spec` in the applier. Two different
             // substitutions on one event are last-applied-wins and stay
             // order-material; a single substitution commutes with count-only
             // writers on the `Count` field (Elspeth + Divine Visitation).
-            Effect::Token { .. } => {
+            // On non-CreateToken events (Draw→Token instead, Words of Wilding
+            // class), the substitution fully replaces the event type — order
+            // against a count modifier on the original event is material and
+            // must stay conservative.
+            Effect::Token { .. } if matches!(proposed, ProposedEvent::CreateToken { .. }) => {
                 field = Some(EventField::TokenSpec);
                 enter_tapped_commute = Some(CommuteClass::NonCommuting);
             }
@@ -11741,6 +11735,85 @@ mod tests {
         assert!(tokens
             .iter()
             .all(|t| t.power == Some(4) && t.toughness == Some(4)));
+    }
+
+    /// CR 616.1: `Effect::Token` execute on a Draw event fully substitutes the
+    /// draw (Words of Wilding class). That is order-material against a draw-count
+    /// modifier — substitute-first removes the draw, double-first changes how many
+    /// draws are replaced — so it must NOT be classified as an immaterial
+    /// `TokenSpec` write unless the proposed event is `CreateToken`.
+    #[test]
+    fn draw_to_token_substitution_does_not_commute_with_draw_count_modifier() {
+        use crate::types::ability::PtValue;
+
+        let doubler = ReplacementDefinition::new(ReplacementEvent::Draw)
+            .quantity_modification(QuantityModification::DOUBLE);
+        let draw_to_token =
+            ReplacementDefinition::new(ReplacementEvent::Draw).execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Token {
+                    name: "Beast".to_string(),
+                    power: PtValue::Fixed(3),
+                    toughness: PtValue::Fixed(3),
+                    types: vec!["Creature".to_string()],
+                    colors: vec![],
+                    keywords: vec![],
+                    tapped: false,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    owner: TargetFilter::Controller,
+                    attach_to: None,
+                    enters_attacking: false,
+                    supertypes: vec![],
+                    static_abilities: vec![],
+                    enter_with_counters: vec![],
+                },
+            ));
+
+        let mut state = GameState::new_two_player(42);
+        let mut doubler_src = GameObject::new(
+            ObjectId(10),
+            CardId(1),
+            PlayerId(0),
+            "Draw Doubler".to_string(),
+            Zone::Battlefield,
+        );
+        doubler_src.replacement_definitions = vec![doubler].into();
+        let mut token_src = GameObject::new(
+            ObjectId(20),
+            CardId(2),
+            PlayerId(0),
+            "Words of Wilding".to_string(),
+            Zone::Battlefield,
+        );
+        token_src.replacement_definitions = vec![draw_to_token].into();
+        state.objects.insert(ObjectId(10), doubler_src);
+        state.objects.insert(ObjectId(20), token_src);
+        state.battlefield.push_back(ObjectId(10));
+        state.battlefield.push_back(ObjectId(20));
+
+        let proposed = ProposedEvent::Draw {
+            player_id: PlayerId(0),
+            count: 1,
+            applied: HashSet::new(),
+        };
+        let registry = build_replacement_registry();
+        let candidates = find_applicable_replacements(&state, &proposed, &registry);
+        assert_eq!(
+            candidates.len(),
+            2,
+            "both draw replacements must be applicable"
+        );
+        assert!(
+            replacement_ordering_is_material(&state, &candidates, &proposed),
+            "Draw→Token substitution must stay order-material against a draw-count modifier"
+        );
+
+        let mut events = Vec::new();
+        let result = replace_event(&mut state, proposed, &mut events);
+        let ReplacementResult::NeedsChoice(player) = result else {
+            panic!("expected NeedsChoice for draw doubler + draw→token, got {result:?}");
+        };
+        assert_eq!(player, PlayerId(0));
     }
 
     /// Build a `TokenSpec` of the given core type for replacement-pipeline tests.
