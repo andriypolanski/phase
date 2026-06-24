@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use crate::game::casting_costs::cost_has_x;
 use crate::game::combat::AttackTarget;
 use crate::game::game_object::GameObject;
 use crate::game::zone_pipeline::{self, ZoneMoveRequest};
@@ -246,9 +247,8 @@ fn resolve_keyword_mana_cost(state: &GameState, object_id: ObjectId, cost: &Mana
 pub(crate) fn resolve_self_mana_in_ability_cost(
     state: &GameState,
     source_id: ObjectId,
-    cost: &crate::types::ability::AbilityCost,
-) -> crate::types::ability::AbilityCost {
-    use crate::types::ability::AbilityCost;
+    cost: &AbilityCost,
+) -> AbilityCost {
     match cost {
         AbilityCost::Mana { cost: mana } => AbilityCost::Mana {
             cost: resolve_keyword_mana_cost(state, source_id, mana),
@@ -265,6 +265,15 @@ pub(crate) fn resolve_self_mana_in_ability_cost(
                 .map(|sub| resolve_self_mana_in_ability_cost(state, source_id, sub))
                 .collect(),
         },
+        AbilityCost::PerCounter {
+            counter,
+            target,
+            base,
+        } => AbilityCost::PerCounter {
+            counter: counter.clone(),
+            target: target.clone(),
+            base: Box::new(resolve_self_mana_in_ability_cost(state, source_id, base)),
+        },
         other => other.clone(),
     }
 }
@@ -276,10 +285,8 @@ pub(crate) fn resolve_self_mana_in_ability_cost(
 pub(crate) fn concretize_encore_mana_value_in_ability_cost(
     state: &GameState,
     source_id: ObjectId,
-    cost: &mut crate::types::ability::AbilityCost,
+    cost: &mut AbilityCost,
 ) {
-    use crate::game::casting_costs::cost_has_x;
-    use crate::types::ability::AbilityCost;
     match cost {
         AbilityCost::Mana { cost: mana } if cost_has_x(mana) => {
             let mana_value = state
@@ -293,6 +300,9 @@ pub(crate) fn concretize_encore_mana_value_in_ability_cost(
             for sub in costs {
                 concretize_encore_mana_value_in_ability_cost(state, source_id, sub);
             }
+        }
+        AbilityCost::PerCounter { base, .. } => {
+            concretize_encore_mana_value_in_ability_cost(state, source_id, base);
         }
         _ => {}
     }
@@ -972,6 +982,106 @@ mod tests {
         obj.keywords.push(Keyword::Flying);
         assert!(has_keyword(&obj, &Keyword::Flying));
         assert!(!has_keyword(&obj, &Keyword::Haste));
+    }
+
+    #[test]
+    fn resolve_self_mana_in_ability_cost_descends_per_counter_base() {
+        use crate::game::zones::create_object;
+        use crate::types::ability::TargetFilter;
+        use crate::types::counter::CounterType;
+
+        let mut state = GameState::new_two_player(1);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.mana_cost = ManaCost::Cost {
+                generic: 0,
+                shards: vec![
+                    ManaCostShard::White,
+                    ManaCostShard::Blue,
+                    ManaCostShard::Black,
+                    ManaCostShard::Red,
+                    ManaCostShard::Green,
+                ],
+            };
+        }
+
+        let cost = AbilityCost::PerCounter {
+            counter: CounterType::Generic("charge".to_string()),
+            target: TargetFilter::SelfRef,
+            base: Box::new(AbilityCost::Mana {
+                cost: ManaCost::SelfManaValue,
+            }),
+        };
+
+        let resolved = resolve_self_mana_in_ability_cost(&state, source, &cost);
+        let AbilityCost::PerCounter { base, .. } = resolved else {
+            panic!("expected PerCounter wrapper preserved");
+        };
+        assert_eq!(
+            *base,
+            AbilityCost::Mana {
+                cost: ManaCost::generic(5),
+            }
+        );
+    }
+
+    #[test]
+    fn concretize_encore_mana_value_descends_per_counter_base() {
+        use crate::game::zones::create_object;
+        use crate::types::ability::TargetFilter;
+        use crate::types::counter::CounterType;
+
+        let mut state = GameState::new_two_player(1);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.mana_cost = ManaCost::Cost {
+                generic: 0,
+                shards: vec![
+                    ManaCostShard::White,
+                    ManaCostShard::Blue,
+                    ManaCostShard::Black,
+                    ManaCostShard::Red,
+                    ManaCostShard::Green,
+                ],
+            };
+        }
+
+        let mut cost = AbilityCost::PerCounter {
+            counter: CounterType::Generic("charge".to_string()),
+            target: TargetFilter::SelfRef,
+            base: Box::new(AbilityCost::Mana {
+                cost: ManaCost::Cost {
+                    generic: 0,
+                    shards: vec![ManaCostShard::X],
+                },
+            }),
+        };
+
+        concretize_encore_mana_value_in_ability_cost(&state, source, &mut cost);
+
+        let AbilityCost::PerCounter { base, .. } = cost else {
+            panic!("expected PerCounter wrapper preserved");
+        };
+        assert_eq!(
+            *base,
+            AbilityCost::Mana {
+                cost: ManaCost::generic(5),
+            }
+        );
     }
 
     /// CR 702.164b: a creature's total toxic value is the sum of N over ALL its
