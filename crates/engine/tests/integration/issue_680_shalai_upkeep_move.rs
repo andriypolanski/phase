@@ -79,9 +79,7 @@ fn issue_680_upkeep_move_counters_triggers_shalai_damage_per_creature() {
             }
             WaitingFor::Priority { .. } if runner.state().stack.is_empty() => break,
             WaitingFor::Priority { .. } => {
-                runner
-                    .act(GameAction::PassPriority)
-                    .expect("pass priority");
+                runner.act(GameAction::PassPriority).expect("pass priority");
             }
             other => panic!("unexpected {other:?}"),
         }
