@@ -1,8 +1,10 @@
-use crate::game::filter::{matches_target_filter, FilterContext};
+use crate::game::filter::{
+    matches_target_filter, target_filter_uses_unresolved_resolution_referent, FilterContext,
+};
 use crate::game::quantity::resolve_quantity_with_targets;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter};
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, WaitingFor};
+use crate::types::game_state::{GameState, PendingDeferredDigChoice, WaitingFor};
 use crate::types::zones::Zone;
 
 /// CR 701.20e + CR 608.2c: Look at top N cards (shown only to the looking player),
@@ -129,6 +131,31 @@ pub fn resolve(
         });
     }
 
+    // CR 608.2c + CR 701.21a (Birthing Ritual, issue #4271): When the keep-
+    // selection filter references an object from a later instruction ("where X
+    // is 1 plus the sacrificed creature's mana value"), peek at the pile now but
+    // defer `DigChoice` until that referent is stamped onto the resolving ability.
+    if target_filter_uses_unresolved_resolution_referent(&filter, ability) {
+        state.private_look_ids = cards.clone();
+        state.private_look_player = Some(ability.controller);
+        state.pending_deferred_dig_choice = Some(PendingDeferredDigChoice {
+            ability: ability.clone(),
+            library_owner,
+            cards: cards.clone(),
+            keep_count: raw_keep_count,
+            up_to: is_up_to,
+            filter: filter.clone(),
+            kept_destination: kept_dest,
+            rest_destination: rest_dest,
+            enter_tapped,
+        });
+        events.push(GameEvent::EffectResolved {
+            kind: EffectKind::from(&ability.effect),
+            source_id: ability.source_id,
+        });
+        return Ok(());
+    }
+
     // Pre-compute selectable cards by evaluating the filter against each card.
     // CR 107.3a + CR 601.2b: Use ability context so dynamic thresholds (e.g.
     // `CmcLE { Variable("X") }`) resolve against the caster's announced X.
@@ -192,6 +219,91 @@ pub fn resolve(
         source_id: ability.source_id,
     });
 
+    Ok(())
+}
+
+/// CR 608.2c + CR 701.21a: After the sacrificed creature referent exists, surface
+/// the deferred `DigChoice` with a recomputed selectable pile.
+pub fn try_begin_pending_deferred_dig_choice(
+    state: &mut GameState,
+    ability: Option<&ResolvedAbility>,
+    referent: Option<&crate::types::ability::CostPaidObjectSnapshot>,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let Some(mut pending) = state.pending_deferred_dig_choice.take() else {
+        return Ok(());
+    };
+
+    if let Some(snapshot) = referent.or_else(|| {
+        ability
+            .and_then(|a| a.effect_context_object.as_ref())
+            .or_else(|| ability.and_then(|a| a.cost_paid_object.as_ref()))
+    }) {
+        pending
+            .ability
+            .set_effect_context_object_recursive(snapshot.clone());
+    } else {
+        state.pending_deferred_dig_choice = Some(pending);
+        return Ok(());
+    }
+
+    let selectable_cards = if matches!(pending.filter, TargetFilter::Any) {
+        pending.cards.clone()
+    } else {
+        let ctx = FilterContext::from_ability(&pending.ability);
+        pending
+            .cards
+            .iter()
+            .filter(|&&card_id| matches_target_filter(state, card_id, &pending.filter, &ctx))
+            .copied()
+            .collect()
+    };
+
+    let keep_count = if pending.keep_count == u32::MAX as usize {
+        selectable_cards.len()
+    } else {
+        pending.keep_count.min(selectable_cards.len())
+    };
+
+    state.waiting_for = WaitingFor::DigChoice {
+        player: pending.ability.controller,
+        library_owner: pending.library_owner,
+        selectable_cards,
+        cards: pending.cards,
+        keep_count,
+        up_to: pending.up_to,
+        kept_destination: pending.kept_destination,
+        rest_destination: pending.rest_destination,
+        source_id: Some(pending.ability.source_id),
+        enter_tapped: pending.enter_tapped,
+    };
+
+    events.push(GameEvent::EffectResolved {
+        kind: EffectKind::Dig,
+        source_id: pending.ability.source_id,
+    });
+    Ok(())
+}
+
+/// CR 608.2c + CR 701.20a: When the deferred put-step's gate fails (optional
+/// sacrifice declined, or no creature sacrificed), route the entire looked-at
+/// pile to the rest destination without surfacing `DigChoice`.
+pub fn resolve_pending_deferred_dig_rest_only(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let Some(pending) = state.pending_deferred_dig_choice.take() else {
+        return Ok(());
+    };
+
+    crate::game::engine_resolution_choices::route_rest_partition(
+        state,
+        &pending.cards,
+        pending.rest_destination.unwrap_or(Zone::Library),
+        events,
+    );
+    state.private_look_ids.clear();
+    state.private_look_player = None;
     Ok(())
 }
 

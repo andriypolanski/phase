@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::combat;
 use crate::game::game_object::GameObject;
+use crate::game::quantity::quantity_expr_uses_resolution_only_object_scope;
 use crate::game::quantity::{
     counter_count_from_map, resolve_quantity, resolve_quantity_with_targets,
 };
@@ -493,6 +494,50 @@ pub fn normalize_contextual_filter(
                 .collect(),
         },
         _ => filter.clone(),
+    }
+}
+
+/// CR 608.2c + CR 608.2k: True when a filter threshold reads an object
+/// characteristic through a resolution-only scope (`CostPaidObject`, anaphoric
+/// demonstrative, etc.) and the resolving ability does not yet carry that
+/// referent. Birthing Ritual's Dig must peek at the looked-at pile now but defer
+/// `DigChoice` until a later sacrifice clause stamps `effect_context_object`.
+pub(crate) fn target_filter_uses_unresolved_resolution_referent(
+    filter: &TargetFilter,
+    ability: &ResolvedAbility,
+) -> bool {
+    if ability.cost_paid_object.is_some() || ability.effect_context_object.is_some() {
+        return false;
+    }
+    filter_uses_unresolved_resolution_referent(filter)
+}
+
+fn filter_uses_unresolved_resolution_referent(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(typed) => typed
+            .properties
+            .iter()
+            .any(filter_prop_uses_unresolved_resolution_referent),
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => filters
+            .iter()
+            .any(filter_uses_unresolved_resolution_referent),
+        TargetFilter::Not { filter } => filter_uses_unresolved_resolution_referent(filter),
+        _ => false,
+    }
+}
+
+fn filter_prop_uses_unresolved_resolution_referent(prop: &FilterProp) -> bool {
+    match prop {
+        FilterProp::Cmc { value, .. }
+        | FilterProp::PtComparison { value, .. }
+        | FilterProp::Counters { count: value, .. } => {
+            quantity_expr_uses_resolution_only_object_scope(value)
+        }
+        FilterProp::AnyOf { props } => props
+            .iter()
+            .any(filter_prop_uses_unresolved_resolution_referent),
+        FilterProp::Not { prop } => filter_prop_uses_unresolved_resolution_referent(prop),
+        _ => false,
     }
 }
 

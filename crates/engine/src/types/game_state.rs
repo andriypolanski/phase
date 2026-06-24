@@ -892,6 +892,22 @@ impl PendingContinuation {
     }
 }
 
+/// CR 608.2c + CR 701.21a: Stashed `DigChoice` state when a looked-at pile's
+/// filter references an object introduced by a later instruction in the same
+/// resolution (Birthing Ritual: mana value bound uses the sacrificed creature).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingDeferredDigChoice {
+    pub ability: ResolvedAbility,
+    pub library_owner: PlayerId,
+    pub cards: Vec<ObjectId>,
+    pub keep_count: usize,
+    pub up_to: bool,
+    pub filter: TargetFilter,
+    pub kept_destination: Option<Zone>,
+    pub rest_destination: Option<Zone>,
+    pub enter_tapped: bool,
+}
+
 /// CR 609.3 + CR 109.5: Resume state for a `repeat_for` iteration loop paused
 /// when the inner effect entered an interactive `WaitingFor` state.
 ///
@@ -6570,6 +6586,12 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_look_player: Option<PlayerId>,
 
+    /// CR 608.2c + CR 701.21a: A Dig whose keep-selection filter references an
+    /// object from a later clause in the same resolution (Birthing Ritual). The
+    /// look happens now; `DigChoice` is deferred until that referent exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_deferred_dig_choice: Option<PendingDeferredDigChoice>,
+
     /// ObjectIds of objects moved by the most recent zone-change effect.
     /// Used by AbilityCondition::ZoneChangedThisWay to gate sub_abilities on
     /// whether the parent effect moved an object matching a type filter.
@@ -7409,6 +7431,7 @@ impl GameState {
             last_revealed_ids: Vec::new(),
             private_look_ids: Vec::new(),
             private_look_player: None,
+            pending_deferred_dig_choice: None,
             last_zone_changed_ids: Vec::new(),
             last_vote_ballots: im::Vector::new(),
             player_actions_this_way: HashSet::new(),
@@ -7875,6 +7898,7 @@ impl PartialEq for GameState {
             && self.last_revealed_ids == other.last_revealed_ids
             && self.private_look_ids == other.private_look_ids
             && self.private_look_player == other.private_look_player
+            && self.pending_deferred_dig_choice == other.pending_deferred_dig_choice
             && self.last_zone_changed_ids == other.last_zone_changed_ids
             && self.last_vote_ballots == other.last_vote_ballots
             && self.player_actions_this_way == other.player_actions_this_way

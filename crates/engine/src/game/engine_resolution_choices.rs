@@ -2700,6 +2700,12 @@ pub(super) fn handle_resolution_choice(
                 // Issue #423 audit: no cards chosen — this branch moves no
                 // objects and emits no battlefield-exit events, so no
                 // dies-trigger collection is needed.
+                if matches!(effect_kind, EffectKind::Sacrifice)
+                    && state.pending_deferred_dig_choice.is_some()
+                {
+                    effects::dig::resolve_pending_deferred_dig_rest_only(state, events)
+                        .map_err(|err| EngineError::InvalidAction(err.to_string()))?;
+                }
                 state.last_effect_count = Some(0);
                 events.push(GameEvent::EffectResolved {
                     kind: effect_kind,
@@ -3146,6 +3152,19 @@ pub(super) fn handle_resolution_choice(
                 if let Some(cont) = state.pending_continuation.as_mut() {
                     cont.chain.set_effect_context_object_recursive(snapshot);
                 }
+            }
+            if matches!(effect_kind, EffectKind::Sacrifice) && !chosen.is_empty() {
+                let referent = effects::parent_referent_context_from_events(
+                    state,
+                    &events[events_before_effect..],
+                );
+                effects::dig::try_begin_pending_deferred_dig_choice(
+                    state,
+                    None,
+                    referent.as_ref(),
+                    events,
+                )
+                .map_err(|err| EngineError::InvalidAction(err.to_string()))?;
             }
             if matches!(
                 effect_kind,

@@ -1757,6 +1757,11 @@ pub(super) fn resolve_optional_effect_decision(
             }
         }
         AutoMayChoice::Decline => {
+            if state.pending_deferred_dig_choice.is_some()
+                && matches!(ability.effect, Effect::Sacrifice { .. })
+            {
+                dig::resolve_pending_deferred_dig_rest_only(state, events)?;
+            }
             let decline_branch = ability.else_ability.as_ref().or_else(|| {
                 ability.sub_ability.as_ref().filter(|sub| {
                     // CR 608.2c: a conditioned decline branch (IfYouDo /
@@ -4575,6 +4580,7 @@ pub fn resolve_ability_chain(
         // decision (which re-enters at depth 1) preserves the peek it depends on.
         state.private_look_ids.clear();
         state.private_look_player = None;
+        state.pending_deferred_dig_choice = None;
         state.last_zone_changed_ids.clear();
         // CR 608.2c + CR 701.38: Per-resolution ballot ledger; populated by
         // `vote::resolve_tally` and read by `PlayerFilter::VotedFor`. Clear
@@ -5923,6 +5929,15 @@ fn resolve_chain_body(
         publish_tracked_set_with_causes(state, affected_with_causes);
     }
 
+    if matches!(ability.effect, Effect::Sacrifice { .. })
+        && state.pending_deferred_dig_choice.is_some()
+        && events[events_before..]
+            .iter()
+            .any(|event| matches!(event, GameEvent::PermanentSacrificed { .. }))
+    {
+        dig::try_begin_pending_deferred_dig_choice(state, Some(ability), None, events)?;
+    }
+
     // ExileFromTopUntil handles its own sub_ability chain internally for both
     // `UntilCondition` arms — `NextMatches` injects the hit card as the
     // sub-ability's target; `CumulativeThreshold` runs the sub-chain with the
@@ -6206,7 +6221,30 @@ fn resolve_chain_body(
             }
 
             let condition_met = evaluate_condition(condition, state, ability);
+            if condition_met {
+                if state.pending_deferred_dig_choice.is_some()
+                    && matches!(
+                        condition,
+                        AbilityCondition::EffectOutcome {
+                            signal: EffectOutcomeSignal::OptionalEffectPerformed,
+                        }
+                    )
+                {
+                    dig::try_begin_pending_deferred_dig_choice(state, Some(ability), None, events)?;
+                    return Ok(());
+                }
+            }
             if !condition_met {
+                if state.pending_deferred_dig_choice.is_some()
+                    && matches!(
+                        condition,
+                        AbilityCondition::EffectOutcome {
+                            signal: EffectOutcomeSignal::OptionalEffectPerformed,
+                        }
+                    )
+                {
+                    dig::resolve_pending_deferred_dig_rest_only(state, events)?;
+                }
                 // CR 608.2c: Execute else branch if present ("Otherwise, [effect]")
                 if let Some(ref else_branch) = sub.else_ability {
                     let mut else_resolved = else_branch.as_ref().clone();
