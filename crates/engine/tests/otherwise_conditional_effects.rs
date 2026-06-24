@@ -567,6 +567,51 @@ fn wick_with_snail_pumps_existing_snail() {
     );
 }
 
+#[test]
+fn wick_with_two_snails_pumps_chosen_snail() {
+    let mut scenario = GameScenario::new_n_player(2, 29);
+    scenario.at_phase(Phase::PreCombatMain);
+    let snail_a = {
+        let mut b = scenario.add_creature(P0, "Snail A", 1, 1);
+        b.with_subtypes(vec!["Snail"]);
+        b.id()
+    };
+    let snail_b = {
+        let mut b = scenario.add_creature(P0, "Snail B", 1, 1);
+        b.with_subtypes(vec!["Snail"]);
+        b.id()
+    };
+    let wick = {
+        let mut b =
+            scenario.add_creature_to_hand_from_oracle(P0, "Wick, the Whorled Mind", 2, 2, WICK);
+        b.as_legendary();
+        b.with_subtypes(vec!["Rat"]);
+        b.with_mana_cost(ManaCost::default());
+        b.id()
+    };
+    let mut runner = scenario.build();
+    let snails_before = count_snails(&runner);
+
+    cast_and_resolve_etb(&mut runner, wick);
+
+    assert_eq!(
+        count_snails(&runner),
+        snails_before,
+        "with Snails already controlled, no new Snail token is created"
+    );
+    let counters_a = counters_on(&runner, snail_a, CounterType::Plus1Plus1);
+    let counters_b = counters_on(&runner, snail_b, CounterType::Plus1Plus1);
+    assert_eq!(
+        counters_a + counters_b,
+        1,
+        "exactly one controlled Snail must receive the +1/+1 counter"
+    );
+    assert!(
+        counters_a == 1 || counters_b == 1,
+        "the chosen Snail must receive the counter (a={counters_a}, b={counters_b})"
+    );
+}
+
 fn count_snails(runner: &engine::game::scenario::GameRunner) -> usize {
     runner
         .state()
@@ -584,8 +629,8 @@ fn count_snails(runner: &engine::game::scenario::GameRunner) -> usize {
 }
 
 /// Cast a free creature and resolve it + its ETB trigger, answering any object
-/// target (Wick's "+1/+1 on a Snail you control" picks a Snail automatically via
-/// the legal-target list when present).
+/// target (Wick's "+1/+1 on a Snail you control" picks the first legal Snail when
+/// a choice is required).
 fn cast_and_resolve_etb(runner: &mut engine::game::scenario::GameRunner, creature: ObjectId) {
     let card_id = runner.state().objects[&creature].card_id;
     runner
@@ -625,6 +670,15 @@ fn cast_and_resolve_etb(runner: &mut engine::game::scenario::GameRunner, creatur
             WaitingFor::OrderTriggers { .. } => {
                 if runner
                     .act(GameAction::OrderTriggers { order: vec![0] })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            WaitingFor::ChooseFromZoneChoice { cards, .. } => {
+                let pick = cards.first().copied().expect("a legal Snail must exist");
+                if runner
+                    .act(GameAction::SelectCards { cards: vec![pick] })
                     .is_err()
                 {
                     break;
