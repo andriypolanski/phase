@@ -144,20 +144,31 @@ fn activation_ability_definition(
     ability_index: usize,
 ) -> Option<AbilityDefinition> {
     let obj = state.objects.get(&source_id)?;
-    if let Some(ability) = obj.abilities.get(ability_index) {
-        return Some(ability.clone());
+    let mut ability = if let Some(ability) = obj.abilities.get(ability_index) {
+        ability.clone()
+    } else {
+        let offset = ability_index.checked_sub(obj.abilities.len())?;
+        // Must match the append order in `activated_ability_definitions`: printed
+        // abilities first, then runtime-granted cycling, then runtime-granted
+        // graveyard activated (Encore/Scavenge).
+        runtime_granted_cycling_abilities(state, source_id)
+            .into_iter()
+            .chain(runtime_granted_graveyard_activated_abilities(
+                state, source_id,
+            ))
+            .nth(offset)?
+    };
+    if let Some(ref cost) = ability.cost {
+        ability.cost = Some(super::keywords::resolve_self_mana_in_ability_cost(
+            state, source_id, cost,
+        ));
     }
-
-    let offset = ability_index.checked_sub(obj.abilities.len())?;
-    // Must match the append order in `activated_ability_definitions`: printed
-    // abilities first, then runtime-granted cycling, then runtime-granted
-    // graveyard activated (Encore/Scavenge).
-    runtime_granted_cycling_abilities(state, source_id)
-        .into_iter()
-        .chain(runtime_granted_graveyard_activated_abilities(
-            state, source_id,
-        ))
-        .nth(offset)
+    if matches!(ability.effect.as_ref(), Effect::Encore) {
+        if let Some(ref mut cost) = ability.cost {
+            super::keywords::concretize_encore_mana_value_in_ability_cost(state, source_id, cost);
+        }
+    }
+    Some(ability)
 }
 
 pub(crate) fn variable_speed_payment_range(cost: &AbilityCost, max_speed: u8) -> Option<(u8, u8)> {

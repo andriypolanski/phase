@@ -348,6 +348,7 @@ mod issue_3992_lotleth_regenerate_combat;
 mod issue_3993_delve_cancel_payment;
 mod issue_3994_malevolent_rumble;
 mod issue_3996_return_the_favor;
+mod issue_3997_sliver_gravemother_encore_legion;
 mod issue_3998_marang_river_prowler;
 mod issue_3999_latchkey_faerie_prowl_etb;
 mod issue_4000_dominating_licid;
