@@ -1716,7 +1716,13 @@ fn fmt_choice_type(ct: &ChoiceType) -> String {
         }
         ChoiceType::OddOrEven => "odd or even",
         ChoiceType::BasicLandType => "basic land type",
-        ChoiceType::CardType => "card type",
+        ChoiceType::CardType { excluded } => {
+            if excluded.is_empty() {
+                "card type"
+            } else {
+                "restricted card type"
+            }
+        }
         ChoiceType::CardName => "card name",
         ChoiceType::NumberRange { min, max } => return format!("number ({min}-{max})"),
         ChoiceType::Labeled { options } => return format!("one of: {}", options.join(", ")),
@@ -2907,8 +2913,8 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         Effect::CollectEvidence { amount } => {
             d.push(("amount".into(), amount.to_string()));
         }
-        Effect::Endure { amount } => {
-            d.push(("amount".into(), amount.to_string()));
+        Effect::Endure { amount, .. } => {
+            d.push(("amount".into(), fmt_quantity(amount)));
         }
         Effect::BlightEffect { count, player } => {
             d.push(("count".into(), count.to_string()));

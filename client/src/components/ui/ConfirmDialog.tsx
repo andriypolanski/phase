@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
@@ -42,16 +42,24 @@ export function ConfirmDialog({
   secondaryTone = "primary",
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
+  const titleId = useId();
+  const messageId = useId();
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
+
+    const frame = requestAnimationFrame(() => {
+      cancelRef.current?.focus();
+    });
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onCancel();
-      }
+      if (e.key === "Escape") onCancel();
     };
+
     window.addEventListener("keydown", handleKeyDown);
     return () => {
+      cancelAnimationFrame(frame);
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [open, onCancel]);
@@ -77,8 +85,8 @@ export function ConfirmDialog({
           <motion.div
             role="alertdialog"
             aria-modal="true"
-            aria-labelledby="confirm-dialog-title"
-            aria-describedby="confirm-dialog-message"
+            aria-labelledby={titleId}
+            aria-describedby={messageId}
             className="relative z-10 w-full max-w-md overflow-hidden rounded-[20px] border border-white/10 bg-[#0b1020]/96 p-6 shadow-[0_28px_80px_rgba(0,0,0,0.42)] backdrop-blur-md"
             initial={{ scale: 0.97, opacity: 0, y: 10 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
@@ -86,26 +94,20 @@ export function ConfirmDialog({
             transition={{ duration: 0.2, ease: "easeOut" }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2
-              id="confirm-dialog-title"
-              className="text-lg font-semibold text-white"
-            >
+            <h2 id={titleId} className="text-lg font-semibold text-white">
               {title}
             </h2>
-            <p
-              id="confirm-dialog-message"
-              className="mt-2 text-sm leading-relaxed text-slate-400"
-            >
+            <p id={messageId} className="mt-2 text-sm leading-relaxed text-slate-400">
               {message}
             </p>
             <div className="mt-6 flex flex-wrap justify-end gap-3">
               <button
+                ref={cancelRef}
                 type="button"
-                autoFocus
                 onClick={onCancel}
                 className="rounded-[14px] border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:bg-white/10"
               >
-                {t("actions.cancel")}
+                {t("common:actions.cancel")}
               </button>
               {secondaryConfirmLabel && onSecondaryConfirm ? (
                 <button
