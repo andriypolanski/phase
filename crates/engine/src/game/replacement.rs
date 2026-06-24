@@ -5350,6 +5350,13 @@ fn apply_single_replacement(
                         | (ProposedEvent::Scry { .. }, Effect::Scry { .. })
                         | (ProposedEvent::Proliferate { .. }, Effect::Proliferate)
                         | (ProposedEvent::LifeGain { .. }, Effect::GainLife { .. })
+                        // CR 614.1a + CR 111.1: Full token substitution
+                        // (Divine Visitation) is performed inline by
+                        // `create_token_applier`; stashing the same
+                        // `Effect::Token` as a post-replacement continuation
+                        // would re-propose token creation and re-enter the
+                        // replacement pipeline (issue #4249 hang).
+                        | (ProposedEvent::CreateToken { .. }, Effect::Token { .. })
                 )
             });
             // CR 701.50a + CR 614.5: The connive applier runs the entire
@@ -5588,6 +5595,12 @@ enum EventField {
     /// commute; mixed classes do not, e.g. Furnace of Rath `Double` + Torbran
     /// `Plus{2}`.
     Damage,
+    /// `CreateToken::spec` — swapped by a full token-substitution replacement
+    /// (`Effect::Token` execute payload, Divine Visitation class). Distinct from
+    /// `Count`, which `quantity_modification` writers modify; the two commute
+    /// when only multiplicative count modifiers are involved (double then
+    /// substitute vs substitute then double yields the same batch).
+    TokenSpec,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5831,6 +5844,15 @@ fn candidate_materiality(
             // order-independent so they do NOT fall through to the conservative
             // material default below.
             Effect::PutCounter { .. } | Effect::Choose { .. } => {}
+            // CR 614.1a + CR 111.1: Full token substitution (`Effect::Token`
+            // execute) rewrites `CreateToken::spec` in the applier. Two different
+            // substitutions on one event are last-applied-wins and stay
+            // order-material; a single substitution commutes with count-only
+            // writers on the `Count` field (Elspeth + Divine Visitation).
+            Effect::Token { .. } => {
+                field = Some(EventField::TokenSpec);
+                enter_tapped_commute = Some(CommuteClass::NonCommuting);
+            }
             // CR 616.1: any unrecognized effect shape defaults to MATERIAL —
             // never auto-resolve a set whose order-sensitivity is unproven.
             _ => return CandidateMateriality::Unconditional,
@@ -11639,6 +11661,86 @@ mod tests {
             count, 8,
             "Three doublers should multiply: 1 * 2 * 2 * 2 = 8"
         );
+    }
+
+    /// CR 616.1: Elspeth, Storm Slayer's token doubler and Divine Visitation's
+    /// creature-token substitution commute (double-then-substitute and
+    /// substitute-then-double both yield the same batch). The prompt is
+    /// degenerate and must auto-resolve; applying the substitution must not
+    /// also stash its `Effect::Token` as a post-replacement continuation
+    /// (issue #4249 re-prompt loop).
+    #[test]
+    fn token_doubler_and_creature_substitution_commute_no_prompt() {
+        use crate::parser::oracle_replacement::parse_replacement_line;
+
+        let doubler = parse_replacement_line(
+            "If one or more tokens would be created under your control, twice that many of those tokens are created instead.",
+            "Elspeth, Storm Slayer",
+        )
+        .expect("doubler parses");
+        let visitation = parse_replacement_line(
+            "If one or more creature tokens would be created under your control, that many 4/4 white Angel creature tokens with flying and vigilance are created instead.",
+            "Divine Visitation",
+        )
+        .expect("substitution parses");
+
+        let elspeth = ObjectId(10);
+        let visitation_id = ObjectId(20);
+
+        let mut state = GameState::new_two_player(42);
+        let mut es = GameObject::new(
+            elspeth,
+            CardId(1),
+            PlayerId(0),
+            "Elspeth, Storm Slayer".to_string(),
+            Zone::Battlefield,
+        );
+        es.replacement_definitions = vec![doubler].into();
+        let mut dv = GameObject::new(
+            visitation_id,
+            CardId(2),
+            PlayerId(0),
+            "Divine Visitation".to_string(),
+            Zone::Battlefield,
+        );
+        dv.replacement_definitions = vec![visitation].into();
+        state.objects.insert(elspeth, es);
+        state.objects.insert(visitation_id, dv);
+        state.battlefield.push_back(elspeth);
+        state.battlefield.push_back(visitation_id);
+
+        let soldier = test_token_spec(PlayerId(0), CoreType::Creature);
+        let proposed = ProposedEvent::CreateToken {
+            owner: PlayerId(0),
+            spec: Box::new(soldier),
+            copy: None,
+            enter_tapped: EtbTapState::Unspecified,
+            count: 1,
+            applied: HashSet::new(),
+        };
+
+        let mut events = Vec::new();
+        let result = replace_event(&mut state, proposed, &mut events);
+        let ReplacementResult::Execute(primary) = result else {
+            panic!("expected Execute (commuting auto-resolve), got {result:?}");
+        };
+
+        assert!(
+            state.post_replacement_continuation.is_none(),
+            "token substitution must not stash a post-replacement continuation"
+        );
+
+        apply_create_token_after_replacement(&mut state, primary, &mut events);
+
+        let tokens: Vec<_> = state.objects.values().filter(|o| o.is_token).collect();
+        assert_eq!(
+            tokens.len(),
+            2,
+            "1 soldier doubled and substituted → 2 Angels"
+        );
+        assert!(tokens
+            .iter()
+            .all(|t| t.power == Some(4) && t.toughness == Some(4)));
     }
 
     /// Build a `TokenSpec` of the given core type for replacement-pipeline tests.
