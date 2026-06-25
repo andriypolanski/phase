@@ -4475,6 +4475,11 @@ fn try_parse_for_each_category_exile(tp: TextPair<'_>) -> Option<ParsedEffectCla
 
 #[tracing::instrument(level = "debug")]
 fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause {
+    // CR 608.2c: "do X unless [game state]" — strip trailing unless suffix and
+    // attach the negated gate before body parsing (payment-unless uses
+    // `unless_pay` / `extract_resolution_unless_pay_modifier` instead).
+    let (unless_condition, clause_text) = strip_unless_entered_suffix(text, ctx);
+    let text = clause_text.as_str();
     // Phase 2: peel structural slots off the head of the clause before
     // body parsing. The recursive shell strips slot-bearing prefixes/suffixes
     // (optional, opponent-may, condition, duration, for-each, player-scope)
@@ -4485,14 +4490,16 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
     // `crates/engine/src/parser/clause_shell.rs` for the slot machinery.
     let (peeled_text, peel_ctx) = super::clause_shell::peel_clause(text);
     if peel_ctx.is_empty() {
-        return parse_effect_clause_inner(text, ctx);
+        let mut clause = parse_effect_clause_inner(text, ctx);
+        if unless_condition.is_some() {
+            clause.condition = unless_condition;
+        }
+        return clause;
     }
     if let Some(mut clause) = try_parse_for_each_effect(text, ctx) {
         peel_ctx.apply_optional(&mut clause.optional);
         if clause.condition.is_none() {
-            if let Some(cond) = peel_ctx.condition().cloned() {
-                clause.condition = Some(cond);
-            }
+            clause.condition = peel_ctx.condition().cloned().or(unless_condition.clone());
         }
         return clause;
     }
@@ -4509,9 +4516,7 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
                 peel_ctx.apply_optional(&mut clause.optional);
             }
             if clause.condition.is_none() {
-                if let Some(cond) = peel_ctx.condition().cloned() {
-                    clause.condition = Some(cond);
-                }
+                clause.condition = peel_ctx.condition().cloned().or(unless_condition.clone());
             }
             return clause;
         }
@@ -4519,9 +4524,7 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
             try_parse_additional_land_this_turn(TextPair::new(text, &original_lower))
         {
             if clause.condition.is_none() {
-                if let Some(cond) = peel_ctx.condition().cloned() {
-                    clause.condition = Some(cond);
-                }
+                clause.condition = peel_ctx.condition().cloned().or(unless_condition.clone());
             }
             return clause;
         }
@@ -4533,7 +4536,11 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
     // retry with the original text. The shell is conservative — when in
     // doubt, leave the slot on the text and let the body parser handle it.
     if matches!(clause.effect, Effect::Unimplemented { .. }) {
-        return parse_effect_clause_inner(text, ctx);
+        let mut fallback = parse_effect_clause_inner(text, ctx);
+        if fallback.condition.is_none() {
+            fallback.condition = unless_condition;
+        }
+        return fallback;
     }
     peel_ctx.apply_optional(&mut clause.optional);
     // Duration: route through `with_clause_duration` so
@@ -4552,7 +4559,7 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
     // 6020+ runs before parse_effect_clause and may already have set
     // `condition` via its own dedicated stripper chain — don't clobber.
     if clause.condition.is_none() {
-        if let Some(cond) = peel_ctx.condition().cloned() {
+        if let Some(cond) = peel_ctx.condition().cloned().or(unless_condition) {
             clause.condition = Some(cond);
         }
     }
@@ -40954,6 +40961,29 @@ mod tests {
             other => panic!("expected ObjectCount EQ 0, got {:?}", other),
         }
         assert_eq!(text, "sacrifice this enchantment");
+    }
+
+    #[test]
+    fn strip_unless_opponent_poison_counters() {
+        let (cond, text) = strip_unless_entered_suffix(
+            "sacrifice a creature unless an opponent has three or more poison counters",
+            &mut ParseContext::default(),
+        );
+        assert!(cond.is_some(), "expected unless poison gate, got {cond:?}");
+        assert_eq!(text, "sacrifice a creature");
+    }
+
+    #[test]
+    fn parse_effect_clause_unless_they_control_basic_lands() {
+        let clause = parse_effect_clause(
+            "~ deals 2 damage to that player unless they control two or more basic lands",
+            &mut ParseContext::default(),
+        );
+        assert!(
+            clause.condition.is_some(),
+            "expected unless control gate on clause, got {clause:?}"
+        );
+        assert!(!matches!(clause.effect, Effect::Unimplemented { .. }));
     }
 
     #[test]

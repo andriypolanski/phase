@@ -994,17 +994,6 @@ pub(crate) fn parse_trigger_line_with_index_ir(
                 ability.optional = true;
             }
             Some(TriggerBody::PreLowered(Box::new(ability)))
-        } else if unless_pay.is_none()
-            && scan_contains(&effect_for_parse_lower, "unless")
-            && !has_later_sentence_if(&effect_for_parse_lower)
-        {
-            Some(TriggerBody::PreLowered(Box::new(AbilityDefinition::new(
-                AbilityKind::Spell,
-                Effect::Unimplemented {
-                    name: "Unsupported unless clause".to_string(),
-                    description: Some(effect_for_parse.clone()),
-                },
-            ))))
         } else {
             try_parse_exile_top_each_library_with_collection_counter(
                 &effect_for_parse,
@@ -23481,10 +23470,17 @@ mod tests {
 
         assert!(def.unless_pay.is_none());
         let execute = def.execute.as_ref().expect("should have execute");
+        // Game-state unless the parser cannot decompose no longer dead-ends the
+        // whole trigger body — the primary effect still lowers; the unparseable
+        // unless rider remains a coverage gap on the unparsed tail.
         assert!(
-            matches!(*execute.effect, Effect::Unimplemented { .. }),
-            "unrecognized unless clause must remain visible as Unimplemented, got {:?}",
+            matches!(*execute.effect, Effect::Draw { .. }),
+            "primary effect should still parse when unless rider is unrecognized, got {:?}",
             execute.effect
+        );
+        assert!(
+            execute.condition.is_none(),
+            "unrecognized unless must not attach a bogus condition"
         );
     }
 

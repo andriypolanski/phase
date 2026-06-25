@@ -2937,6 +2937,33 @@ pub(super) fn difference_expr(cond: &AbilityCondition) -> Option<QuantityExpr> {
     }
 }
 
+/// Bridge `StaticCondition::OpponentPoisonAtLeast` to an existential
+/// `QuantityCheck` over opponents whose poison total meets the threshold.
+fn opponent_poison_at_least_as_quantity_check(count: u32) -> AbilityCondition {
+    use crate::types::ability::{PlayerFilter, PlayerRelation, QuantityRef};
+    use crate::types::player::PlayerCounterKind;
+
+    AbilityCondition::QuantityCheck {
+        lhs: QuantityExpr::Ref {
+            qty: QuantityRef::PlayerCount {
+                filter: PlayerFilter::PlayerAttribute {
+                    relation: PlayerRelation::Opponent,
+                    attr: Box::new(QuantityRef::PlayerCounter {
+                        kind: PlayerCounterKind::Poison,
+                        scope: CountScope::Controller,
+                    }),
+                    comparator: Comparator::GE,
+                    value: Box::new(QuantityExpr::Fixed {
+                        value: i32::try_from(count).unwrap_or(i32::MAX),
+                    }),
+                },
+            },
+        },
+        comparator: Comparator::GE,
+        rhs: QuantityExpr::Fixed { value: 1 },
+    }
+}
+
 /// Bridge a `StaticCondition` (from the nom condition parser) to an
 /// `AbilityCondition`. Returns `None` for variants that have no
 /// effect-resolution equivalent — the caller falls through to the next strategy.
@@ -2974,6 +3001,10 @@ pub(crate) fn static_condition_to_ability_condition(
         StaticCondition::IsMonarch => Some(AbilityCondition::IsMonarch),
         StaticCondition::IsInitiative => Some(AbilityCondition::IsInitiative),
         StaticCondition::HasCityBlessing => Some(AbilityCondition::HasCityBlessing),
+        StaticCondition::IsRingBearer => Some(AbilityCondition::IsRingBearer),
+        StaticCondition::OpponentPoisonAtLeast { count } => {
+            Some(opponent_poison_at_least_as_quantity_check(*count))
+        }
         StaticCondition::DayNightIs { state } => {
             Some(AbilityCondition::DayNightIs { state: *state })
         }
@@ -3072,7 +3103,11 @@ pub(crate) fn static_condition_to_ability_condition(
                     }),
                 })
             }
-            _ => None,
+            other => static_condition_to_ability_condition(other, ctx).map(|inner| {
+                AbilityCondition::Not {
+                    condition: Box::new(inner),
+                }
+            }),
         },
         StaticCondition::SourceMatchesFilter { filter } => {
             Some(AbilityCondition::SourceMatchesFilter {
@@ -3164,7 +3199,6 @@ pub(crate) fn static_condition_to_ability_condition(
         // CR 509.1b: recipient-scoped block-evasion gate; no effect-resolution
         // (`AbilityCondition`) equivalent — lowering returns `None`.
         | StaticCondition::RecipientAttackingOwnerTarget { .. }
-        | StaticCondition::IsRingBearer
         | StaticCondition::SourceInZone { .. }
         | StaticCondition::DefendingPlayerControls { .. }
         | StaticCondition::SourceAttackingAlone
@@ -3179,7 +3213,6 @@ pub(crate) fn static_condition_to_ability_condition(
         // (via `TriggerCondition::SourceIsHarnessed` / Layer 6), never an
         // effect-resolution-time `AbilityCondition` — mirror `SourceIsMonstrous`.
         | StaticCondition::SourceIsHarnessed
-        | StaticCondition::OpponentPoisonAtLeast { .. }
         | StaticCondition::UnlessPay { .. }
         | StaticCondition::Unrecognized { .. }
         | StaticCondition::RingLevelAtLeast { .. }
@@ -3313,6 +3346,7 @@ pub(crate) fn ability_condition_to_static_condition(
         | AbilityCondition::IsMonarch
         | AbilityCondition::IsInitiative
         | AbilityCondition::HasCityBlessing
+        | AbilityCondition::IsRingBearer
         | AbilityCondition::WasStartingPlayer { .. }
         | AbilityCondition::SpellCastWithVariantThisTurn { .. }
         | AbilityCondition::SourceIsTapped
