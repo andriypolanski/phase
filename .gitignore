@@ -62,6 +62,7 @@ data/*
 !data/mtgjson/
 !data/mtgish-cards.json
 data/mtgjson/AtomicCards.json
+data/mtgjson/CardTypes.json
 data/mtgjson/Meta.json
 data/mtgjson/SetList.json
 data/mtgjson/decks/

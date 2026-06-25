@@ -924,13 +924,13 @@ const SUBTYPE_PLURALS: &[(&str, &str)] = &[
 /// recognizes the "outlaw[s]" head noun.
 pub const OUTLAW_SUBTYPES: [&str; 5] = ["Assassin", "Mercenary", "Pirate", "Rogue", "Warlock"];
 
-/// MTGJSON-derived **creature** subtype vocabulary (`oracle-subtypes.json`), merged
-/// at load with canonical noncreature tables from `card_type.rs`.
+/// MTGJSON CardTypes-derived **creature** subtype vocabulary (`oracle-subtypes.json`),
+/// merged at load with canonical noncreature tables from `card_type.rs`.
 static ORACLE_SUBTYPES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-    let harvested: Vec<String> =
+    let creature: Vec<String> =
         serde_json::from_str(include_str!("../../data/oracle-subtypes.json"))
             .expect("oracle-subtypes.json well-formed");
-    crate::database::subtype_vocab::build_parser_subtype_vocabulary(&harvested)
+    crate::database::subtype_vocab::build_parser_subtype_vocabulary(&creature)
 });
 
 fn oracle_subtypes() -> &'static [String] {
@@ -2135,6 +2135,28 @@ mod tests {
         // Not a subtype.
         assert!(!is_subtype_word("sharuum"));
         assert!(!is_subtype_word("flying")); // that's a keyword, not a subtype
+    }
+
+    #[test]
+    fn is_subtype_word_recognizes_token_only_creature_subtypes() {
+        for (lower, canonical) in [
+            ("army", "Army"),
+            ("germ", "Germ"),
+            ("servo", "Servo"),
+            ("tentacle", "Tentacle"),
+            ("camarid", "Camarid"),
+            ("tetravite", "Tetravite"),
+        ] {
+            assert!(
+                is_subtype_word(lower),
+                "{lower} must be parser-authoritative"
+            );
+            assert_eq!(
+                parse_subtype(lower),
+                Some((canonical.to_string(), lower.len())),
+                "{lower} must parse as a subtype head"
+            );
+        }
     }
 
     #[test]
