@@ -55,6 +55,8 @@ mod crossway_troublemakers_attacking_keywords;
 mod cultivate_split_destination;
 mod cumber_stone_opponent_debuff;
 mod curse_co_departed_enchanted_player_trigger;
+mod curse_of_deaths_hold_continuous_effect;
+mod curse_of_the_nightly_hunt_must_attack;
 mod cybership_combat_damage_manifest;
 mod dalkovan_encampment_attack_trigger;
 mod daretti_emblem_simultaneous_death;

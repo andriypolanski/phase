@@ -2429,23 +2429,68 @@ pub(crate) fn descriptor_is_supertype(descriptor: &str) -> bool {
     is_supertype
 }
 
+/// Nom-backed helper: split a subject string into (descriptor_core, controller)
+/// by trying to parse a trailing controller suffix. Only accepts the controller
+/// scopes that this static subject seam can actually resolve:
+///
+/// - `ControllerRef::You` — "you control"
+/// - `ControllerRef::Opponent` — "your opponents control" / "you don't control"
+/// - `ControllerRef::EnchantedPlayer` — "enchanted player controls" (CR 303.4b)
+///
+/// `TargetPlayer` and `DefendingPlayer` are deliberately excluded because this
+/// call site builds a continuous static `TargetFilter` with no companion
+/// target-player authority or combat context.
+///
+/// Uses nom `alt`/`tag`/`value` combinators so the phrase set is maintained
+/// alongside the shared grammar rather than as raw suffix literals.
+fn parse_static_controller_suffix(input: &str) -> OracleResult<'_, ControllerRef> {
+    alt((
+        value(ControllerRef::You, tag("you control")),
+        value(ControllerRef::Opponent, tag("your opponents control")),
+        value(ControllerRef::Opponent, tag("you don't control")),
+        // CR 303.4b + CR 702.5a: "enchanted player controls" — the controller
+        // scope is the player the source Aura is attached to.
+        value(
+            ControllerRef::EnchantedPlayer,
+            tag("enchanted player controls"),
+        ),
+    ))
+    .parse(input)
+}
+
+/// Strip a trailing controller suffix from a subject string using the
+/// restricted nom grammar above. Returns (descriptor_core, Some(controller))
+/// on match, or (original, None) if no valid suffix is found.
+fn strip_subject_controller_suffix<'a>(
+    original: &'a str,
+    lower: &str,
+) -> (&'a str, Option<ControllerRef>) {
+    // Try each space-delimited split point (left to right) and check if the
+    // remainder is a complete controller suffix.
+    let mut start = 0;
+    while let Some(pos) = lower[start..].find(' ') {
+        let abs_pos = start + pos;
+        let suffix_lower = &lower[abs_pos + 1..];
+        if let Ok((rest, ctrl)) = parse_static_controller_suffix(suffix_lower) {
+            if rest.is_empty() {
+                return (original[..abs_pos].trim(), Some(ctrl));
+            }
+        }
+        start = abs_pos + 1;
+    }
+    (original, None)
+}
+
 pub(crate) fn parse_creature_subject_filter(subject: &str) -> Option<TargetFilter> {
     let trimmed = subject.trim();
     let lower = trimmed.to_lowercase();
     let tp = TextPair::new(trimmed, &lower);
 
-    // allow-noncombinator: moved legacy static parser code; refactor-only split preserves behavior.
-    let (subject_core, controller) = if let Some(prefix) = tp.original.strip_suffix(" you control")
-    // allow-noncombinator: moved legacy static parser code; refactor-only split preserves behavior.
-    {
-        (prefix.trim(), Some(ControllerRef::You))
-    // allow-noncombinator: moved legacy static parser code; refactor-only split preserves behavior.
-    } else if let Some(prefix) = tp.original.strip_suffix(" your opponents control") {
-        // allow-noncombinator: moved legacy static parser code; refactor-only split preserves behavior.
-        (prefix.trim(), Some(ControllerRef::Opponent))
-    } else {
-        (tp.original, None)
-    };
+    // CR 109.5 + CR 303.4b: Split the subject into a descriptor core and an
+    // optional controller suffix. Uses `parse_static_controller_suffix`, a
+    // restricted nom grammar that only accepts the controller scopes this
+    // static seam can resolve (You, Opponent, EnchantedPlayer).
+    let (subject_core, controller) = strip_subject_controller_suffix(tp.original, &lower);
 
     let subject_core_lower = subject_core.to_lowercase();
     let subject_core_tp = TextPair::new(subject_core, &subject_core_lower);
