@@ -1726,11 +1726,12 @@ impl ManaSpendRestriction {
     pub fn has_payable_branch(&self) -> bool {
         match self {
             // DEAD — no reachable production payment site makes the lowered gate
-            // return true today:
+            // return true today (except `XCostOnly`, live via `SpellMeta.has_x_in_cost`):
             ManaSpendRestriction::XCostOnly => true,
-            // CR 708.4: gate is `meta.is_face_down`, which `build_spell_meta` reads
-            // from `PendingCast::cast_face_down` when a face-down CAST path is active.
-            ManaSpendRestriction::FaceDownSpell => true,
+            // CR 708.4: gate is `meta.is_face_down`, which `build_spell_meta` never
+            // sets `true` at a payment site (no production path casts a spell face
+            // down *through spell payment*), so the gate is never satisfied.
+            ManaSpendRestriction::FaceDownSpell => false,
             // CR 116.2b + CR 702.37e: lowered to
             // `OnlyForSpecialAction(SpecialAction::TurnFaceUp)`, which only fires on
             // a `PaymentContext::SpecialAction(TurnFaceUp)` that no production site
@@ -17292,7 +17293,7 @@ mod tests {
 
         // DEAD: every lowered gate is hardcoded-false or never reached today.
         assert!(ManaSpendRestriction::XCostOnly.has_payable_branch());
-        assert!(ManaSpendRestriction::FaceDownSpell.has_payable_branch());
+        assert!(!ManaSpendRestriction::FaceDownSpell.has_payable_branch());
         assert!(!ManaSpendRestriction::TurnPermanentFaceUp.has_payable_branch());
 
         // All-dead disjunction is dead (Tin Street Gossip).

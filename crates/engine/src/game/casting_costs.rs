@@ -8433,7 +8433,6 @@ mod tests {
             payment_mode: CastPaymentMode::Auto,
             assist_state: AssistState::NotOffered,
             x_residual_activation: false,
-            cast_face_down: false,
         }
     }
 
@@ -12570,7 +12569,6 @@ mod tests {
             payment_mode: CastPaymentMode::Auto,
             assist_state: AssistState::NotOffered,
             x_residual_activation: false,
-            cast_face_down: false,
         };
 
         let result = pay_additional_cost(
@@ -12698,7 +12696,6 @@ mod tests {
             payment_mode: CastPaymentMode::Auto,
             assist_state: AssistState::NotOffered,
             x_residual_activation: false,
-            cast_face_down: false,
         };
 
         let mut events = Vec::new();
@@ -12795,7 +12792,6 @@ mod tests {
             payment_mode: CastPaymentMode::Auto,
             assist_state: AssistState::NotOffered,
             x_residual_activation: false,
-            cast_face_down: false,
         };
 
         // Exactly one card is required. Selecting two must fail.
@@ -12881,7 +12877,6 @@ mod tests {
             payment_mode: CastPaymentMode::Auto,
             assist_state: AssistState::NotOffered,
             x_residual_activation: false,
-            cast_face_down: false,
         };
 
         // `red` is not in the legal-cards list, so the cost handler must reject
@@ -13000,7 +12995,6 @@ mod tests {
             payment_mode: CastPaymentMode::Auto,
             assist_state: AssistState::NotOffered,
             x_residual_activation: false,
-            cast_face_down: false,
         };
 
         let result = pay_additional_cost(

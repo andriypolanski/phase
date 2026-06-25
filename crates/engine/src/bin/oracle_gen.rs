@@ -337,23 +337,21 @@ fn build_export_layout(
 /// to the set of all rarities that card has been printed at. If the sets directory
 /// doesn't exist, returns an empty map (graceful degradation).
 fn write_oracle_subtypes(atomic: &engine::database::mtgjson::AtomicCardsFile) {
-    let mut subtypes: BTreeSet<String> = BTreeSet::new();
-    for faces in atomic.data.values() {
-        for face in faces {
-            for subtype in &face.subtypes {
-                if !subtype.is_empty() {
-                    subtypes.insert(subtype.clone());
-                }
-            }
-        }
-    }
-    let list: Vec<String> = subtypes.into_iter().collect();
+    use engine::database::subtype_vocab::harvest_creature_subtypes_from_atomic;
+
+    let list: Vec<String> = harvest_creature_subtypes_from_atomic(atomic)
+        .into_iter()
+        .collect();
     let out_path = PathBuf::from("crates/engine/data/oracle-subtypes.json");
     match serde_json::to_string_pretty(&list)
         .map_err(|e| e.to_string())
         .and_then(|json| std::fs::write(&out_path, json).map_err(|e| e.to_string()))
     {
-        Ok(()) => eprintln!("Wrote {} subtypes to {}", list.len(), out_path.display()),
+        Ok(()) => eprintln!(
+            "Wrote {} validated creature subtypes to {}",
+            list.len(),
+            out_path.display()
+        ),
         Err(e) => eprintln!("warning: failed to write {}: {e}", out_path.display()),
     }
 }

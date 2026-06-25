@@ -942,7 +942,6 @@ mod tests {
             payment_mode: CastPaymentMode::Auto,
             assist_state: crate::types::game_state::AssistState::NotOffered,
             x_residual_activation: false,
-            cast_face_down: false,
         })
     }
 
