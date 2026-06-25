@@ -2132,11 +2132,11 @@ pub(crate) fn parse_for_each_clause_expr(clause: &str) -> Option<QuantityExpr> {
     parse_for_each_clause_expr_with_parser(clause, parse_for_each_clause)
 }
 
-/// CR 117.1: "other spell(s) cast this turn" — all spells cast this turn by
-/// any player, excluding the resolving spell (Storm Entity class). Composes
-/// `SpellsCastThisTurn { scope: All }` with offset −1, clamped at zero
-/// (CR 107.1b). Uses `All` (not `Controller`) because Oracle text counts
-/// every other spell, including opponents'.
+/// "Other spell(s) cast this turn" (Storm Entity class): all spells cast this
+/// turn by any player, excluding the resolving spell. Composes
+/// `SpellsCastThisTurn { scope: All }` with offset −1, clamped at zero.
+/// Uses `All` (not `Controller`) because Oracle text counts every other
+/// spell, including opponents'.
 fn parse_other_spells_cast_this_turn_for_each(clause: &str) -> Option<QuantityExpr> {
     let (rest, _) = (
         tag::<_, _, OracleError<'_>>("other "),

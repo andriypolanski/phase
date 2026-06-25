@@ -9158,9 +9158,9 @@ mod tests {
         assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(1)), 1);
     }
 
-    /// CR 117.1: Storm Entity's "for each other spell cast this turn" counts
-    /// all players' spells, not just the controller's, then excludes the
-    /// resolving spell via the parser's `All` scope + `offset: -1` shape.
+    /// Storm Entity's "for each other spell cast this turn": `CountScope::All`
+    /// plus offset −1 must count opponent spells while excluding the resolving
+    /// spell.
     #[test]
     fn resolve_quantity_other_spells_cast_this_turn_counts_opponent_spells() {
         fn other_spell_cast_this_turn_expr() -> QuantityExpr {
