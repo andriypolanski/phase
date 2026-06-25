@@ -333,12 +333,15 @@ fn build_export_layout(
     }
 }
 
-/// Write parser-authoritative creature subtypes from MTGJSON CardTypes.json
-/// (CR 205.3 canonical list, including token-only creature types).
-fn write_oracle_subtypes(card_types: &engine::database::mtgjson::CardTypesFile) {
-    use engine::database::subtype_vocab::canonical_creature_subtypes_from_card_types;
+/// Write parser-authoritative creature subtypes: CardTypes.json ∪ corroborated
+/// AtomicCards harvest (token-only + newer card-printed types).
+fn write_oracle_subtypes(
+    card_types: Option<&engine::database::mtgjson::CardTypesFile>,
+    atomic: &engine::database::mtgjson::AtomicCardsFile,
+) {
+    use engine::database::subtype_vocab::build_creature_subtype_vocabulary;
 
-    let list: Vec<String> = canonical_creature_subtypes_from_card_types(card_types)
+    let list: Vec<String> = build_creature_subtype_vocabulary(card_types, atomic)
         .into_iter()
         .collect();
     let out_path = PathBuf::from("crates/engine/data/oracle-subtypes.json");
@@ -347,7 +350,7 @@ fn write_oracle_subtypes(card_types: &engine::database::mtgjson::CardTypesFile) 
         .and_then(|json| std::fs::write(&out_path, json).map_err(|e| e.to_string()))
     {
         Ok(()) => eprintln!(
-            "Wrote {} canonical creature subtypes to {}",
+            "Wrote {} creature subtypes to {}",
             list.len(),
             out_path.display()
         ),
@@ -649,13 +652,14 @@ fn main() {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("CardTypes.json");
-    match load_card_types(&card_types_path) {
-        Ok(card_types) => write_oracle_subtypes(&card_types),
-        Err(e) => eprintln!(
-            "warning: CardTypes.json not loaded ({}): skipping oracle-subtypes.json",
-            e
-        ),
+    let card_types = load_card_types(&card_types_path).ok();
+    if card_types.is_none() {
+        eprintln!(
+            "warning: CardTypes.json not found at {} — using AtomicCards harvest only",
+            card_types_path.display()
+        );
     }
+    write_oracle_subtypes(card_types.as_ref(), &atomic);
 
     // Scan per-set MTGJSON files to build a card name → rarities map.
     let rarity_map = build_rarity_map(&mtgjson_path);

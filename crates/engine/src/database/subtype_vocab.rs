@@ -1,9 +1,10 @@
 //! CR 205.3: Validated subtype vocabulary for Oracle parsing.
 //!
-//! Creature subtypes are sourced from MTGJSON `CardTypes.json` (the canonical
-//! Wizards list, including token-only types such as Army and Germ). Noncreature
-//! subtypes come from the static tables in `card_type.rs`. AtomicCards face
-//! harvesting remains available for validation/cross-checks only.
+//! Creature subtypes union MTGJSON `CardTypes.json` (canonical Wizards list,
+//! including token-only types such as Army and Germ) with AtomicCards face
+//! subtypes corroborated by the printed type line (covers newer card-printed
+//! types before CardTypes.json catches up). Noncreature subtypes come from
+//! `card_type.rs`.
 
 use std::collections::BTreeSet;
 
@@ -71,7 +72,8 @@ pub fn canonical_creature_subtypes_from_card_types(card_types: &CardTypesFile) -
 }
 
 /// Harvest creature subtypes from AtomicCards with type-line corroboration.
-/// Cross-check / supplemental only — parser authority is `CardTypes.json`.
+/// Supplements `CardTypes.json` with card-printed types not yet in the
+/// canonical list (e.g. Mammoth, Cyborg, Autobot).
 pub fn harvest_creature_subtypes_from_atomic(atomic: &AtomicCardsFile) -> BTreeSet<String> {
     let mut subtypes = BTreeSet::new();
     for faces in atomic.data.values() {
@@ -89,6 +91,21 @@ pub fn harvest_creature_subtypes_from_atomic(atomic: &AtomicCardsFile) -> BTreeS
             }
         }
     }
+    subtypes
+}
+
+/// Parser-authoritative creature subtype set: canonical CardTypes ∪ corroborated
+/// AtomicCards. CardTypes supplies token-only types; AtomicCards supplies newer
+/// card-printed types before CardTypes.json is updated.
+pub fn build_creature_subtype_vocabulary(
+    card_types: Option<&CardTypesFile>,
+    atomic: &AtomicCardsFile,
+) -> BTreeSet<String> {
+    let mut subtypes = BTreeSet::new();
+    if let Some(card_types) = card_types {
+        subtypes.extend(canonical_creature_subtypes_from_card_types(card_types));
+    }
+    subtypes.extend(harvest_creature_subtypes_from_atomic(atomic));
     subtypes
 }
 
@@ -193,6 +210,53 @@ mod tests {
             assert!(
                 vocab.iter().any(|s| s == token_subtype),
                 "{token_subtype} must be parser-authoritative"
+            );
+        }
+    }
+
+    #[test]
+    fn build_creature_vocabulary_unions_card_types_and_atomic_harvest() {
+        let card_types = fixture_card_types(&["Human", "Army", "Germ"]);
+        let mut atomic_data = std::collections::HashMap::new();
+        atomic_data.insert(
+            "Domesticated Mammoth".to_string(),
+            vec![crate::database::mtgjson::AtomicCard {
+                name: "Domesticated Mammoth".to_string(),
+                mana_cost: None,
+                colors: vec![],
+                color_identity: vec![],
+                power: None,
+                toughness: None,
+                loyalty: None,
+                defense: None,
+                text: None,
+                layout: "normal".to_string(),
+                type_line: Some("Creature — Elf Mammoth".to_string()),
+                types: vec!["Creature".to_string()],
+                subtypes: vec!["Elf".to_string(), "Mammoth".to_string()],
+                supertypes: vec![],
+                keywords: None,
+                side: None,
+                face_name: None,
+                mana_value: 0.0,
+                legalities: Default::default(),
+                leadership_skills: None,
+                printings: vec![],
+                rulings: vec![],
+                is_game_changer: false,
+                identifiers: crate::database::mtgjson::AtomicIdentifiers {
+                    scryfall_id: None,
+                    scryfall_oracle_id: None,
+                },
+                foreign_data: vec![],
+            }],
+        );
+        let atomic = crate::database::mtgjson::AtomicCardsFile { data: atomic_data };
+        let subtypes = build_creature_subtype_vocabulary(Some(&card_types), &atomic);
+        for expected in ["Army", "Germ", "Mammoth"] {
+            assert!(
+                subtypes.contains(expected),
+                "{expected} must be in union vocabulary"
             );
         }
     }
