@@ -71,13 +71,27 @@ pub fn canonical_creature_subtypes_from_card_types(card_types: &CardTypesFile) -
         .collect()
 }
 
+/// CR 205.3m: AtomicCards face qualifies for creature-subtype harvest when its
+/// core types include Creature, Kindred, or Tribal — same axis as
+/// `collect_creature_type_vocabulary` in `card_db.rs`. Excludes Plane subtypes
+/// (Time), spell subtypes on split faces (Fire on Trial // Error), etc.
+pub fn atomic_face_is_creature_harvest_source(types: &[String]) -> bool {
+    types
+        .iter()
+        .any(|t| matches!(t.as_str(), "Creature" | "Kindred" | "Tribal"))
+}
+
 /// Harvest creature subtypes from AtomicCards with type-line corroboration.
 /// Supplements `CardTypes.json` with card-printed types not yet in the
-/// canonical list (e.g. Mammoth, Cyborg, Autobot).
+/// canonical list (e.g. Mammoth, Cyborg, Autobot). Only creature/kindred/tribal
+/// faces are considered — noncreature subtype sections are excluded.
 pub fn harvest_creature_subtypes_from_atomic(atomic: &AtomicCardsFile) -> BTreeSet<String> {
     let mut subtypes = BTreeSet::new();
     for faces in atomic.data.values() {
         for face in faces {
+            if !atomic_face_is_creature_harvest_source(&face.types) {
+                continue;
+            }
             let Some(type_line) = face.type_line.as_deref() else {
                 continue;
             };
@@ -259,6 +273,87 @@ mod tests {
                 "{expected} must be in union vocabulary"
             );
         }
+    }
+
+    #[test]
+    fn harvest_excludes_noncreature_atomic_faces() {
+        let mut atomic_data = std::collections::HashMap::new();
+        atomic_data.insert(
+            "Temple of Atropos".to_string(),
+            vec![crate::database::mtgjson::AtomicCard {
+                name: "Temple of Atropos".to_string(),
+                mana_cost: None,
+                colors: vec![],
+                color_identity: vec![],
+                power: None,
+                toughness: None,
+                loyalty: None,
+                defense: None,
+                text: None,
+                layout: "planar".to_string(),
+                type_line: Some("Plane — Time".to_string()),
+                types: vec!["Plane".to_string()],
+                subtypes: vec!["Time".to_string()],
+                supertypes: vec![],
+                keywords: None,
+                side: None,
+                face_name: None,
+                mana_value: 0.0,
+                legalities: Default::default(),
+                leadership_skills: None,
+                printings: vec![],
+                rulings: vec![],
+                is_game_changer: false,
+                identifiers: crate::database::mtgjson::AtomicIdentifiers {
+                    scryfall_id: None,
+                    scryfall_oracle_id: None,
+                },
+                foreign_data: vec![],
+            }],
+        );
+        atomic_data.insert(
+            "Trial // Error".to_string(),
+            vec![crate::database::mtgjson::AtomicCard {
+                name: "Trial // Error".to_string(),
+                mana_cost: None,
+                colors: vec![],
+                color_identity: vec![],
+                power: None,
+                toughness: None,
+                loyalty: None,
+                defense: None,
+                text: None,
+                layout: "split".to_string(),
+                type_line: Some("Elemental Instant — Fire".to_string()),
+                types: vec!["Elemental".to_string(), "Instant".to_string()],
+                subtypes: vec!["Fire".to_string()],
+                supertypes: vec![],
+                keywords: None,
+                side: None,
+                face_name: Some("Trial".to_string()),
+                mana_value: 0.0,
+                legalities: Default::default(),
+                leadership_skills: None,
+                printings: vec![],
+                rulings: vec![],
+                is_game_changer: false,
+                identifiers: crate::database::mtgjson::AtomicIdentifiers {
+                    scryfall_id: None,
+                    scryfall_oracle_id: None,
+                },
+                foreign_data: vec![],
+            }],
+        );
+        let atomic = crate::database::mtgjson::AtomicCardsFile { data: atomic_data };
+        let harvested = harvest_creature_subtypes_from_atomic(&atomic);
+        assert!(
+            !harvested.contains("Time"),
+            "Plane subtype Time must not enter creature harvest"
+        );
+        assert!(
+            !harvested.contains("Fire"),
+            "Instant subtype Fire must not enter creature harvest"
+        );
     }
 
     #[test]

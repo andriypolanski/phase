@@ -2160,6 +2160,19 @@ mod tests {
     }
 
     #[test]
+    fn is_subtype_word_rejects_plane_and_spell_subtypes_from_noncreature_faces() {
+        // Plane — Time and Elemental Instant — Fire must not register as parser
+        // subtypes; otherwise "time travel" lowers incorrectly and split-card
+        // half-names like "Fire // Ice" fail to normalize to ~.
+        for non_creature in ["time", "fire"] {
+            assert!(
+                !is_subtype_word(non_creature),
+                "{non_creature} must not be a parser subtype"
+            );
+        }
+    }
+
+    #[test]
     fn is_subtype_word_rejects_oracle_function_words_and_mtgjson_garbage() {
         for garbage in ["the", "you", "and/or", "of", "elemental?", "baddest,"] {
             assert!(
