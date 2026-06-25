@@ -2132,9 +2132,11 @@ pub(crate) fn parse_for_each_clause_expr(clause: &str) -> Option<QuantityExpr> {
     parse_for_each_clause_expr_with_parser(clause, parse_for_each_clause)
 }
 
-/// CR 117.1: "other spell(s) cast this turn" — spells the controller cast
-/// this turn excluding the resolving spell (Storm Entity class). Composes
-/// `SpellsCastThisTurn` with offset −1, clamped at zero (CR 107.1b).
+/// CR 117.1: "other spell(s) cast this turn" — all spells cast this turn by
+/// any player, excluding the resolving spell (Storm Entity class). Composes
+/// `SpellsCastThisTurn { scope: All }` with offset −1, clamped at zero
+/// (CR 107.1b). Uses `All` (not `Controller`) because Oracle text counts
+/// every other spell, including opponents'.
 fn parse_other_spells_cast_this_turn_for_each(clause: &str) -> Option<QuantityExpr> {
     let (rest, _) = (
         tag::<_, _, OracleError<'_>>("other "),
@@ -2150,7 +2152,7 @@ fn parse_other_spells_cast_this_turn_for_each(clause: &str) -> Option<QuantityEx
         inner: Box::new(QuantityExpr::Offset {
             inner: Box::new(QuantityExpr::Ref {
                 qty: QuantityRef::SpellsCastThisTurn {
-                    scope: CountScope::Controller,
+                    scope: CountScope::All,
                     filter: None,
                 },
             }),
@@ -4666,19 +4668,21 @@ mod tests {
     #[test]
     fn for_each_other_spells_cast_this_turn() {
         let qty = parse_for_each_clause_expr("other spell cast this turn").unwrap();
-        assert!(matches!(
+        assert_eq!(
             qty,
             QuantityExpr::ClampMin {
-                inner,
-                minimum: 0,
-            } if matches!(
-                *inner,
-                QuantityExpr::Offset {
+                inner: Box::new(QuantityExpr::Offset {
+                    inner: Box::new(QuantityExpr::Ref {
+                        qty: QuantityRef::SpellsCastThisTurn {
+                            scope: CountScope::All,
+                            filter: None,
+                        },
+                    }),
                     offset: -1,
-                    ..
-                }
-            )
-        ));
+                }),
+                minimum: 0,
+            },
+        );
     }
 
     #[test]
