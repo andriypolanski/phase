@@ -2586,13 +2586,39 @@ pub(super) fn handle_resolution_choice(
             // action, so batch this discard's observer triggers (Waste Not,
             // Megrim, Bone Miser) across the `DiscardChoice` pause — exactly
             // as the `Sacrifice` branch does for dies-triggers.
-            if let Some(outcome) = batch_or_drain_observer_triggers(
-                state,
-                events,
-                events_before_effect,
-                events_after_move,
-            ) {
-                return Ok(outcome);
+            //
+            // CR 608.2c: A sequential continuation stashed behind this interactive
+            // discard (e.g. Shorikai's "then create a Pilot creature token")
+            // emits ZoneChanged/TokenCreated during `finish_with_continuation`.
+            // Collect BOTH the discard slice and the continuation slice into
+            // `deferred_triggers` before a single drain — the discard slice must
+            // stay bounded to the move itself, but an early drain after only the
+            // discard slice would return `WaitingForWithInlineTriggers` and skip
+            // the continuation slice entirely (issue #4245).
+            for (start, end) in [
+                (events_before_effect, events_after_move),
+                (events_after_move, events.len()),
+            ] {
+                if end <= start {
+                    continue;
+                }
+                let trigger_events: Vec<GameEvent> = events[start..end]
+                    .iter()
+                    .filter(|ev| !matches!(ev, GameEvent::PhaseChanged { .. }))
+                    .cloned()
+                    .collect();
+                if !trigger_events.is_empty() {
+                    super::triggers::collect_triggers_into_deferred(state, &trigger_events);
+                }
+            }
+
+            if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+                if let Some(wf) = super::triggers::drain_deferred_trigger_queue(state, events) {
+                    return Ok(ResolutionChoiceOutcome::WaitingFor(wf));
+                }
+                return Ok(ResolutionChoiceOutcome::WaitingForWithInlineTriggers(
+                    waiting_for,
+                ));
             }
             ResolutionChoiceOutcome::WaitingFor(waiting_for)
         }
