@@ -1791,6 +1791,11 @@ pub struct PendingCast {
     /// mid-payment keeps the signal across a multiplayer save/restore.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub x_residual_activation: bool,
+    /// CR 708.4 + CR 702.37c: When true, this spell is being cast face down
+    /// (morph/disguise/cloak). Threaded into `SpellMeta::is_face_down` during
+    /// mana payment so `OnlyForFaceDownSpell` restrictions evaluate correctly.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cast_face_down: bool,
 }
 
 fn default_origin_zone() -> Zone {
@@ -1844,6 +1849,7 @@ impl PendingCast {
             payment_mode: CastPaymentMode::Auto,
             assist_state: AssistState::NotOffered,
             x_residual_activation: false,
+            cast_face_down: false,
         }
     }
 
@@ -8448,6 +8454,7 @@ mod tests {
                 payment_mode: CastPaymentMode::Auto,
                 assist_state: AssistState::NotOffered,
                 x_residual_activation: false,
+                cast_face_down: false,
             })
         }
 
@@ -8787,6 +8794,7 @@ mod tests {
             payment_mode: CastPaymentMode::Auto,
             assist_state: AssistState::NotOffered,
             x_residual_activation: false,
+            cast_face_down: false,
         });
         let choose_x = WaitingFor::ChooseXValue {
             player: PlayerId(0),

@@ -1443,14 +1443,13 @@ pub(super) fn build_spell_meta(
         // (exile) zone BEFORE the deferred origin->stack move clears `face_down`, so
         // sourcing this from raw `obj.face_down` would let a face-up foretold/hideaway
         // cast wrongly satisfy the `OnlyForFaceDownSpell` spend restriction (Tin
-        // Street Gossip). No engine path casts a spell face down today:
-        // `GameAction::PlayFaceDown` -> `game::morph::play_face_down` moves
-        // hand->battlefield via the zone pipeline and charges no mana, never building
-        // a `PaymentContext::Spell`. So the correct value at every current production
-        // payment site is `false`. When a real CR 702.37c / 708.4 face-down CAST path
-        // is built, set this from that cast's announced face-down intent; the gate
+        // Street Gossip). Thread `PendingCast::cast_face_down` when a face-down
+        // CAST path announces morph/disguise/cloak; the gate
         // (`ManaRestriction::allows_spell`) already reads this field.
-        is_face_down: false,
+        is_face_down: state
+            .pending_cast
+            .as_ref()
+            .is_some_and(|pending| pending.object_id == object_id && pending.cast_face_down),
     })
 }
 
