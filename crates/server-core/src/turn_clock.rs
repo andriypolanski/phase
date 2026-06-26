@@ -224,7 +224,6 @@ mod tests {
 
     #[test]
     fn refresh_resets_budget_on_player_change() {
-        let mut session = sample_session(Some(30));
         let mut clock = TurnClockState::default();
         let now = 1_000_000u64;
         clock.sync_for_target(Some(PlayerId(0)), Some(30), now);
