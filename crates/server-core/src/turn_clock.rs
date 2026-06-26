@@ -132,32 +132,35 @@ impl SessionManager {
         &mut self,
         game_code: &str,
     ) -> Result<Option<crate::session::ActionResult>, String> {
-        let session = self
-            .sessions
-            .get_mut(game_code)
-            .ok_or_else(|| format!("Game not found: {game_code}"))?;
+        let token = {
+            let session = self
+                .sessions
+                .get_mut(game_code)
+                .ok_or_else(|| format!("Game not found: {game_code}"))?;
 
-        if !session.turn_clock_expired() {
-            return Ok(None);
-        }
+            if !session.turn_clock_expired() {
+                return Ok(None);
+            }
 
-        let player = session
-            .turn_clock
-            .active_player
-            .ok_or_else(|| "Turn clock expired without an active player".to_string())?;
-        let token = session.player_tokens[player.0 as usize].clone();
-        if token.is_empty() {
-            return Err("Timed-out seat has no player token".to_string());
-        }
+            let player = session
+                .turn_clock
+                .active_player
+                .ok_or_else(|| "Turn clock expired without an active player".to_string())?;
+            let token = session.player_tokens[player.0 as usize].clone();
+            if token.is_empty() {
+                return Err("Timed-out seat has no player token".to_string());
+            }
 
-        let (legal_actions, _, _) = engine::ai_support::legal_actions_full(&session.state);
-        if !legal_actions.contains(&GameAction::PassPriority) {
-            // Cannot safely auto-act — reset the clock and wait for human input.
-            session.refresh_turn_clock();
-            return Ok(None);
-        }
+            let (legal_actions, _, _) = engine::ai_support::legal_actions_full(&session.state);
+            if !legal_actions.contains(&GameAction::PassPriority) {
+                // Cannot safely auto-act — reset the clock and wait for human input.
+                session.refresh_turn_clock();
+                return Ok(None);
+            }
 
-        drop(session);
+            token
+        };
+
         self.handle_action(game_code, &token, GameAction::PassPriority)
             .map(Some)
     }
