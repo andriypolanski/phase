@@ -4482,6 +4482,26 @@ fn unless_rider_defers_to_body_parser(text: &str) -> bool {
     };
     let before_trimmed = before_unless.trim_start();
     let unless_tail = &lower[before_unless.len()..];
+    let after_trimmed = after_unless.trim_end_matches('.').trim();
+
+    // CR 605.1a: activation prohibition mana-ability exemption (restriction.rs).
+    if tag::<_, _, OracleError<'_>>("they're mana abilities")
+        .parse(after_trimmed)
+        .is_ok()
+    {
+        return true;
+    }
+
+    // CR 508.1h + CR 118.12: combat-tax static UnlessPay (parse_static_line path).
+    if alt((
+        tag::<_, _, OracleError<'_>>("their controller pays "),
+        tag("its controller pays "),
+    ))
+    .parse(after_unless)
+    .is_ok()
+    {
+        return true;
+    }
 
     // CR 608.2c: discard imperative + unless discard qualifier (imperative.rs).
     if tag::<_, _, OracleError<'_>>("discard ")
