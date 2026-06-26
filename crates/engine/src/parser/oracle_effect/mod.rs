@@ -41026,14 +41026,49 @@ mod tests {
 
     #[test]
     fn strip_unless_opponent_poison_counters() {
+        use crate::types::player::PlayerCounterKind;
+
         let (strip, text) = strip_unless_entered_suffix(
             "sacrifice a creature unless an opponent has three or more poison counters",
             &mut ParseContext::default(),
         );
-        assert!(
-            matches!(strip, UnlessSuffixStrip::Parsed(_)),
-            "expected unless poison gate, got {strip:?}"
+        let UnlessSuffixStrip::Parsed(cond) = strip else {
+            panic!("expected parsed unless poison gate, got {strip:?}");
+        };
+        let AbilityCondition::Not { condition } = cond else {
+            panic!("expected Not-wrapped unless gate, got {cond:?}");
+        };
+        let AbilityCondition::QuantityCheck {
+            lhs,
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 1 },
+        } = *condition
+        else {
+            panic!("expected QuantityCheck GE 1, got {condition:?}");
+        };
+        let QuantityExpr::Ref {
+            qty:
+                QuantityRef::PlayerCount {
+                    filter:
+                        PlayerFilter::PlayerAttribute {
+                            relation: PlayerRelation::Opponent,
+                            attr,
+                            comparator: Comparator::GE,
+                            value,
+                        },
+                },
+        } = lhs
+        else {
+            panic!("expected PlayerCount opponent attribute, got {lhs:?}");
+        };
+        assert_eq!(
+            *attr,
+            QuantityRef::PlayerCounter {
+                kind: PlayerCounterKind::Poison,
+                scope: CountScope::ScopedPlayer,
+            }
         );
+        assert_eq!(*value, QuantityExpr::Fixed { value: 3 });
         assert_eq!(text, "sacrifice a creature");
     }
 

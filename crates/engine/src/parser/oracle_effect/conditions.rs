@@ -2950,8 +2950,9 @@ pub(super) fn difference_expr(cond: &AbilityCondition) -> Option<QuantityExpr> {
     }
 }
 
-/// Bridge `StaticCondition::OpponentPoisonAtLeast` to an existential
-/// `QuantityCheck` over opponents whose poison total meets the threshold.
+/// CR 122.1f: Bridge `StaticCondition::OpponentPoisonAtLeast` to an existential
+/// `QuantityCheck` over opponents whose poison total meets the threshold
+/// ("an opponent has N or more poison counters" unless gates).
 fn opponent_poison_at_least_as_quantity_check(count: u32) -> AbilityCondition {
     use crate::types::ability::{PlayerFilter, PlayerRelation, QuantityRef};
     use crate::types::player::PlayerCounterKind;
@@ -2963,7 +2964,7 @@ fn opponent_poison_at_least_as_quantity_check(count: u32) -> AbilityCondition {
                     relation: PlayerRelation::Opponent,
                     attr: Box::new(QuantityRef::PlayerCounter {
                         kind: PlayerCounterKind::Poison,
-                        scope: CountScope::Controller,
+                        scope: CountScope::ScopedPlayer,
                     }),
                     comparator: Comparator::GE,
                     value: Box::new(QuantityExpr::Fixed {
