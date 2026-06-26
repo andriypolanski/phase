@@ -2402,7 +2402,9 @@ fn parse_you_have_typed_cards_in_your_graveyard(input: &str) -> OracleResult<'_,
 /// Parse "they have exactly N [or exactly M ...] cards in hand" and
 /// "they control N or more [type]" for scoped-player unless/if gates
 /// (Skullcage, Furnace Punisher class). "They" binds to
-/// `PlayerScope::ScopedPlayer` at resolution time (CR 603.7c).
+/// `PlayerScope::ScopedPlayer` — the relative-player slot established by
+/// trigger `relative_player_scope` / event-player context for per-player
+/// damage and punishment riders.
 fn parse_they_scoped_player_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
         parse_they_hand_size_exact_disjunction,

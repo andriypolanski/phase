@@ -23470,17 +23470,10 @@ mod tests {
 
         assert!(def.unless_pay.is_none());
         let execute = def.execute.as_ref().expect("should have execute");
-        // Game-state unless the parser cannot decompose no longer dead-ends the
-        // whole trigger body — the primary effect still lowers; the unparseable
-        // unless rider remains a coverage gap on the unparsed tail.
         assert!(
-            matches!(*execute.effect, Effect::Draw { .. }),
-            "primary effect should still parse when unless rider is unrecognized, got {:?}",
+            matches!(*execute.effect, Effect::Unimplemented { .. }),
+            "unrecognized unless clause must remain visible as Unimplemented, got {:?}",
             execute.effect
-        );
-        assert!(
-            execute.condition.is_none(),
-            "unrecognized unless must not attach a bogus condition"
         );
     }
 

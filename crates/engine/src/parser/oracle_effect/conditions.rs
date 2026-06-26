@@ -715,10 +715,17 @@ pub(super) fn strip_if_you_do_conditional(text: &str) -> (Option<AbilityConditio
     (None, text.to_string())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum UnlessSuffixStrip {
+    Absent,
+    Parsed(AbilityCondition),
+    Unrecognized { rider: String },
+}
+
 pub(super) fn strip_unless_entered_suffix(
     text: &str,
     ctx: &mut ParseContext,
-) -> (Option<AbilityCondition>, String) {
+) -> (UnlessSuffixStrip, String) {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
     for pattern in &[
@@ -727,7 +734,7 @@ pub(super) fn strip_unless_entered_suffix(
     ] {
         if let Some((before, _)) = tp.split_around(pattern) {
             return (
-                Some(AbilityCondition::Not {
+                UnlessSuffixStrip::Parsed(AbilityCondition::Not {
                     condition: Box::new(AbilityCondition::SourceEnteredThisTurn),
                 }),
                 before.original.trim_end_matches('.').trim().to_string(),
@@ -738,10 +745,16 @@ pub(super) fn strip_unless_entered_suffix(
         let condition_text = condition_part.trim_end_matches('.');
         if let Some(cond) = try_nom_condition_as_unless(condition_text, ctx) {
             let effect_text = text[..effect_part.len()].trim().to_string();
-            return (Some(cond), effect_text);
+            return (UnlessSuffixStrip::Parsed(cond), effect_text);
         }
+        return (
+            UnlessSuffixStrip::Unrecognized {
+                rider: condition_text.to_string(),
+            },
+            text.to_string(),
+        );
     }
-    (None, text.to_string())
+    (UnlessSuffixStrip::Absent, text.to_string())
 }
 
 /// CR 607.2a + CR 608.2c: "unless it has the same name as another card exiled

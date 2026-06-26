@@ -4473,13 +4473,78 @@ fn try_parse_for_each_category_exile(tp: TextPair<'_>) -> Option<ParsedEffectCla
     })
 }
 
+fn unless_rider_defers_to_body_parser(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let tp = TextPair::new(text, &lower);
+    let Some(unless_pos) = tp.find(" unless ") else {
+        return false;
+    };
+    let after_unless = &lower[unless_pos + 8..];
+    let before_unless = &lower[..unless_pos];
+
+    // CR 608.2c: discard imperative + unless discard qualifier (imperative.rs).
+    if tag::<_, _, OracleError<'_>>("discard ")
+        .parse(before_unless.trim_start())
+        .is_ok()
+        && tag::<_, _, OracleError<'_>>("you discard ")
+            .parse(after_unless)
+            .is_ok()
+    {
+        return true;
+    }
+
+    // CR 118.12: counter spell unless payment (`parse_unless_payment` in counter path).
+    // `extract_resolution_unless_pay_modifier` deliberately skips counter text.
+    tag::<_, _, OracleError<'_>>("counter ")
+        .parse(before_unless.trim_start())
+        .is_ok()
+        && parse_unless_payment(&lower[unless_pos..]).is_some()
+}
+
+fn parsed_unless_unsupported_clause(full_text: &str, rider: &str) -> ParsedEffectClause {
+    parsed_clause(Effect::unimplemented(
+        "Unsupported unless clause",
+        format!("{full_text} (unless: {rider})"),
+    ))
+}
+
+fn attach_unless_slots(
+    mut clause: ParsedEffectClause,
+    unless_condition: Option<AbilityCondition>,
+    unless_pay: Option<UnlessPayModifier>,
+) -> ParsedEffectClause {
+    if clause.condition.is_none() {
+        clause.condition = unless_condition;
+    }
+    if clause.unless_pay.is_none() {
+        clause.unless_pay = unless_pay;
+    }
+    clause
+}
+
 #[tracing::instrument(level = "debug")]
 fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause {
     // CR 608.2c: "do X unless [game state]" — strip trailing unless suffix and
     // attach the negated gate before body parsing (payment-unless uses
     // `unless_pay` / `extract_resolution_unless_pay_modifier` instead).
-    let (unless_condition, clause_text) = strip_unless_entered_suffix(text, ctx);
-    let text = clause_text.as_str();
+    let (unless_strip, clause_text) = strip_unless_entered_suffix(text, ctx);
+    let mut unless_pay_deferred = None;
+    let (unless_condition, text) = match unless_strip {
+        UnlessSuffixStrip::Absent => (None, clause_text),
+        UnlessSuffixStrip::Parsed(c) => (Some(c), clause_text),
+        UnlessSuffixStrip::Unrecognized { rider } => {
+            let (stripped, unless_pay) = extract_resolution_unless_pay_modifier(&clause_text, None);
+            if unless_pay.is_some() {
+                unless_pay_deferred = unless_pay;
+                (None, stripped)
+            } else if unless_rider_defers_to_body_parser(text) {
+                (None, clause_text)
+            } else {
+                return parsed_unless_unsupported_clause(text, &rider);
+            }
+        }
+    };
+    let text = text.as_str();
     // Phase 2: peel structural slots off the head of the clause before
     // body parsing. The recursive shell strips slot-bearing prefixes/suffixes
     // (optional, opponent-may, condition, duration, for-each, player-scope)
@@ -4490,18 +4555,18 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
     // `crates/engine/src/parser/clause_shell.rs` for the slot machinery.
     let (peeled_text, peel_ctx) = super::clause_shell::peel_clause(text);
     if peel_ctx.is_empty() {
-        let mut clause = parse_effect_clause_inner(text, ctx);
-        if unless_condition.is_some() {
-            clause.condition = unless_condition;
-        }
-        return clause;
+        return attach_unless_slots(
+            parse_effect_clause_inner(text, ctx),
+            unless_condition,
+            unless_pay_deferred,
+        );
     }
     if let Some(mut clause) = try_parse_for_each_effect(text, ctx) {
         peel_ctx.apply_optional(&mut clause.optional);
         if clause.condition.is_none() {
             clause.condition = peel_ctx.condition().cloned().or(unless_condition.clone());
         }
-        return clause;
+        return attach_unless_slots(clause, None, unless_pay_deferred);
     }
     let original_lower = text.to_lowercase();
     if scan_contains_phrase(&original_lower, "this turn")
@@ -4518,7 +4583,7 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
             if clause.condition.is_none() {
                 clause.condition = peel_ctx.condition().cloned().or(unless_condition.clone());
             }
-            return clause;
+            return attach_unless_slots(clause, None, unless_pay_deferred);
         }
         if let Some(mut clause) =
             try_parse_additional_land_this_turn(TextPair::new(text, &original_lower))
@@ -4526,7 +4591,7 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
             if clause.condition.is_none() {
                 clause.condition = peel_ctx.condition().cloned().or(unless_condition.clone());
             }
-            return clause;
+            return attach_unless_slots(clause, None, unless_pay_deferred);
         }
     }
     let mut clause = parse_effect_clause_inner(&peeled_text, ctx);
@@ -4536,11 +4601,8 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
     // retry with the original text. The shell is conservative — when in
     // doubt, leave the slot on the text and let the body parser handle it.
     if matches!(clause.effect, Effect::Unimplemented { .. }) {
-        let mut fallback = parse_effect_clause_inner(text, ctx);
-        if fallback.condition.is_none() {
-            fallback.condition = unless_condition;
-        }
-        return fallback;
+        let fallback = parse_effect_clause_inner(text, ctx);
+        return attach_unless_slots(fallback, unless_condition, unless_pay_deferred);
     }
     peel_ctx.apply_optional(&mut clause.optional);
     // Duration: route through `with_clause_duration` so
@@ -4563,7 +4625,7 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
             clause.condition = Some(cond);
         }
     }
-    clause
+    attach_unless_slots(clause, None, unless_pay_deferred)
 }
 
 fn try_parse_for_each_copy_token_source(
@@ -19661,11 +19723,10 @@ pub(crate) fn parse_effect_chain_ir(
         // CR 608.2c + CR 400.7: "unless ~ entered this turn" — strip suffix and
         // replace condition with SourceDidNotEnterThisTurn. The IfYouDo condition
         // is redundant when the parent is optional (optional already gates the sub).
-        let (unless_entered, text) = strip_unless_entered_suffix(&text, ctx);
-        let condition = if unless_entered.is_some() {
-            unless_entered
-        } else {
-            condition
+        let (unless_strip, text) = strip_unless_entered_suffix(&text, ctx);
+        let condition = match unless_strip {
+            UnlessSuffixStrip::Parsed(c) => Some(c),
+            _ => condition,
         };
         // CR 608.2e: Strip leading "instead " when a condition was extracted.
         // The condition already encodes the replacement gate; "instead" is a
@@ -40907,13 +40968,13 @@ mod tests {
 
     #[test]
     fn strip_unless_entered_suffix_strips_correctly() {
-        let (cond, text) = strip_unless_entered_suffix(
+        let (strip, text) = strip_unless_entered_suffix(
             "discard a card unless ~ entered this turn",
             &mut ParseContext::default(),
         );
         assert_eq!(
-            cond,
-            Some(AbilityCondition::Not {
+            strip,
+            UnlessSuffixStrip::Parsed(AbilityCondition::Not {
                 condition: Box::new(AbilityCondition::SourceEnteredThisTurn),
             }),
             "Should produce Not(SourceEnteredThisTurn) condition"
@@ -40923,22 +40984,22 @@ mod tests {
 
     #[test]
     fn strip_unless_entered_suffix_no_match() {
-        let (cond, text) =
+        let (strip, text) =
             strip_unless_entered_suffix("discard a card", &mut ParseContext::default());
-        assert!(cond.is_none());
+        assert!(matches!(strip, UnlessSuffixStrip::Absent));
         assert_eq!(text, "discard a card");
     }
 
     #[test]
     fn strip_unless_general_your_turn() {
         // "unless it's your turn" → Not(DuringYourTurn) → IsYourTurn { negated: true }
-        let (cond, text) = strip_unless_entered_suffix(
+        let (strip, text) = strip_unless_entered_suffix(
             "draw a card unless it's your turn",
             &mut ParseContext::default(),
         );
         assert_eq!(
-            cond,
-            Some(AbilityCondition::Not {
+            strip,
+            UnlessSuffixStrip::Parsed(AbilityCondition::Not {
                 condition: Box::new(AbilityCondition::IsYourTurn)
             }),
         );
@@ -40948,12 +41009,12 @@ mod tests {
     #[test]
     fn strip_unless_you_control_a_creature() {
         // "unless you control a creature" → Not(IsPresent) → ObjectCount EQ 0
-        let (cond, text) = strip_unless_entered_suffix(
+        let (strip, text) = strip_unless_entered_suffix(
             "sacrifice this enchantment unless you control a creature",
             &mut ParseContext::default(),
         );
-        match cond {
-            Some(AbilityCondition::QuantityCheck {
+        match strip {
+            UnlessSuffixStrip::Parsed(AbilityCondition::QuantityCheck {
                 comparator: Comparator::EQ,
                 rhs: QuantityExpr::Fixed { value: 0 },
                 ..
@@ -40965,11 +41026,14 @@ mod tests {
 
     #[test]
     fn strip_unless_opponent_poison_counters() {
-        let (cond, text) = strip_unless_entered_suffix(
+        let (strip, text) = strip_unless_entered_suffix(
             "sacrifice a creature unless an opponent has three or more poison counters",
             &mut ParseContext::default(),
         );
-        assert!(cond.is_some(), "expected unless poison gate, got {cond:?}");
+        assert!(
+            matches!(strip, UnlessSuffixStrip::Parsed(_)),
+            "expected unless poison gate, got {strip:?}"
+        );
         assert_eq!(text, "sacrifice a creature");
     }
 
@@ -40987,12 +41051,24 @@ mod tests {
     }
 
     #[test]
-    fn strip_unless_unrecognized_returns_none() {
-        let (cond, text) = strip_unless_entered_suffix(
+    fn parse_effect_clause_unrecognized_unless_fails_closed() {
+        let clause = parse_effect_clause(
+            "draw a card unless the active player compliments your hat",
+            &mut ParseContext::default(),
+        );
+        assert!(
+            matches!(clause.effect, Effect::Unimplemented { .. }),
+            "unrecognized unless rider must fail closed, got {clause:?}"
+        );
+    }
+
+    #[test]
+    fn strip_unless_unrecognized_returns_unrecognized() {
+        let (strip, text) = strip_unless_entered_suffix(
             "sacrifice it unless something weird happens",
             &mut ParseContext::default(),
         );
-        assert!(cond.is_none());
+        assert!(matches!(strip, UnlessSuffixStrip::Unrecognized { .. }));
         assert_eq!(text, "sacrifice it unless something weird happens");
     }
 
