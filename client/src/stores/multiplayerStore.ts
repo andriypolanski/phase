@@ -147,6 +147,8 @@ export interface RememberedHostConfig {
   isPublic: boolean;
   startWhenFull: boolean;
   ranked: boolean;
+  /** Per-turn timer for online server games (`null` = off). */
+  timerSeconds: number | null;
   /** AI seat layout (seat index + difficulty). Deck choices are resolved fresh
    *  from the catalog at host time, so only the picker-level config persists. */
   aiSeats: AiSeatConfig[];

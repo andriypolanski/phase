@@ -25,6 +25,7 @@ pub mod session;
 pub mod spectator_wire_guard;
 pub mod starter_decks;
 pub mod takeback;
+pub mod turn_clock;
 
 pub use ai_seats_wire_guard::guard_create_ai_seats;
 pub use client_hello_guard::guard_client_hello;
@@ -67,3 +68,4 @@ pub use spectator_wire_guard::{
     guard_spectator_join, MAX_DRAFT_SPECTATORS_PER_DRAFT, MAX_GAME_SPECTATORS_PER_GAME,
 };
 pub use takeback::{PendingTakeback, TakebackOutcome, MAX_TAKEBACK_HISTORY};
+pub use turn_clock::{clock_target_player, TurnClockState};

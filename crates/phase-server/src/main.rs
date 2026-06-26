@@ -1,5 +1,6 @@
 mod admin;
 mod draft_pools;
+mod game_turn_clock;
 mod logging;
 mod persistence;
 
@@ -8,6 +9,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+
+use game_turn_clock::{reschedule_game_turn_clock, GameTurnClockTasks};
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
@@ -363,7 +366,7 @@ fn build_spectator_game_started_message(session: &GameSession) -> Result<ServerM
     })
 }
 
-fn build_spectator_state_update_message(
+pub(crate) fn build_spectator_state_update_message(
     raw_state: &GameState,
     events: &[GameEvent],
     log_entries: &[GameLogEntry],
@@ -809,6 +812,7 @@ async fn main() {
     let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
     let draft_spectators: SharedDraftSpectators = Arc::new(Mutex::new(HashMap::new()));
     let game_spectators: SharedGameSpectators = Arc::new(Mutex::new(HashMap::new()));
+    let game_turn_clock_tasks: GameTurnClockTasks = Arc::new(Mutex::new(HashMap::new()));
     let lobby: SharedLobby = Arc::new(Mutex::new(Broker::new()));
     let lobby_subscribers: SharedLobbySubscribers = Arc::new(Mutex::new(Vec::new()));
     let player_count: SharedPlayerCount = Arc::new(AtomicU32::new(0));
@@ -1146,6 +1150,7 @@ async fn main() {
             game_db,
             draft_spectators,
             game_spectators,
+            game_turn_clock_tasks: game_turn_clock_tasks.clone(),
             mode,
             public_url: advertised_public_url,
         });
@@ -1298,6 +1303,7 @@ struct AppState {
     game_db: SharedGameDb,
     draft_spectators: SharedDraftSpectators,
     game_spectators: SharedGameSpectators,
+    game_turn_clock_tasks: GameTurnClockTasks,
     mode: Mode,
     /// Public base URL advertised in `ServerHello` (from `--public-url`/an
     /// embedded ngrok tunnel), or `None` when the server has no reachable
@@ -1331,6 +1337,7 @@ async fn ws_handler(ws: WebSocketUpgrade, State(app_state): State<AppState>) -> 
                 app_state.game_db,
                 app_state.draft_spectators,
                 app_state.game_spectators,
+                app_state.game_turn_clock_tasks,
                 app_state.mode,
                 app_state.public_url,
             )
@@ -1352,6 +1359,7 @@ async fn handle_socket(
     game_db: SharedGameDb,
     draft_spectators: SharedDraftSpectators,
     game_spectators: SharedGameSpectators,
+    game_turn_clock_tasks: GameTurnClockTasks,
     mode: Mode,
     public_url: Option<String>,
 ) {
@@ -1454,6 +1462,7 @@ async fn handle_socket(
                             &game_db,
                             &draft_spectators,
                             &game_spectators,
+                            &game_turn_clock_tasks,
                             &tx,
                             &mut identity,
                             mode,
@@ -2653,6 +2662,7 @@ async fn handle_client_message(
     game_db: &SharedGameDb,
     draft_spectators: &SharedDraftSpectators,
     game_spectators: &SharedGameSpectators,
+    game_turn_clock_tasks: &GameTurnClockTasks,
     tx: &mpsc::UnboundedSender<ServerMessage>,
     identity: &mut SocketIdentity,
     mode: Mode,
@@ -3208,6 +3218,16 @@ async fn handle_client_message(
                             }
                         }
                     }
+
+                    reschedule_game_turn_clock(
+                        state.clone(),
+                        connections.clone(),
+                        game_spectators.clone(),
+                        game_db.clone(),
+                        game_turn_clock_tasks.clone(),
+                        game_code.clone(),
+                    )
+                    .await;
                 }
                 Err(e) => {
                     let msg = ServerMessage::ActionRejected { reason: e };
@@ -3377,6 +3397,16 @@ async fn handle_client_message(
                             let _ = socket.send(Message::text(json)).await;
                         }
                     }
+
+                    reschedule_game_turn_clock(
+                        state.clone(),
+                        connections.clone(),
+                        game_spectators.clone(),
+                        game_db.clone(),
+                        game_turn_clock_tasks.clone(),
+                        game_code.clone(),
+                    )
+                    .await;
 
                     if let Some(result) = ai_result {
                         let conns = connections.lock().await;
@@ -4644,6 +4674,15 @@ async fn handle_client_message(
                         None,
                     )
                     .await;
+                    reschedule_game_turn_clock(
+                        state.clone(),
+                        connections.clone(),
+                        game_spectators.clone(),
+                        game_db.clone(),
+                        game_turn_clock_tasks.clone(),
+                        game_code.clone(),
+                    )
+                    .await;
                 }
                 Ok(server_core::TakebackOutcome::Rejected) => {
                     // request_takeback never returns Rejected — only respond_takeback does.
@@ -4700,6 +4739,15 @@ async fn handle_client_message(
                         player_count,
                         approved_snapshot.expect("Approved outcome always computes a snapshot"),
                         Some(player_id),
+                    )
+                    .await;
+                    reschedule_game_turn_clock(
+                        state.clone(),
+                        connections.clone(),
+                        game_spectators.clone(),
+                        game_db.clone(),
+                        game_turn_clock_tasks.clone(),
+                        game_code.clone(),
                     )
                     .await;
                 }

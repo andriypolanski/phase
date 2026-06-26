@@ -361,6 +361,13 @@ export function GamePage() {
           [event.player]: event.remainingSeconds,
         }));
         break;
+      case "turnClockSync":
+        setTimerRemaining({
+          [event.activePlayer]: event.running
+            ? Math.max(0, Math.ceil(event.remainingMs / 1000))
+            : 0,
+        });
+        break;
       case "takebackRequested":
         setPendingTakeback({
           requester: event.requester,

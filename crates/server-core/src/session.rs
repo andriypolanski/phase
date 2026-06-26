@@ -29,6 +29,7 @@ use crate::persist::{PersistedLobbyMeta, PersistedSession};
 use crate::protocol::PlayerSlotInfo;
 use crate::reconnect::ReconnectManager;
 use crate::takeback::PendingTakeback;
+use crate::turn_clock::TurnClockState;
 
 /// Result of handling a game action: raw state snapshot, events, legal actions, log entries,
 /// auto-pass flag, spell costs, and per-object action grouping.
@@ -147,6 +148,8 @@ pub struct GameSession {
     /// find the requester's *own* last action even when other players have
     /// acted since (see `crate::takeback::GameSession::request_takeback`).
     pub takeback_history: VecDeque<(PlayerId, GameState)>,
+    /// Server-authoritative per-turn chess clock. See `crate::turn_clock`.
+    pub turn_clock: TurnClockState,
 }
 
 impl GameSession {
@@ -595,6 +598,9 @@ impl GameSession {
             start_when_full: self.start_when_full,
             ranked: self.ranked,
             lobby_meta: self.lobby_meta.clone(),
+            turn_clock_active_player: self.turn_clock.active_player.map(|p| p.0),
+            turn_clock_deadline_ms: self.turn_clock.deadline_ms,
+            turn_clock_remaining_ms: self.turn_clock.remaining_ms,
         }
     }
 
@@ -663,6 +669,11 @@ impl GameSession {
             start_events: Vec::new(),
             pending_takeback: None,
             takeback_history: VecDeque::new(),
+            turn_clock: TurnClockState {
+                active_player: ps.turn_clock_active_player.map(PlayerId),
+                deadline_ms: ps.turn_clock_deadline_ms,
+                remaining_ms: ps.turn_clock_remaining_ms,
+            },
         }
     }
 }
@@ -774,6 +785,7 @@ impl SessionManager {
             start_events: Vec::new(),
             pending_takeback: None,
             takeback_history: VecDeque::new(),
+            turn_clock: TurnClockState::default(),
         };
 
         self.token_to_game
@@ -2418,6 +2430,7 @@ mod tests {
             start_events: Vec::new(),
             pending_takeback: None,
             takeback_history: VecDeque::new(),
+            turn_clock: TurnClockState::default(),
         };
 
         let game_started_before = session.game_started;

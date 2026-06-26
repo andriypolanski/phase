@@ -213,6 +213,9 @@ export function HostSetup({
   const [matchType, setMatchType] = useState<MatchType>(remembered?.matchType ?? "Bo1");
   const [aiSeats, setAiSeats] = useState<AiSeatConfig[]>(remembered?.aiSeats ?? []);
   const [startWhenFull, setStartWhenFull] = useState(remembered?.startWhenFull ?? true);
+  const [timerSeconds, setTimerSeconds] = useState<number | null>(
+    remembered?.timerSeconds ?? null,
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const effectiveMatchType = playerCount === 2 ? matchType : "Bo1";
   const aiDeckCatalog = useAiDeckCatalog({
@@ -319,13 +322,14 @@ export function HostSetup({
       // always casual. The transport field is retained for protocol parity.
       ranked: false,
       aiSeats,
+      timerSeconds,
     });
     try {
       const ok = await onHost({
         displayName,
         public: isPublic,
         password: showPassword ? password : "",
-        timerSeconds: null,
+        timerSeconds: isP2P ? null : timerSeconds,
         formatConfig: finalConfig,
         matchType: effectiveMatchType,
         aiSeats: aiSeats.map((seat) => ({
@@ -506,6 +510,25 @@ export function HostSetup({
             </Field>
           </div>
           {playerCount !== 2 && <p className="-mt-1 text-xs text-fg-meta">{t("hostSetup.bo3Note")}</p>}
+
+          {!isP2P && (
+            <Field label={t("hostSetup.turnTimer")}>
+              <div className={segWrap}>
+                {([null, 30, 60, 90, 120] as const).map((option) => (
+                  <button
+                    type="button"
+                    key={option ?? "off"}
+                    onClick={() => setTimerSeconds(option)}
+                    className={seg(timerSeconds === option)}
+                  >
+                    {option == null
+                      ? t("hostSetup.turnTimerOff")
+                      : t("hostSetup.turnTimerSeconds", { seconds: option })}
+                  </button>
+                ))}
+              </div>
+            </Field>
+          )}
 
           {/* Free-for-all deck size (FFA only) */}
           {selectedFormat === "FreeForAll" && (

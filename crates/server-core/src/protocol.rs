@@ -445,6 +445,14 @@ pub enum ServerMessage {
     DraftTimerSync {
         remaining_ms: u32,
     },
+    /// Server-authoritative per-turn chess clock for live multiplayer games.
+    /// Emitted each second while a human seat is on the clock, on priority
+    /// changes, and immediately after reconnect when a timer is configured.
+    TurnClockSync {
+        active_player: PlayerId,
+        remaining_ms: u32,
+        running: bool,
+    },
     DraftActionRejected {
         reason: String,
     },
@@ -1702,6 +1710,29 @@ mod tests {
     }
 
     #[test]
+    fn server_message_turn_clock_sync_roundtrips() {
+        let msg = ServerMessage::TurnClockSync {
+            active_player: PlayerId(1),
+            remaining_ms: 42_000,
+            running: true,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ServerMessage::TurnClockSync {
+                active_player,
+                remaining_ms,
+                running,
+            } => {
+                assert_eq!(active_player, PlayerId(1));
+                assert_eq!(remaining_ms, 42_000);
+                assert!(running);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
     fn server_message_draft_action_rejected_roundtrips() {
         let msg = ServerMessage::DraftActionRejected {
             reason: "Not your turn".to_string(),
@@ -1795,8 +1826,8 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_9() {
-        assert_eq!(PROTOCOL_VERSION, 9);
+    fn protocol_version_is_10() {
+        assert_eq!(PROTOCOL_VERSION, 10);
     }
 
     #[test]

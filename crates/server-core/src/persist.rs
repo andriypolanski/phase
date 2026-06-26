@@ -33,6 +33,13 @@ pub struct PersistedSession {
     pub ranked: bool,
     /// Lobby metadata for games still waiting for players.
     pub lobby_meta: Option<PersistedLobbyMeta>,
+    /// Turn-clock snapshot for restore after server restart.
+    #[serde(default)]
+    pub turn_clock_active_player: Option<u8>,
+    #[serde(default)]
+    pub turn_clock_deadline_ms: Option<u64>,
+    #[serde(default)]
+    pub turn_clock_remaining_ms: Option<u32>,
 }
 
 /// Lobby metadata persisted alongside a waiting game.

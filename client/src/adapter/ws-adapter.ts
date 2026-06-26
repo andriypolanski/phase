@@ -32,7 +32,7 @@ export interface DeckData {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  */
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.
@@ -86,7 +86,8 @@ export type WsAdapterEvent =
   | { type: "conceded"; player: PlayerId }
   | { type: "timerUpdate"; player: PlayerId; remainingSeconds: number }
   | { type: "takebackRequested"; requester: PlayerId; requesterName: string }
-  | { type: "takebackResolved"; approved: boolean; resolvedBy: PlayerId | null };
+  | { type: "takebackResolved"; approved: boolean; resolvedBy: PlayerId | null }
+  | { type: "turnClockSync"; activePlayer: PlayerId; remainingMs: number; running: boolean };
 
 type WsAdapterEventListener = (event: WsAdapterEvent) => void;
 
@@ -769,6 +770,21 @@ export class WebSocketAdapter implements EngineAdapter {
           type: "takebackResolved",
           approved: data.approved,
           resolvedBy: data.resolved_by ?? null,
+        });
+        break;
+      }
+
+      case "TurnClockSync": {
+        const data = msg.data as {
+          active_player: PlayerId;
+          remaining_ms: number;
+          running: boolean;
+        };
+        this.emit({
+          type: "turnClockSync",
+          activePlayer: data.active_player,
+          remainingMs: data.remaining_ms,
+          running: data.running,
         });
         break;
       }
