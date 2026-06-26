@@ -4475,16 +4475,17 @@ fn try_parse_for_each_category_exile(tp: TextPair<'_>) -> Option<ParsedEffectCla
 
 fn unless_rider_defers_to_body_parser(text: &str) -> bool {
     let lower = text.to_lowercase();
-    let tp = TextPair::new(text, &lower);
-    let Some(unless_pos) = tp.find(" unless ") else {
+    let Some((before_unless, _, after_unless)) =
+        nom_primitives::scan_preceded(&lower, |i| tag::<_, _, OracleError<'_>>("unless ").parse(i))
+    else {
         return false;
     };
-    let after_unless = &lower[unless_pos + 8..];
-    let before_unless = &lower[..unless_pos];
+    let before_trimmed = before_unless.trim_start();
+    let unless_tail = &lower[before_unless.len()..];
 
     // CR 608.2c: discard imperative + unless discard qualifier (imperative.rs).
     if tag::<_, _, OracleError<'_>>("discard ")
-        .parse(before_unless.trim_start())
+        .parse(before_trimmed)
         .is_ok()
         && tag::<_, _, OracleError<'_>>("you discard ")
             .parse(after_unless)
@@ -4496,9 +4497,9 @@ fn unless_rider_defers_to_body_parser(text: &str) -> bool {
     // CR 118.12: counter spell unless payment (`parse_unless_payment` in counter path).
     // `extract_resolution_unless_pay_modifier` deliberately skips counter text.
     tag::<_, _, OracleError<'_>>("counter ")
-        .parse(before_unless.trim_start())
+        .parse(before_trimmed)
         .is_ok()
-        && parse_unless_payment(&lower[unless_pos..]).is_some()
+        && parse_unless_payment(unless_tail).is_some()
 }
 
 fn parsed_unless_unsupported_clause(full_text: &str, rider: &str) -> ParsedEffectClause {
