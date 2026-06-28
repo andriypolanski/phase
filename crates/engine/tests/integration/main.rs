@@ -330,6 +330,7 @@ mod issue_3323_nexus_of_fate_extra_turn;
 mod issue_3324_haunted_one;
 mod issue_3325_umbral_mantle;
 mod issue_3425_legend_rule_exemption_scopes;
+mod issue_3466_counter_unless_non_mana;
 mod issue_3647_gaeas_cradle;
 mod issue_3648_ninjutsu_combat_flow;
 mod issue_3649_tetsuko;
