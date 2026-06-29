@@ -6164,13 +6164,12 @@ fn normalize_additional_token_descriptor(descriptor: &str) -> Option<String> {
 
 /// True when the descriptor needs a leading `"a "` before `parse_token_description`.
 /// Subtype-only specs (`"Food token"`) have no count and require an article.
-/// P/T-led specs (`"1/1 colorless Thopter …"`) also require one: without it
-/// `parse_token_count_prefix` mis-reads the leading `1` in `1/1` as a bare
-/// count and leaves `/1 …`, breaking P/T parsing (Stridehangar Automaton).
+/// P/T-led specs (`"1/1 …"`, `"10/10 …"`) also require one: without it
+/// `parse_token_count_prefix` mis-reads the leading digits before `/` as a bare
+/// count and leaves `/toughness …`, breaking P/T parsing.
 fn additional_token_descriptor_needs_leading_article(descriptor: &str) -> bool {
     let trimmed = descriptor.trim_start();
-    let bytes = trimmed.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_digit() && bytes[1] == b'/' {
+    if nom_primitives::parse_pt_value(trimmed).is_ok() {
         return true;
     }
     parse_count_expr(trimmed).is_none()
@@ -14004,7 +14003,6 @@ mod tests {
 
     /// CR 614.1a + CR 111.1: Stridehangar Automaton (#654) — artifact-token-gated
     /// "those tokens plus an additional 1/1 colorless Thopter …" replacement.
-    /// The appended spec carries explicit P/T; article injection must not run.
     #[test]
     fn parses_stridehangar_additional_thopter_token_replacement() {
         let text = "If one or more artifact tokens would be created under your control, those tokens plus an additional 1/1 colorless Thopter artifact creature token with flying are created instead.";
@@ -14035,6 +14033,25 @@ mod tests {
             "Thopter must have flying, got {:?}",
             spec.characteristics.keywords
         );
+    }
+
+    /// CR 614.1a + CR 111.1: Multi-digit P/T appended specs share the same
+    /// `"those tokens plus an additional <P/T> …"` grammar as 1/1 cards
+    /// (Stridehangar class). Article injection must recognize `10/10`, not
+    /// only single-digit power.
+    #[test]
+    fn parses_additional_token_replacement_with_multi_digit_pt_descriptor() {
+        let text = "If one or more tokens would be created under your control, those tokens plus an additional 10/10 colorless Eldrazi creature token are created instead.";
+        let def =
+            parse_replacement_line(text, "Eldrazi Spawn").expect("should parse multi-digit P/T");
+        assert_eq!(def.event, ReplacementEvent::CreateToken);
+        let spec = def
+            .additional_token_spec
+            .as_ref()
+            .expect("additional Eldrazi token spec");
+        assert_eq!(spec.characteristics.power, Some(10));
+        assert_eq!(spec.characteristics.toughness, Some(10));
+        assert_eq!(spec.characteristics.subtypes, vec!["Eldrazi".to_string()]);
     }
 
     /// CR 614.1a: The "twice that many" shape and the "those tokens plus"
