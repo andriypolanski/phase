@@ -6272,6 +6272,13 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         return parsed_clause(effect);
     }
 
+    // Digital-only Alchemy: "[~/this creature] perpetually becomes a [subtypes]
+    // with base power and toughness N/N [and gains [keyword(s)]]" — persistent
+    // type change + base P/T + keyword grant (Second Little Pig).
+    if let Some(effect) = try_parse_perpetual_become(tp) {
+        return parsed_clause(effect);
+    }
+
     // Digital-only Alchemy: "[~/it/this creature] perpetually become(s)/has base
     // power and toughness N/N" — the ApplyPerpetual keyword action (base P/T).
     if let Some(effect) = try_parse_perpetual_base_pt(tp) {
@@ -6420,6 +6427,93 @@ fn try_parse_intensify(tp: TextPair) -> Option<Effect> {
     tail_done(rest).then_some(Effect::Intensify {
         scope: IntensityScope::Source,
         amount,
+    })
+}
+
+/// Digital-only Alchemy: parse the self-subject perpetual type-change form —
+/// "[~ / this creature / …] perpetually become(s) a [subtypes] with base power
+/// and toughness N/N [and gains [keyword(s)]]" → [`Effect::ApplyPerpetual`]
+/// with [`PerpetualModification::Become`] (Second Little Pig).
+///
+/// Self-subjects only; referenced-object forms ("the duplicate"/"it") are
+/// deferred. The clause tail must be fully consumed so compound riders that
+/// are not modeled (e.g. Heir to Dragonfire's ", gets +3/+3") fall through to
+/// `Unimplemented` rather than being silently dropped.
+fn try_parse_perpetual_become(tp: TextPair) -> Option<Effect> {
+    use crate::parser::oracle_util::parse_subtype;
+
+    fn tail_done(tail: &str) -> bool {
+        tail.is_empty() || tail == "."
+    }
+
+    let lower = tp.lower;
+    let after_subject = [
+        "~ ",
+        "this creature ",
+        "this artifact ",
+        "this enchantment ",
+        "this permanent ",
+        "this token ",
+        "this card ",
+    ]
+    .iter()
+    .find_map(|subject| {
+        tag::<_, _, OracleError<'_>>(*subject)
+            .parse(lower)
+            .ok()
+            .map(|(rest, _)| rest)
+    })?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>("perpetually ")
+        .parse(after_subject)
+        .ok()?;
+    let (rest, _) = alt((
+        tag::<_, _, OracleError<'_>>("becomes a "),
+        tag::<_, _, OracleError<'_>>("become a "),
+    ))
+    .parse(rest)
+    .ok()?;
+    let (rest, subtype_part) =
+        take_until::<_, _, OracleError<'_>>(" with base power and toughness ")
+            .parse(rest)
+            .ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>(" with base power and toughness ")
+        .parse(rest)
+        .ok()?;
+    let mut creature_subtypes = Vec::new();
+    let mut subtype_rest = subtype_part.trim();
+    while !subtype_rest.is_empty() {
+        let (canonical, consumed) = parse_subtype(subtype_rest)?;
+        creature_subtypes.push(canonical);
+        subtype_rest = subtype_rest[consumed..].trim_start();
+    }
+    if creature_subtypes.is_empty() {
+        return None;
+    }
+    let (rest, power) = nom_primitives::parse_number(rest).ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>("/").parse(rest).ok()?;
+    let (rest, toughness) = nom_primitives::parse_number(rest).ok()?;
+    let (rest, keywords) = if let Ok((rest, _)) = alt((
+        tag::<_, _, OracleError<'_>>(" and gains "),
+        tag::<_, _, OracleError<'_>>(" and gain "),
+    ))
+    .parse(rest)
+    {
+        let (keywords, rest) = sequence::parse_keyword_grant_list(rest)?;
+        (rest, keywords)
+    } else {
+        (rest, Vec::new())
+    };
+    if !tail_done(rest) {
+        return None;
+    }
+    Some(Effect::ApplyPerpetual {
+        target: TargetFilter::Any,
+        modification: crate::types::ability::PerpetualModification::Become {
+            creature_subtypes,
+            power: power as i32,
+            toughness: toughness as i32,
+            keywords,
+        },
     })
 }
 
@@ -52201,6 +52295,42 @@ mod tests {
                 ..
             } if keywords == vec![Keyword::Flying]
         ));
+    }
+
+    #[test]
+    fn perpetual_parser_maps_become_type_change() {
+        use crate::types::ability::PerpetualModification;
+        use crate::types::keywords::Keyword;
+
+        let e = parse_effect(
+            "~ perpetually becomes a Boar Spirit with base power and toughness 4/4 and gains flying.",
+        );
+        assert!(matches!(
+            e,
+            Effect::ApplyPerpetual {
+                target: TargetFilter::Any,
+                modification: PerpetualModification::Become {
+                    creature_subtypes,
+                    power: 4,
+                    toughness: 4,
+                    keywords,
+                },
+                ..
+            } if creature_subtypes == vec!["Boar".to_string(), "Spirit".to_string()]
+                && keywords == vec![Keyword::Flying]
+        ));
+
+        let e = parse_effect("~ perpetually becomes a Dragon, gets +3/+3.");
+        assert!(
+            !matches!(
+                e,
+                Effect::ApplyPerpetual {
+                    modification: PerpetualModification::Become { .. },
+                    ..
+                }
+            ),
+            "compound P/T riders must not parse as Become, got {e:?}"
+        );
     }
 
     #[test]

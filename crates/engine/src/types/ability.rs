@@ -7904,6 +7904,17 @@ pub enum PerpetualModification {
     GrantKeywords {
         keywords: Vec<crate::types::keywords::Keyword>,
     },
+    /// "[object] perpetually becomes a [subtypes] with base power and toughness
+    /// P/T [and gains [keywords]]" — replaces creature subtypes, ensures the
+    /// card is a creature, sets base power/toughness, and grants keywords
+    /// permanently (Second Little Pig).
+    Become {
+        creature_subtypes: Vec<String>,
+        power: i32,
+        toughness: i32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keywords: Vec<crate::types::keywords::Keyword>,
+    },
 }
 
 /// CR 701.20e + CR 608.2c: Discriminates where `Effect::Dig` reads its
