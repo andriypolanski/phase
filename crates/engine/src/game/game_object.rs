@@ -1085,8 +1085,9 @@ impl GameObject {
                 toughness,
                 keywords,
             } => {
-                // CR 613.4: replace creature subtypes on the persistent baseline
-                // while retaining non-creature subtypes (Artifact, Aura, etc.).
+                // CR 613.1d + CR 613.1f + CR 613.4b: update the persistent
+                // type, keyword, and base-P/T baselines while retaining
+                // non-creature subtypes (Artifact, Aura, etc.).
                 self.sync_missing_base_characteristics();
                 if !self
                     .base_card_types
@@ -1113,9 +1114,6 @@ impl GameObject {
                 self.base_power = Some(*power);
                 self.base_toughness = Some(*toughness);
                 for keyword in keywords {
-                    if !self.keywords.contains(keyword) {
-                        self.keywords.push(keyword.clone());
-                    }
                     if !self.base_keywords.contains(keyword) {
                         self.base_keywords.push(keyword.clone());
                     }

@@ -110,12 +110,12 @@ pub fn resolve(
     let target = target.clone();
 
     let ids = perpetual_target_object_ids(state, ability, &target);
-    let all_creature_types = state.all_creature_types.clone();
+    let all_creature_types = &state.all_creature_types;
 
     let mut changed = false;
     for id in ids {
         if let Some(obj) = state.objects.get_mut(&id) {
-            obj.apply_perpetual_modification(&modification, &all_creature_types);
+            obj.apply_perpetual_modification(&modification, all_creature_types);
             changed = true;
         }
     }
@@ -487,8 +487,9 @@ mod tests {
         assert_eq!(state.objects.get(&source).unwrap().base_power, None);
     }
 
-    /// CR 613.4: perpetual type-change replaces creature subtypes, sets base
-    /// P/T, grants keywords, and recomputes live characteristics after flush.
+    /// CR 613.1d + CR 613.1f + CR 613.4b: perpetual type-change replaces
+    /// creature subtypes, grants keywords, sets base P/T, and recomputes live
+    /// characteristics after flush.
     #[test]
     fn perpetual_become_updates_types_pt_and_keywords_after_layer_flush() {
         use crate::types::ability::TargetFilter;
