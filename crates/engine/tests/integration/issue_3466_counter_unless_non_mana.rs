@@ -127,11 +127,11 @@ fn dash_hopes_prompts_life_payment_then_counters_on_decline() {
     let mut dash = scenario.add_spell_to_hand_from_oracle(P0, "Dash Hopes", true, DASH_HOPES);
     dash.with_mana_cost(ManaCost::Cost {
         generic: 0,
-        shards: vec![ManaCostShard::Red, ManaCostShard::Red],
+        shards: vec![ManaCostShard::Black, ManaCostShard::Black],
     });
     let dash_hopes = dash.id();
-    scenario.add_basic_land(P0, ManaColor::Red);
-    scenario.add_basic_land(P0, ManaColor::Red);
+    scenario.add_basic_land(P0, ManaColor::Black);
+    scenario.add_basic_land(P0, ManaColor::Black);
 
     let mut runner = scenario.build();
     let opponent_spell = put_instant_on_stack(&mut runner, P1);
@@ -172,11 +172,11 @@ fn dash_hopes_paying_life_leaves_target_spell_on_stack() {
     let mut dash = scenario.add_spell_to_hand_from_oracle(P0, "Dash Hopes", true, DASH_HOPES);
     dash.with_mana_cost(ManaCost::Cost {
         generic: 0,
-        shards: vec![ManaCostShard::Red, ManaCostShard::Red],
+        shards: vec![ManaCostShard::Black, ManaCostShard::Black],
     });
     let dash_hopes = dash.id();
-    scenario.add_basic_land(P0, ManaColor::Red);
-    scenario.add_basic_land(P0, ManaColor::Red);
+    scenario.add_basic_land(P0, ManaColor::Black);
+    scenario.add_basic_land(P0, ManaColor::Black);
 
     let mut runner = scenario.build();
     let opponent_spell = put_instant_on_stack(&mut runner, P1);
