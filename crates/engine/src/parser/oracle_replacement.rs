@@ -6155,11 +6155,25 @@ fn normalize_additional_token_descriptor(descriptor: &str) -> Option<String> {
         let (_, article) = peek(opt(alt((tag::<_, _, OracleError<'_>>("a "), tag("an ")))))
             .parse(descriptor)
             .ok()?;
-        if article.is_none() {
+        if article.is_none() && additional_token_descriptor_needs_leading_article(descriptor) {
             return Some(format!("a {descriptor}"));
         }
     }
     Some(descriptor.to_string())
+}
+
+/// True when the descriptor needs a leading `"a "` before `parse_token_description`.
+/// Subtype-only specs (`"Food token"`) have no count and require an article.
+/// P/T-led specs (`"1/1 colorless Thopter …"`) also require one: without it
+/// `parse_token_count_prefix` mis-reads the leading `1` in `1/1` as a bare
+/// count and leaves `/1 …`, breaking P/T parsing (Stridehangar Automaton).
+fn additional_token_descriptor_needs_leading_article(descriptor: &str) -> bool {
+    let trimmed = descriptor.trim_start();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_digit() && bytes[1] == b'/' {
+        return true;
+    }
+    parse_count_expr(trimmed).is_none()
 }
 
 /// CR 614.1a + CR 111.1: Parse Xorn-class subtype-gated additional-token
@@ -13986,6 +14000,41 @@ mod tests {
             .as_ref()
             .expect("additional Food token spec");
         assert_eq!(spec.characteristics.subtypes, vec!["Food".to_string()]);
+    }
+
+    /// CR 614.1a + CR 111.1: Stridehangar Automaton (#654) — artifact-token-gated
+    /// "those tokens plus an additional 1/1 colorless Thopter …" replacement.
+    /// The appended spec carries explicit P/T; article injection must not run.
+    #[test]
+    fn parses_stridehangar_additional_thopter_token_replacement() {
+        let text = "If one or more artifact tokens would be created under your control, those tokens plus an additional 1/1 colorless Thopter artifact creature token with flying are created instead.";
+        let def = parse_replacement_line(text, "Stridehangar Automaton")
+            .expect("should parse Stridehangar");
+        assert_eq!(def.event, ReplacementEvent::CreateToken);
+        assert_eq!(def.token_owner_scope, Some(ControllerRef::You));
+        assert!(
+            matches!(
+                def.condition,
+                Some(ReplacementCondition::TokenCoreTypeMatches { .. })
+            ),
+            "artifact tokens gate must be TokenCoreTypeMatches, got {:?}",
+            def.condition
+        );
+        let spec = def
+            .additional_token_spec
+            .as_ref()
+            .expect("additional Thopter token spec");
+        assert_eq!(spec.characteristics.power, Some(1));
+        assert_eq!(spec.characteristics.toughness, Some(1));
+        assert_eq!(spec.characteristics.subtypes, vec!["Thopter".to_string()]);
+        assert!(
+            spec.characteristics
+                .keywords
+                .iter()
+                .any(|k| matches!(k, crate::types::keywords::Keyword::Flying)),
+            "Thopter must have flying, got {:?}",
+            spec.characteristics.keywords
+        );
     }
 
     /// CR 614.1a: The "twice that many" shape and the "those tokens plus"
