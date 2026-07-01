@@ -2121,6 +2121,11 @@ pub(super) fn player_can_spend_as_any_color_for_payment(
     source_id: Option<ObjectId>,
     ctx: Option<&PaymentContext<'_>>,
 ) -> bool {
+    // CR 609.4b: Spend-as-any-color concessions change only how a cost is paid;
+    // route each payment site to the static grants scoped for that context —
+    // effect costs consult board-wide statics only, activation costs also
+    // re-derive activation-source filters against the activating permanent, and
+    // spell costs fall through to spell-class and exile-cast permission checks.
     match ctx {
         Some(PaymentContext::Effect) => {
             super::static_abilities::player_can_spend_as_any_color(state, player)
