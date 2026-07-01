@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use engine::game::casting::{can_activate_ability_now, can_pay_ability_mana_cost_after_auto_tap};
 use engine::game::layers::evaluate_layers;
 use engine::game::scenario::GameRunner;
 use engine::game::zones::create_object;
@@ -17,7 +18,7 @@ use engine::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, Effect, QuantityExpr, StaticDefinition,
     TargetFilter,
 };
-use engine::types::card_type::CoreType;
+use engine::types::card_type::{CoreType, Supertype};
 use engine::types::counter::CounterType;
 use engine::types::game_state::{ExileLink, ExileLinkKind, GameState, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
@@ -33,20 +34,24 @@ const AGATHA_SPEND_LINE: &str = "You may spend mana as though it were mana of an
 
 const AGATHA_GRANT_LINE: &str = "Creatures you control with +1/+1 counters on them have all activated abilities of all creature cards exiled with Agatha's Soul Cauldron.";
 
-fn fund_green(state: &mut GameState, count: u32) {
-    let pool = &mut state.players[P0.0 as usize].mana_pool;
-    for _ in 0..count {
-        pool.add(ManaUnit {
-            color: ManaType::Green,
-            source_id: ObjectId(0),
-            pip_id: engine::types::mana::ManaPipId(0),
-            supertype: None,
-            source_could_produce_two_or_more_colors: false,
-            restrictions: Vec::new(),
-            grants: vec![],
-            expiry: None,
-        });
+fn add_green_mana_source(state: &mut GameState, card_id: u64) -> ObjectId {
+    let forest = create_object(
+        state,
+        CardId(card_id),
+        P0,
+        "Forest".to_string(),
+        Zone::Battlefield,
+    );
+    {
+        let obj = state.objects.get_mut(&forest).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.card_types.supertypes.push(Supertype::Basic);
+        obj.card_types.subtypes.push("Forest".to_string());
+        obj.base_card_types = obj.card_types.clone();
+        obj.entered_battlefield_turn = obj.entered_battlefield_turn.or(Some(0));
+        obj.summoning_sick = false;
     }
+    forest
 }
 
 /// Exiled creature card carrying `{B}{B}: Draw a card` — the mana-color axis under test.
@@ -204,6 +209,45 @@ fn agatha_spend_line_parses_activation_source_filter() {
         "expected activation-source-scoped SpendManaAsAnyColor; got {:?}",
         parsed.statics
     );
+}
+
+/// CR 609.4b: Auto-tap / legality dry-runs must honor activation-source-scoped
+/// spend-as-any-color, not only board-wide grants — green sources alone must
+/// suffice before payment begins.
+#[test]
+fn agatha_granted_bb_ability_affordable_via_green_auto_tap_sources() {
+    let (mut state, host, ability_index) = build_agatha_yawgmoth_state();
+    add_green_mana_source(&mut state, 4224);
+    add_green_mana_source(&mut state, 4225);
+
+    let bb_cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::Black, ManaCostShard::Black],
+        generic: 0,
+    };
+    assert!(
+        can_pay_ability_mana_cost_after_auto_tap(&state, P0, host, &bb_cost),
+        "auto-tap planner must treat green sources as paying {{B}}{{B}} under Agatha"
+    );
+    assert!(
+        can_activate_ability_now(&state, P0, host, ability_index),
+        "can_activate_ability_now must agree before payment begins"
+    );
+}
+
+fn fund_green(state: &mut GameState, count: u32) {
+    let pool = &mut state.players[P0.0 as usize].mana_pool;
+    for _ in 0..count {
+        pool.add(ManaUnit {
+            color: ManaType::Green,
+            source_id: ObjectId(0),
+            pip_id: engine::types::mana::ManaPipId(0),
+            supertype: None,
+            source_could_produce_two_or_more_colors: false,
+            restrictions: Vec::new(),
+            grants: vec![],
+            expiry: None,
+        });
+    }
 }
 
 /// CR 609.4b: With Agatha's spend-as-any-color static active, a creature you
