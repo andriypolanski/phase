@@ -76,7 +76,7 @@ fn issue_4388_auto_pass_holds_priority_for_mana_on_opponents_turn() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
 
-    let cradle = scenario
+    let _cradle = scenario
         .add_creature(P0, "Gaea's Cradle", 0, 0)
         .as_artifact()
         .from_oracle_text(GAEAS_CRADLE_ORACLE)
