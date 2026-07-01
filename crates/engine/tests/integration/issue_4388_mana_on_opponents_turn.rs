@@ -70,7 +70,7 @@ fn issue_4388_gaeas_cradle_offered_on_opponents_turn_with_priority() {
 }
 
 #[test]
-fn issue_4388_auto_pass_holds_priority_for_mana_on_opponents_turn() {
+fn issue_4388_auto_passes_through_ordinary_mana_on_opponents_turn() {
     use engine::ai_support::{auto_pass_recommended, flat_priority_actions};
 
     let mut scenario = GameScenario::new();
@@ -93,8 +93,9 @@ fn issue_4388_auto_pass_holds_priority_for_mana_on_opponents_turn() {
 
     let flat = flat_priority_actions(runner.state());
     assert!(
-        !auto_pass_recommended(runner.state(), &flat),
-        "CR 117.1d: auto-pass must not fire on opponent's turn when mana is activatable (#4388)"
+        auto_pass_recommended(runner.state(), &flat),
+        "CR 117.1d: standalone mana on opponent's turn stays grouped-only and \
+         auto-passes; sacrifice-for-mana still blocks via has_meaningful_priority_action"
     );
 }
 

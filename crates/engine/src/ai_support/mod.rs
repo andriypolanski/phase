@@ -789,15 +789,6 @@ pub fn auto_pass_recommended(state: &GameState, actions: &[GameAction]) -> bool 
         _ => return false,
     };
 
-    // CR 117.1d (issue #4388): On an opponent's turn the priority player may
-    // activate their own mana abilities (Gaea's Cradle, Itlimoc, basic lands).
-    // Those actions live only in `legal_actions_by_object`, not the flat list
-    // consumed here — without this guard auto-pass fires through the window
-    // before the frontend can offer a tap.
-    if state.active_player != player && !activatable_object_mana_actions(state).is_empty() {
-        return false;
-    }
-
     if auto_passes_initial_priority_by_default(state) {
         return true;
     }
@@ -2500,10 +2491,11 @@ mod tests {
         );
     }
 
-    /// Issue #4388: Gaea's Cradle / Itlimoc / basic-land mana on an opponent's
-    /// turn must not be skipped by auto-pass (CR 117.1d).
+    /// Issue #4388: grouped ordinary mana on an opponent's turn is still offered
+    /// via `legal_actions_by_object`, but auto-pass proceeds (CR 117.1d +
+    /// CR 605.3a). Sacrifice-for-mana remains a meaningful priority decision.
     #[test]
-    fn auto_pass_holds_priority_for_grouped_mana_on_opponents_turn() {
+    fn auto_passes_through_grouped_ordinary_mana_on_opponents_turn() {
         use crate::game::zones::create_object;
         use crate::types::ability::{
             AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaProduction,
@@ -2551,8 +2543,8 @@ mod tests {
 
         let flat = super::flat_priority_actions(&state);
         assert!(
-            !super::auto_pass_recommended(&state, &flat),
-            "auto-pass must hold priority on opponent's turn when grouped mana is available"
+            super::auto_pass_recommended(&state, &flat),
+            "auto-pass should fire on opponent's turn when only ordinary grouped mana is available"
         );
 
         // Control: on the active player's own turn, standalone mana still auto-passes.
@@ -2564,6 +2556,67 @@ mod tests {
         assert!(
             super::auto_pass_recommended(&state, &flat),
             "auto-pass should still fire on your turn when only mana is available"
+        );
+    }
+
+    /// Sacrifice-for-mana on an opponent's turn must still block auto-pass even
+    /// though the activation is grouped-only (issue #544 + CR 117.1d).
+    #[test]
+    fn auto_pass_holds_priority_for_sacrifice_mana_on_opponents_turn() {
+        use crate::game::zones::create_object;
+        use crate::types::ability::{
+            AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaContribution, ManaProduction,
+            QuantityExpr, SacrificeCost, TargetFilter, TypeFilter, TypedFilter,
+        };
+        use crate::types::card_type::CoreType;
+        use crate::types::identifiers::CardId;
+        use crate::types::mana::ManaColor;
+        use crate::types::zones::Zone;
+
+        let mut state = GameState::new_two_player(42);
+        state.phase = crate::types::phase::Phase::PreCombatMain;
+        state.active_player = PlayerId(1);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        let kci = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Krark-Clan Ironworks".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&kci).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            Arc::make_mut(&mut obj.abilities).push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Mana {
+                        produced: ManaProduction::AnyOneColor {
+                            count: QuantityExpr::Fixed { value: 1 },
+                            color_options: vec![ManaColor::Red],
+                            contribution: ManaContribution::Base,
+                        },
+                        restrictions: vec![],
+                        grants: vec![],
+                        expiry: None,
+                        target: None,
+                    },
+                )
+                .cost(AbilityCost::Sacrifice(SacrificeCost::count(
+                    TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+                    1,
+                ))),
+            );
+        }
+
+        let flat = super::flat_priority_actions(&state);
+        assert!(
+            !super::auto_pass_recommended(&state, &flat),
+            "sacrifice-for-mana on opponent's turn must block auto-pass"
         );
     }
 
