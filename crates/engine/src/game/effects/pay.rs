@@ -311,7 +311,6 @@ fn trigger_event_amount(state: &GameState) -> Option<u32> {
 /// `AttackersDeclared` exposes attacker *count* for "that many" effects, not as
 /// a pay-{X} cap — using it capped Elenda and Azor at X=1 (#4226).
 fn trigger_event_amount_for_x_payment(state: &GameState) -> Option<u32> {
-    use crate::types::events::GameEvent;
     let event = state.current_trigger_event.as_ref()?;
     match event {
         GameEvent::AttackersDeclared { .. } => None,
@@ -1867,9 +1866,6 @@ mod tests {
     /// the basic mana check still passes.
     #[test]
     fn trigger_event_amount_for_x_payment_ignores_attackers_declared_count() {
-        use crate::types::events::GameEvent;
-        use crate::types::identifiers::ObjectId;
-
         let mut state = GameState::new_two_player(42);
         state.current_trigger_event = Some(GameEvent::AttackersDeclared {
             attacker_ids: vec![ObjectId(99)],
