@@ -1236,7 +1236,7 @@ pub(crate) fn resume_interrupted_cost_payment(
     if let Some(resume) = state.pending_discard_for_cost.take() {
         let player = resume.player;
         let pending = resume.pending;
-        let cost_event_start = replacement_action_cost_event_start.unwrap_or_else(|| events.len());
+        let cost_event_start = replacement_action_cost_event_start.unwrap_or(events.len());
         for &card_id in resume.chosen.iter().skip(resume.paused_at_index + 1) {
             match super::effects::discard::discard_as_cost(state, card_id, player, events) {
                 super::effects::discard::DiscardOutcome::Complete => {}
