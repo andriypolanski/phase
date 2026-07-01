@@ -2121,13 +2121,22 @@ pub(super) fn player_can_spend_as_any_color_for_payment(
     source_id: Option<ObjectId>,
     ctx: Option<&PaymentContext<'_>>,
 ) -> bool {
-    if matches!(
-        ctx,
-        Some(PaymentContext::Effect | PaymentContext::Activation { .. })
-    ) {
-        super::static_abilities::player_can_spend_as_any_color(state, player)
-    } else {
-        player_can_spend_as_any_color_for_optional_spell(state, player, source_id)
+    match ctx {
+        Some(PaymentContext::Effect) => {
+            super::static_abilities::player_can_spend_as_any_color(state, player)
+        }
+        Some(PaymentContext::Activation { .. }) => {
+            if source_id.is_some_and(|id| {
+                super::static_abilities::player_can_spend_as_any_color_for_activation_source(
+                    state, player, id,
+                )
+            }) {
+                true
+            } else {
+                super::static_abilities::player_can_spend_as_any_color(state, player)
+            }
+        }
+        _ => player_can_spend_as_any_color_for_optional_spell(state, player, source_id),
     }
 }
 
