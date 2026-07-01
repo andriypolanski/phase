@@ -1154,7 +1154,19 @@ pub(crate) fn handle_discard_for_cost(
                     paused_at_index: index,
                 });
                 super::casting::pause_cost_payment_for_replacement_choice(state, choice_player);
-                return Ok(state.waiting_for.clone());
+                // CR 603.2 + CR 603.3b: Earlier cards in a count>1 discard cost may
+                // already have emitted graveyard `ZoneChanged` events before this
+                // replacement pause. Park them now — the post-action pipeline will
+                // not run over this action's `events` (engine.rs gates on Priority).
+                let waiting_for = state.waiting_for.clone();
+                park_discard_for_cost_triggers_if_paused(
+                    state,
+                    events,
+                    cost_event_start,
+                    events.len(),
+                    &waiting_for,
+                );
+                return Ok(waiting_for);
             }
         }
     }
@@ -1241,7 +1253,19 @@ pub(crate) fn resume_interrupted_cost_payment(
                         paused_at_index,
                     });
                     super::casting::pause_cost_payment_for_replacement_choice(state, choice_player);
-                    return Ok(state.waiting_for.clone());
+                    // CR 603.2 + CR 603.3b: Same mid-loop replacement pause as
+                    // `handle_discard_for_cost` — park already-emitted discard
+                    // cost events (including replacement-delivered discards in
+                    // this action) before the non-Priority action boundary.
+                    let waiting_for = state.waiting_for.clone();
+                    park_discard_for_cost_triggers_if_paused(
+                        state,
+                        events,
+                        cost_event_start,
+                        events.len(),
+                        &waiting_for,
+                    );
+                    return Ok(waiting_for);
                 }
             }
         }
@@ -8844,6 +8868,30 @@ mod tests {
         replacement_source
     }
 
+    fn install_land_only_discard_replacement(state: &mut GameState) -> ObjectId {
+        use crate::types::ability::{TargetFilter, TypedFilter};
+
+        let replacement_source = create_object(
+            state,
+            CardId(9_004),
+            PlayerId(0),
+            "Land Discard Replacement".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&replacement_source)
+            .unwrap()
+            .replacement_definitions
+            .push(
+                ReplacementDefinition::new(ReplacementEvent::Discard)
+                    .mode(ReplacementMode::Optional { decline: None })
+                    .valid_card(TargetFilter::Typed(TypedFilter::land()))
+                    .description("Apply land discard replacement".to_string()),
+            );
+        replacement_source
+    }
+
     #[test]
     fn graveyard_exile_additional_cost_x_max_is_eligible_graveyard_size() {
         let mut state = GameState::new_two_player(42);
@@ -11147,6 +11195,210 @@ mod tests {
             .expect("second replacement choice should finish cost payment");
         assert_eq!(state.objects[&second].zone, Zone::Graveyard);
         assert_eq!(state.stack.len(), 1, "activation should reach the stack");
+    }
+
+    /// CR 603.2 + CR 603.3b: When a count>1 discard cost completes earlier
+    /// discards then pauses on a later card's replacement choice, already-emitted
+    /// graveyard-entry events must be parked before the non-Priority boundary.
+    #[test]
+    fn discard_for_cost_parks_triggers_when_later_discard_pauses_on_replacement() {
+        use crate::parser::oracle::parse_oracle_text;
+
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        install_land_only_discard_replacement(&mut state);
+
+        let source = create_object(
+            &mut state,
+            CardId(30),
+            PlayerId(0),
+            "Discard Outlet".to_string(),
+            Zone::Battlefield,
+        );
+
+        let creature = create_object(
+            &mut state,
+            CardId(31),
+            PlayerId(0),
+            "First Bear".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&creature).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+        }
+
+        let land = create_object(
+            &mut state,
+            CardId(32),
+            PlayerId(0),
+            "Second Land".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&land).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+        }
+
+        let sefris_doc = parse_oracle_text(
+            "Whenever one or more creature cards are put into your graveyard from anywhere, venture into the dungeon.",
+            "Sefris Observer",
+            &[],
+            &[],
+            &[],
+        );
+        let sefris_trigger = sefris_doc
+            .triggers
+            .into_iter()
+            .next()
+            .expect("Sefris trigger");
+
+        let observer = create_object(
+            &mut state,
+            CardId(33),
+            PlayerId(0),
+            "Sefris Observer".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&observer).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.entered_battlefield_turn = Some(1);
+            obj.trigger_definitions.push(sefris_trigger);
+            crate::game::trigger_index::reindex_object_triggers(&mut state, observer);
+        }
+
+        let mut events = Vec::new();
+        let waiting = handle_discard_for_cost(
+            &mut state,
+            PlayerId(0),
+            make_pending(source),
+            2,
+            &[creature, land],
+            &[creature, land],
+            &mut events,
+        )
+        .expect("land discard should pause for land-only replacement");
+
+        assert!(
+            matches!(waiting, WaitingFor::ReplacementChoice { .. }),
+            "expected ReplacementChoice on land discard, got {waiting:?}"
+        );
+        assert_eq!(state.objects[&creature].zone, Zone::Graveyard);
+        assert_eq!(state.objects[&land].zone, Zone::Hand);
+        assert!(
+            !state.deferred_triggers.is_empty(),
+            "earlier creature discard events must be parked when a later discard \
+             pauses on replacement choice"
+        );
+    }
+
+    /// CR 603.2 + CR 603.3b: Resume loop mid-discard replacement pause must park
+    /// discards already delivered in the same replacement action before the next
+    /// non-Priority boundary (second card's replacement choice in a 2-discard cost).
+    #[test]
+    fn discard_for_cost_resume_parks_triggers_when_next_discard_pauses_on_replacement() {
+        use crate::parser::oracle::parse_oracle_text;
+
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        install_optional_discard_replacement(&mut state);
+
+        let source = create_object(
+            &mut state,
+            CardId(30),
+            PlayerId(0),
+            "Discard Outlet".to_string(),
+            Zone::Battlefield,
+        );
+
+        let first_creature = create_object(
+            &mut state,
+            CardId(31),
+            PlayerId(0),
+            "First Bear".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&first_creature).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+        }
+
+        let second = create_object(
+            &mut state,
+            CardId(32),
+            PlayerId(0),
+            "Second Card".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&second).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+        }
+
+        let sefris_doc = parse_oracle_text(
+            "Whenever one or more creature cards are put into your graveyard from anywhere, venture into the dungeon.",
+            "Sefris Observer",
+            &[],
+            &[],
+            &[],
+        );
+        let sefris_trigger = sefris_doc
+            .triggers
+            .into_iter()
+            .next()
+            .expect("Sefris trigger");
+
+        let observer = create_object(
+            &mut state,
+            CardId(33),
+            PlayerId(0),
+            "Sefris Observer".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&observer).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.entered_battlefield_turn = Some(1);
+            obj.trigger_definitions.push(sefris_trigger);
+            crate::game::trigger_index::reindex_object_triggers(&mut state, observer);
+        }
+
+        let mut events = Vec::new();
+        handle_discard_for_cost(
+            &mut state,
+            PlayerId(0),
+            make_pending(source),
+            2,
+            &[first_creature, second],
+            &[first_creature, second],
+            &mut events,
+        )
+        .expect("first discard should pause for replacement choice");
+
+        apply_as_current(&mut state, GameAction::ChooseReplacement { index: 0 })
+            .expect("first replacement choice should resume to the second discard");
+
+        assert!(
+            matches!(state.waiting_for, WaitingFor::ReplacementChoice { .. }),
+            "expected second ReplacementChoice, got {:?}",
+            state.waiting_for
+        );
+        assert_eq!(state.objects[&first_creature].zone, Zone::Graveyard);
+        assert_eq!(state.objects[&second].zone, Zone::Hand);
+        assert!(
+            !state.deferred_triggers.is_empty(),
+            "first creature discard must be parked when resume pauses on the second \
+             card's replacement choice"
+        );
     }
 
     /// CR 603.6c + CR 118.3: Sacrificing a permanent as part of a cost is a
