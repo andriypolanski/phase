@@ -1591,6 +1591,17 @@ mod tests {
                 .all(|info| info.object_id != attacker),
             "CR 506.4: attacker must be removed from combat when it leaves the battlefield"
         );
+        assert!(
+            !combat.blocker_assignments.contains_key(&attacker),
+            "CR 506.4: attacker-keyed block assignment must be removed on battlefield exit"
+        );
+        assert!(
+            combat
+                .blocker_to_attacker
+                .values()
+                .all(|attackers| !attackers.contains(&attacker)),
+            "CR 506.4: departed attacker must be pruned from every blocker's reverse lookup"
+        );
         move_to_zone(&mut state, attacker, Zone::Battlefield, &mut events);
         let combat = state.combat.as_ref().unwrap();
         assert!(
@@ -1599,6 +1610,14 @@ mod tests {
                 .iter()
                 .all(|info| info.object_id != attacker),
             "returned attacker must not inherit stale attacking status"
+        );
+        assert!(
+            !combat.blocker_assignments.contains_key(&attacker),
+            "returned attacker must not inherit stale attacker-keyed block assignment"
+        );
+        assert!(
+            !combat.blocker_to_attacker.contains_key(&attacker),
+            "returned attacker must not inherit stale blocking status via reverse lookup"
         );
     }
 
