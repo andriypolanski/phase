@@ -56,7 +56,12 @@ pub fn validated_candidate_actions_with_probe(
     probe: Option<&crate::game::casting::PriorityCastProbe>,
 ) -> Vec<CandidateAction> {
     let pipeline = FilterPipeline::default_pipeline();
-    pipeline.apply_with_probe(state, candidate_actions_with_probe(state, probe), probe)
+    let mut actions =
+        pipeline.apply_with_probe(state, candidate_actions_with_probe(state, probe), probe);
+    // Issue #4878: candidate enumeration must not depend on HashSet/HashMap
+    // iteration order leaking into AI tie-breaking downstream.
+    actions.sort_by_cached_key(|c| format!("{:?}", c.action));
+    actions
 }
 
 /// CR 702.51a / 702.66a / 702.126a: During `ManaPayment`, every structurally

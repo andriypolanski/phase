@@ -2792,7 +2792,7 @@ pub enum LayersDirty {
     /// Only these objects entered the battlefield since the last flush and no
     /// other layer-affecting mutation occurred. Candidate for the incremental
     /// fast path.
-    EnteredObjects(HashSet<ObjectId>),
+    EnteredObjects(BTreeSet<ObjectId>),
     /// A full battlefield re-evaluation is required.
     Full,
 }
@@ -2815,7 +2815,7 @@ impl LayersDirty {
     pub fn mark_entered(&mut self, id: ObjectId) {
         match self {
             Self::Full => {}
-            Self::Clean => *self = Self::EnteredObjects(HashSet::from([id])),
+            Self::Clean => *self = Self::EnteredObjects(BTreeSet::from([id])),
             Self::EnteredObjects(s) => {
                 s.insert(id);
             }

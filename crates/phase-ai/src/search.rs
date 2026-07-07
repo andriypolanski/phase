@@ -227,9 +227,9 @@ pub fn choose_action_with_session(
         // so the game never deadlocks waiting for the AI.
         return fallback_action(state);
     }
-    if config.execution_mode.is_measurement() {
-        scored.sort_by_cached_key(|(action, _)| action_order_key(action));
-    }
+    // Issue #4878: total order before softmax so equal scores never depend on
+    // HashSet/HashMap allocation order.
+    scored.sort_by_cached_key(|(action, _)| action_order_key(action));
     let chosen = if scored.len() == 1 {
         Some(scored[0].0.clone())
     } else {
@@ -1922,9 +1922,8 @@ fn score_candidates_core(
             _ => true,
         })
         .collect();
-    if config.execution_mode.is_measurement() {
-        gated.sort_by_cached_key(|g| action_order_key(&g.candidate.action));
-    }
+    // Issue #4878: deterministic candidate order before scoring / search.
+    gated.sort_by_cached_key(|g| action_order_key(&g.candidate.action));
 
     let actions: Vec<GameAction> = gated
         .iter()
@@ -2082,9 +2081,7 @@ fn score_candidates_core(
         }
 
         let mut out = best_scored;
-        if config.execution_mode.is_measurement() {
-            out.sort_by_cached_key(|(action, _)| action_order_key(action));
-        }
+        out.sort_by_cached_key(|(action, _)| action_order_key(action));
         out
     } else {
         // Heuristic-only scoring
@@ -2101,9 +2098,7 @@ fn score_candidates_core(
                 (candidate.candidate.action, score)
             })
             .collect();
-        if config.execution_mode.is_measurement() {
-            out.sort_by_cached_key(|(action, _)| action_order_key(action));
-        }
+        out.sort_by_cached_key(|(action, _)| action_order_key(action));
         out
     }
 }
@@ -2955,10 +2950,15 @@ pub fn softmax_select_pairs(
 
     let total: f64 = weights.iter().sum();
     if total <= 0.0 || !total.is_finite() {
-        // Fallback: pick the highest-scored action
+        // Fallback: pick the highest-scored action (tie-break by action key —
+        // issue #4878).
         return scored
             .iter()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.1.partial_cmp(&b.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| action_order_key(&a.0).cmp(&action_order_key(&b.0)))
+            })
             .map(|s| s.0.clone());
     }
 
