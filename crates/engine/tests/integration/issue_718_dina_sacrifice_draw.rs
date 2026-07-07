@@ -113,7 +113,12 @@ fn dina_draw_trigger_fires_only_once_per_turn() {
     first.assert_hand_drawn(P0, 1);
     first.assert_life_delta(P0, 3);
 
-    runner.state_mut().objects.get_mut(&dina).expect("Dina").tapped = false;
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&dina)
+        .expect("Dina")
+        .tapped = false;
 
     let second = runner
         .activate(dina, 0)
