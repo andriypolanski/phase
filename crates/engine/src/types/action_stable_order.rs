@@ -27,597 +27,955 @@ fn cmp_val<T: Ord>(a: &T, b: &T) -> Ordering {
     a.cmp(b)
 }
 
-/// Compares payloads of two actions. `cmp_game_actions` only reaches this after
-/// the discriminants compared `Equal`, so in practice `a` and `b` are always the
-/// same variant; the trailing `_` arm is unreachable but required for
-/// exhaustiveness and returns `Equal` (a safe total-order identity).
+/// Compares payloads of two actions with the same discriminant. The outer match
+/// on `a` is exhaustive over `GameAction` — a new variant is a compile error
+/// until its payload comparison is wired. Mismatched variants `unreachable!`.
+/// `cmp_game_actions` only calls this after discriminants compared `Equal`.
 fn cmp_payload(a: &GameAction, b: &GameAction) -> Ordering {
-    match (a, b) {
-        (GameAction::PassPriority, GameAction::PassPriority) => Ordering::Equal,
-        (
-            GameAction::PlayLand {
-                object_id: a0,
-                card_id: a1,
-            },
-            GameAction::PlayLand {
+    match a {
+        GameAction::PassPriority => {
+            let GameAction::PassPriority = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            Ordering::Equal
+        }
+        GameAction::PlayLand {
+            object_id: a0,
+            card_id: a1,
+        } => {
+            let GameAction::PlayLand {
                 object_id: b0,
                 card_id: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::CastSpell {
-                object_id: a0,
-                card_id: a1,
-                targets: a2,
-                payment_mode: a3,
-            },
-            GameAction::CastSpell {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::CastSpell {
+            object_id: a0,
+            card_id: a1,
+            targets: a2,
+            payment_mode: a3,
+        } => {
+            let GameAction::CastSpell {
                 object_id: b0,
                 card_id: b1,
                 targets: b2,
                 payment_mode: b3,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2))
-            .then_with(|| cmp_val(a3, b3)),
-        (
-            GameAction::Foretell {
-                object_id: a0,
-                card_id: a1,
-            },
-            GameAction::Foretell {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+                .then_with(|| cmp_val(a3, b3))
+        }
+        GameAction::Foretell {
+            object_id: a0,
+            card_id: a1,
+        } => {
+            let GameAction::Foretell {
                 object_id: b0,
                 card_id: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::ActivateAbility {
-                source_id: a0,
-                ability_index: a1,
-            },
-            GameAction::ActivateAbility {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::ActivateAbility {
+            source_id: a0,
+            ability_index: a1,
+        } => {
+            let GameAction::ActivateAbility {
                 source_id: b0,
                 ability_index: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::DeclareAttackers {
-                attacks: a0,
-                bands: a1,
-            },
-            GameAction::DeclareAttackers {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::DeclareAttackers {
+            attacks: a0,
+            bands: a1,
+        } => {
+            let GameAction::DeclareAttackers {
                 attacks: b0,
                 bands: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::DeclareBlockers { assignments: a0 },
-            GameAction::DeclareBlockers { assignments: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseUntap {
-                object_id: a0,
-                untap: a1,
-            },
-            GameAction::ChooseUntap {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::DeclareBlockers { assignments: a0 } => {
+            let GameAction::DeclareBlockers { assignments: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseUntap {
+            object_id: a0,
+            untap: a1,
+        } => {
+            let GameAction::ChooseUntap {
                 object_id: b0,
                 untap: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (GameAction::ChooseExert { exert: a0 }, GameAction::ChooseExert { exert: b0 }) => {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::ChooseExert { exert: a0 } => {
+            let GameAction::ChooseExert { exert: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseEnlist { target: a0 } => {
+            let GameAction::ChooseEnlist { target: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseClashOpponent { opponent: a0 } => {
+            let GameAction::ChooseClashOpponent { opponent: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (GameAction::ChooseEnlist { target: a0 }, GameAction::ChooseEnlist { target: b0 }) => {
+        GameAction::ChooseAssistPlayer { player: a0 } => {
+            let GameAction::ChooseAssistPlayer { player: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::ChooseClashOpponent { opponent: a0 },
-            GameAction::ChooseClashOpponent { opponent: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseAssistPlayer { player: a0 },
-            GameAction::ChooseAssistPlayer { player: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::CommitAssistPayment { generic: a0 },
-            GameAction::CommitAssistPayment { generic: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::MulliganDecision { choice: a0 },
-            GameAction::MulliganDecision { choice: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::ReorderHand { order: a0 }, GameAction::ReorderHand { order: b0 }) => {
+        GameAction::CommitAssistPayment { generic: a0 } => {
+            let GameAction::CommitAssistPayment { generic: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::TapLandForMana { object_id: a0 },
-            GameAction::TapLandForMana { object_id: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::UntapLandForMana { object_id: a0 },
-            GameAction::UntapLandForMana { object_id: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::SpendPoolMana { pip_id: a0 }, GameAction::SpendPoolMana { pip_id: b0 }) => {
+        GameAction::MulliganDecision { choice: a0 } => {
+            let GameAction::MulliganDecision { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::UnspendPoolMana { pip_id: a0 },
-            GameAction::UnspendPoolMana { pip_id: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::SelectCards { cards: a0 }, GameAction::SelectCards { cards: b0 }) => {
+        GameAction::ReorderHand { order: a0 } => {
+            let GameAction::ReorderHand { order: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::TapLandForMana { object_id: a0 } => {
+            let GameAction::TapLandForMana { object_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::ChooseRemoveCounterCostDistribution { distribution: a0 },
-            GameAction::ChooseRemoveCounterCostDistribution { distribution: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::SelectCoinFlips { keep_indices: a0 },
-            GameAction::SelectCoinFlips { keep_indices: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseOutsideGameCards { selections: a0 },
-            GameAction::ChooseOutsideGameCards { selections: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::SelectTargets { targets: a0 }, GameAction::SelectTargets { targets: b0 }) => {
+        GameAction::UntapLandForMana { object_id: a0 } => {
+            let GameAction::UntapLandForMana { object_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (GameAction::ChooseTarget { target: a0 }, GameAction::ChooseTarget { target: b0 }) => {
+        GameAction::SpendPoolMana { pip_id: a0 } => {
+            let GameAction::SpendPoolMana { pip_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::UnspendPoolMana { pip_id: a0 } => {
+            let GameAction::UnspendPoolMana { pip_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::ChooseReplacement { index: a0 },
-            GameAction::ChooseReplacement { index: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::OrderTriggers { order: a0 }, GameAction::OrderTriggers { order: b0 }) => {
+        GameAction::SelectCards { cards: a0 } => {
+            let GameAction::SelectCards { cards: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseRemoveCounterCostDistribution { distribution: a0 } => {
+            let GameAction::ChooseRemoveCounterCostDistribution { distribution: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (GameAction::CancelCast, GameAction::CancelCast) => Ordering::Equal,
-        (
-            GameAction::Equip {
-                equipment_id: a0,
-                target_id: a1,
-            },
-            GameAction::Equip {
+        GameAction::SelectCoinFlips { keep_indices: a0 } => {
+            let GameAction::SelectCoinFlips { keep_indices: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseOutsideGameCards { selections: a0 } => {
+            let GameAction::ChooseOutsideGameCards { selections: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::SelectTargets { targets: a0 } => {
+            let GameAction::SelectTargets { targets: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseTarget { target: a0 } => {
+            let GameAction::ChooseTarget { target: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseReplacement { index: a0 } => {
+            let GameAction::ChooseReplacement { index: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::OrderTriggers { order: a0 } => {
+            let GameAction::OrderTriggers { order: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::CancelCast => {
+            let GameAction::CancelCast = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            Ordering::Equal
+        }
+        GameAction::Equip {
+            equipment_id: a0,
+            target_id: a1,
+        } => {
+            let GameAction::Equip {
                 equipment_id: b0,
                 target_id: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::CrewVehicle {
-                vehicle_id: a0,
-                creature_ids: a1,
-            },
-            GameAction::CrewVehicle {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::CrewVehicle {
+            vehicle_id: a0,
+            creature_ids: a1,
+        } => {
+            let GameAction::CrewVehicle {
                 vehicle_id: b0,
                 creature_ids: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::ActivateStation {
-                spacecraft_id: a0,
-                creature_id: a1,
-            },
-            GameAction::ActivateStation {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::ActivateStation {
+            spacecraft_id: a0,
+            creature_id: a1,
+        } => {
+            let GameAction::ActivateStation {
                 spacecraft_id: b0,
                 creature_id: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::SaddleMount {
-                mount_id: a0,
-                creature_ids: a1,
-            },
-            GameAction::SaddleMount {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::SaddleMount {
+            mount_id: a0,
+            creature_ids: a1,
+        } => {
+            let GameAction::SaddleMount {
                 mount_id: b0,
                 creature_ids: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (GameAction::Transform { object_id: a0 }, GameAction::Transform { object_id: b0 }) => {
-            cmp_val(a0, b0)
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
         }
-        (
-            GameAction::PlayFaceDown {
-                object_id: a0,
-                card_id: a1,
-            },
-            GameAction::PlayFaceDown {
+        GameAction::Transform { object_id: a0 } => {
+            let GameAction::Transform { object_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::PlayFaceDown {
+            object_id: a0,
+            card_id: a1,
+        } => {
+            let GameAction::PlayFaceDown {
                 object_id: b0,
                 card_id: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (GameAction::TurnFaceUp { object_id: a0 }, GameAction::TurnFaceUp { object_id: b0 }) => {
-            cmp_val(a0, b0)
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
         }
-        (
-            GameAction::SubmitSideboard {
-                main: a0,
-                sideboard: a1,
-            },
-            GameAction::SubmitSideboard {
+        GameAction::TurnFaceUp { object_id: a0 } => {
+            let GameAction::TurnFaceUp { object_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::SubmitSideboard {
+            main: a0,
+            sideboard: a1,
+        } => {
+            let GameAction::SubmitSideboard {
                 main: b0,
                 sideboard: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::ChoosePlayDraw { play_first: a0 },
-            GameAction::ChoosePlayDraw { play_first: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::ChooseOption { choice: a0 }, GameAction::ChooseOption { choice: b0 }) => {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::ChoosePlayDraw { play_first: a0 } => {
+            let GameAction::ChoosePlayDraw { play_first: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::SubmitVoteCandidate {
-                candidate_index: a0,
-            },
-            GameAction::SubmitVoteCandidate {
+        GameAction::ChooseOption { choice: a0 } => {
+            let GameAction::ChooseOption { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::SubmitVoteCandidate {
+            candidate_index: a0,
+        } => {
+            let GameAction::SubmitVoteCandidate {
                 candidate_index: b0,
-            },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::SubmitSpellbookDraft { card: a0 },
-            GameAction::SubmitSpellbookDraft { card: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::SubmitPilePartition { pile_a: a0 },
-            GameAction::SubmitPilePartition { pile_a: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::ChoosePile { pile: a0 }, GameAction::ChoosePile { pile: b0 }) => {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (GameAction::ChooseBranch { index: a0 }, GameAction::ChooseBranch { index: b0 }) => {
+        GameAction::SubmitSpellbookDraft { card: a0 } => {
+            let GameAction::SubmitSpellbookDraft { card: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::ChooseDamageSource { source: a0 },
-            GameAction::ChooseDamageSource { source: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::SelectModes { indices: a0 }, GameAction::SelectModes { indices: b0 }) => {
+        GameAction::SubmitPilePartition { pile_a: a0 } => {
+            let GameAction::SubmitPilePartition { pile_a: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::DecideOptionalCost { pay: a0 },
-            GameAction::DecideOptionalCost { pay: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseAdventureFace { creature: a0 },
-            GameAction::ChooseAdventureFace { creature: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseModalFace { back_face: a0 },
-            GameAction::ChooseModalFace { back_face: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseAlternativeCast { choice: a0 },
-            GameAction::ChooseAlternativeCast { choice: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseCastingVariant { index: a0 },
-            GameAction::ChooseCastingVariant { index: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::KeepAllCopyTargets, GameAction::KeepAllCopyTargets) => Ordering::Equal,
-        (
-            GameAction::ChoosePermanentTypeSlot { slot: a0 },
-            GameAction::ChoosePermanentTypeSlot { slot: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ActivateNinjutsu {
-                ninjutsu_object_id: a0,
-                creature_to_return: a1,
-            },
-            GameAction::ActivateNinjutsu {
+        GameAction::ChoosePile { pile: a0 } => {
+            let GameAction::ChoosePile { pile: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseBranch { index: a0 } => {
+            let GameAction::ChooseBranch { index: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseDamageSource { source: a0 } => {
+            let GameAction::ChooseDamageSource { source: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::SelectModes { indices: a0 } => {
+            let GameAction::SelectModes { indices: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::DecideOptionalCost { pay: a0 } => {
+            let GameAction::DecideOptionalCost { pay: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseAdventureFace { creature: a0 } => {
+            let GameAction::ChooseAdventureFace { creature: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseModalFace { back_face: a0 } => {
+            let GameAction::ChooseModalFace { back_face: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseAlternativeCast { choice: a0 } => {
+            let GameAction::ChooseAlternativeCast { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseCastingVariant { index: a0 } => {
+            let GameAction::ChooseCastingVariant { index: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::KeepAllCopyTargets => {
+            let GameAction::KeepAllCopyTargets = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            Ordering::Equal
+        }
+        GameAction::ChoosePermanentTypeSlot { slot: a0 } => {
+            let GameAction::ChoosePermanentTypeSlot { slot: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ActivateNinjutsu {
+            ninjutsu_object_id: a0,
+            creature_to_return: a1,
+        } => {
+            let GameAction::ActivateNinjutsu {
                 ninjutsu_object_id: b0,
                 creature_to_return: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::CastSpellAsSneak {
-                hand_object: a0,
-                card_id: a1,
-                creature_to_return: a2,
-                payment_mode: a3,
-            },
-            GameAction::CastSpellAsSneak {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::CastSpellAsSneak {
+            hand_object: a0,
+            card_id: a1,
+            creature_to_return: a2,
+            payment_mode: a3,
+        } => {
+            let GameAction::CastSpellAsSneak {
                 hand_object: b0,
                 card_id: b1,
                 creature_to_return: b2,
                 payment_mode: b3,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2))
-            .then_with(|| cmp_val(a3, b3)),
-        (
-            GameAction::CastSpellAsWebSlinging {
-                hand_object: a0,
-                card_id: a1,
-                creature_to_return: a2,
-                payment_mode: a3,
-            },
-            GameAction::CastSpellAsWebSlinging {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+                .then_with(|| cmp_val(a3, b3))
+        }
+        GameAction::CastSpellAsWebSlinging {
+            hand_object: a0,
+            card_id: a1,
+            creature_to_return: a2,
+            payment_mode: a3,
+        } => {
+            let GameAction::CastSpellAsWebSlinging {
                 hand_object: b0,
                 card_id: b1,
                 creature_to_return: b2,
                 payment_mode: b3,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2))
-            .then_with(|| cmp_val(a3, b3)),
-        (
-            GameAction::CastSpellForFree {
-                object_id: a0,
-                card_id: a1,
-                source_id: a2,
-                payment_mode: a3,
-            },
-            GameAction::CastSpellForFree {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+                .then_with(|| cmp_val(a3, b3))
+        }
+        GameAction::CastSpellForFree {
+            object_id: a0,
+            card_id: a1,
+            source_id: a2,
+            payment_mode: a3,
+        } => {
+            let GameAction::CastSpellForFree {
                 object_id: b0,
                 card_id: b1,
                 source_id: b2,
                 payment_mode: b3,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2))
-            .then_with(|| cmp_val(a3, b3)),
-        (
-            GameAction::CastSpellAsMiracle {
-                object_id: a0,
-                card_id: a1,
-                payment_mode: a2,
-            },
-            GameAction::CastSpellAsMiracle {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+                .then_with(|| cmp_val(a3, b3))
+        }
+        GameAction::CastSpellAsMiracle {
+            object_id: a0,
+            card_id: a1,
+            payment_mode: a2,
+        } => {
+            let GameAction::CastSpellAsMiracle {
                 object_id: b0,
                 card_id: b1,
                 payment_mode: b2,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2)),
-        (
-            GameAction::CastSpellAsMadness {
-                object_id: a0,
-                card_id: a1,
-                payment_mode: a2,
-            },
-            GameAction::CastSpellAsMadness {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+        }
+        GameAction::CastSpellAsMadness {
+            object_id: a0,
+            card_id: a1,
+            payment_mode: a2,
+        } => {
+            let GameAction::CastSpellAsMadness {
                 object_id: b0,
                 card_id: b1,
                 payment_mode: b2,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2)),
-        (
-            GameAction::DecideOptionalEffect { accept: a0 },
-            GameAction::DecideOptionalEffect { accept: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::RespondToSpliceOffer { card: a0 },
-            GameAction::RespondToSpliceOffer { card: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::DecideOptionalEffectAndRemember { choice: a0 },
-            GameAction::DecideOptionalEffectAndRemember { choice: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::PayUnlessCost { pay: a0 }, GameAction::PayUnlessCost { pay: b0 }) => {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+        }
+        GameAction::DecideOptionalEffect { accept: a0 } => {
+            let GameAction::DecideOptionalEffect { accept: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::ChooseUnlessCostBranch { choice: a0 },
-            GameAction::ChooseUnlessCostBranch { choice: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseActivationCostBranch { index: a0 },
-            GameAction::ChooseActivationCostBranch { index: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::PayCombatTax { accept: a0 }, GameAction::PayCombatTax { accept: b0 }) => {
+        GameAction::RespondToSpliceOffer { card: a0 } => {
+            let GameAction::RespondToSpliceOffer { card: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::ChooseRingBearer { target: a0 },
-            GameAction::ChooseRingBearer { target: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::ChoosePair { partner: a0 }, GameAction::ChoosePair { partner: b0 }) => {
+        GameAction::DecideOptionalEffectAndRemember { choice: a0 } => {
+            let GameAction::DecideOptionalEffectAndRemember { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (GameAction::ChooseDungeon { dungeon: a0 }, GameAction::ChooseDungeon { dungeon: b0 }) => {
+        GameAction::PayUnlessCost { pay: a0 } => {
+            let GameAction::PayUnlessCost { pay: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseUnlessCostBranch { choice: a0 } => {
+            let GameAction::ChooseUnlessCostBranch { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::ChooseDungeonRoom { room_index: a0 },
-            GameAction::ChooseDungeonRoom { room_index: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::UnlockRoomDoor {
-                object_id: a0,
-                door: a1,
-            },
-            GameAction::UnlockRoomDoor {
+        GameAction::ChooseActivationCostBranch { index: a0 } => {
+            let GameAction::ChooseActivationCostBranch { index: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::PayCombatTax { accept: a0 } => {
+            let GameAction::PayCombatTax { accept: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseRingBearer { target: a0 } => {
+            let GameAction::ChooseRingBearer { target: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChoosePair { partner: a0 } => {
+            let GameAction::ChoosePair { partner: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseDungeon { dungeon: a0 } => {
+            let GameAction::ChooseDungeon { dungeon: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseDungeonRoom { room_index: a0 } => {
+            let GameAction::ChooseDungeonRoom { room_index: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::UnlockRoomDoor {
+            object_id: a0,
+            door: a1,
+        } => {
+            let GameAction::UnlockRoomDoor {
                 object_id: b0,
                 door: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (GameAction::RollPlanarDie, GameAction::RollPlanarDie) => Ordering::Equal,
-        (
-            GameAction::ChooseRoomDoor {
-                object_id: a0,
-                op: a1,
-                door: a2,
-            },
-            GameAction::ChooseRoomDoor {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::RollPlanarDie => {
+            let GameAction::RollPlanarDie = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            Ordering::Equal
+        }
+        GameAction::ChooseRoomDoor {
+            object_id: a0,
+            op: a1,
+            door: a2,
+        } => {
+            let GameAction::ChooseRoomDoor {
                 object_id: b0,
                 op: b1,
                 door: b2,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2)),
-        (
-            GameAction::TapForConvoke {
-                object_id: a0,
-                mana_type: a1,
-            },
-            GameAction::TapForConvoke {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+        }
+        GameAction::TapForConvoke {
+            object_id: a0,
+            mana_type: a1,
+        } => {
+            let GameAction::TapForConvoke {
                 object_id: b0,
                 mana_type: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::HarmonizeTap { creature_id: a0 },
-            GameAction::HarmonizeTap { creature_id: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::DeclareCompanion { card_index: a0 },
-            GameAction::DeclareCompanion { card_index: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::CompanionToHand, GameAction::CompanionToHand) => Ordering::Equal,
-        (GameAction::DiscoverChoice { choice: a0 }, GameAction::DiscoverChoice { choice: b0 }) => {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::HarmonizeTap { creature_id: a0 } => {
+            let GameAction::HarmonizeTap { creature_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::GraveyardPaidCastChoice { choice: a0 },
-            GameAction::GraveyardPaidCastChoice { choice: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::CascadeChoice { choice: a0 }, GameAction::CascadeChoice { choice: b0 }) => {
+        GameAction::DeclareCompanion { card_index: a0 } => {
+            let GameAction::DeclareCompanion { card_index: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (GameAction::RippleChoice { choice: a0 }, GameAction::RippleChoice { choice: b0 }) => {
+        GameAction::CompanionToHand => {
+            let GameAction::CompanionToHand = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            Ordering::Equal
+        }
+        GameAction::DiscoverChoice { choice: a0 } => {
+            let GameAction::DiscoverChoice { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::GraveyardPaidCastChoice { choice: a0 } => {
+            let GameAction::GraveyardPaidCastChoice { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::FreeCastWindowChoice { selection: a0 },
-            GameAction::FreeCastWindowChoice { selection: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::ChooseTopOrBottom { top: a0 }, GameAction::ChooseTopOrBottom { top: b0 }) => {
+        GameAction::CascadeChoice { choice: a0 } => {
+            let GameAction::CascadeChoice { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::RippleChoice { choice: a0 } => {
+            let GameAction::RippleChoice { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::FreeCastWindowChoice { selection: a0 } => {
+            let GameAction::FreeCastWindowChoice { selection: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::ChooseMutateMergeSide { side: a0 },
-            GameAction::ChooseMutateMergeSide { side: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::CipherEncode { creature: a0 }, GameAction::CipherEncode { creature: b0 }) => {
+        GameAction::ChooseTopOrBottom { top: a0 } => {
+            let GameAction::ChooseTopOrBottom { top: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseMutateMergeSide { side: a0 } => {
+            let GameAction::ChooseMutateMergeSide { side: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (GameAction::ChooseLegend { keep: a0 }, GameAction::ChooseLegend { keep: b0 }) => {
+        GameAction::CipherEncode { creature: a0 } => {
+            let GameAction::CipherEncode { creature: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseLegend { keep: a0 } => {
+            let GameAction::ChooseLegend { keep: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::ChooseBattleProtector { protector: a0 } => {
+            let GameAction::ChooseBattleProtector { protector: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::ChooseBattleProtector { protector: a0 },
-            GameAction::ChooseBattleProtector { protector: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::SetAutoPass { mode: a0 }, GameAction::SetAutoPass { mode: b0 }) => {
-            cmp_val(a0, b0)
+        GameAction::SetAutoPass { mode: a0 } => {
+            let GameAction::SetAutoPass { mode: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
         }
-        (GameAction::CancelAutoPass, GameAction::CancelAutoPass) => Ordering::Equal,
-        (GameAction::SetPhaseStops { stops: a0 }, GameAction::SetPhaseStops { stops: b0 }) => {
-            cmp_val(a0, b0)
+        GameAction::CancelAutoPass => {
+            let GameAction::CancelAutoPass = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            Ordering::Equal
         }
-        (GameAction::SetPriorityYield { op: a0 }, GameAction::SetPriorityYield { op: b0 }) => {
-            cmp_val(a0, b0)
+        GameAction::SetPhaseStops { stops: a0 } => {
+            let GameAction::SetPhaseStops { stops: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
         }
-        (
-            GameAction::AssignCombatDamage {
-                mode: a0,
-                assignments: a1,
-                trample_damage: a2,
-                controller_damage: a3,
-            },
-            GameAction::AssignCombatDamage {
+        GameAction::SetPriorityYield { op: a0 } => {
+            let GameAction::SetPriorityYield { op: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::AssignCombatDamage {
+            mode: a0,
+            assignments: a1,
+            trample_damage: a2,
+            controller_damage: a3,
+        } => {
+            let GameAction::AssignCombatDamage {
                 mode: b0,
                 assignments: b1,
                 trample_damage: b2,
                 controller_damage: b3,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2))
-            .then_with(|| cmp_val(a3, b3)),
-        (
-            GameAction::AssignBlockerDamage { assignments: a0 },
-            GameAction::AssignBlockerDamage { assignments: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::DistributeAmong { distribution: a0 },
-            GameAction::DistributeAmong { distribution: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseCounterMoveDistribution { selections: a0 },
-            GameAction::ChooseCounterMoveDistribution { selections: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseCountersToRemove { selections: a0 },
-            GameAction::ChooseCountersToRemove { selections: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::SubmitPayAmount { amount: a0 },
-            GameAction::SubmitPayAmount { amount: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::RetargetSpell { new_targets: a0 },
-            GameAction::RetargetSpell { new_targets: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::LearnDecision { choice: a0 }, GameAction::LearnDecision { choice: b0 }) => {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+                .then_with(|| cmp_val(a3, b3))
+        }
+        GameAction::AssignBlockerDamage { assignments: a0 } => {
+            let GameAction::AssignBlockerDamage { assignments: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            GameAction::SelectCategoryPermanents { choices: a0 },
-            GameAction::SelectCategoryPermanents { choices: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseKeptCreatures { kept: a0 },
-            GameAction::ChooseKeptCreatures { kept: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::ChooseX { value: a0 }, GameAction::ChooseX { value: b0 }) => cmp_val(a0, b0),
-        (
-            GameAction::SubmitPhyrexianChoices { choices: a0 },
-            GameAction::SubmitPhyrexianChoices { choices: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseManaColor {
-                choice: a0,
-                count: a1,
-            },
-            GameAction::ChooseManaColor {
+        GameAction::DistributeAmong { distribution: a0 } => {
+            let GameAction::DistributeAmong { distribution: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseCounterMoveDistribution { selections: a0 } => {
+            let GameAction::ChooseCounterMoveDistribution { selections: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseCountersToRemove { selections: a0 } => {
+            let GameAction::ChooseCountersToRemove { selections: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::SubmitPayAmount { amount: a0 } => {
+            let GameAction::SubmitPayAmount { amount: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::RetargetSpell { new_targets: a0 } => {
+            let GameAction::RetargetSpell { new_targets: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::LearnDecision { choice: a0 } => {
+            let GameAction::LearnDecision { choice: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        GameAction::SelectCategoryPermanents { choices: a0 } => {
+            let GameAction::SelectCategoryPermanents { choices: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseKeptCreatures { kept: a0 } => {
+            let GameAction::ChooseKeptCreatures { kept: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseX { value: a0 } => {
+            let GameAction::ChooseX { value: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::SubmitPhyrexianChoices { choices: a0 } => {
+            let GameAction::SubmitPhyrexianChoices { choices: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseManaColor {
+            choice: a0,
+            count: a1,
+        } => {
+            let GameAction::ChooseManaColor {
                 choice: b0,
                 count: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            GameAction::PayManaAbilityMana { payment: a0 },
-            GameAction::PayManaAbilityMana { payment: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::CastPreparedCopy { source: a0 },
-            GameAction::CastPreparedCopy { source: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::ChooseSpecializeColor { color: a0 },
-            GameAction::ChooseSpecializeColor { color: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::CastParadigmCopy { source: a0 },
-            GameAction::CastParadigmCopy { source: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::PassParadigmOffer, GameAction::PassParadigmOffer) => Ordering::Equal,
-        (GameAction::Debug(a0), GameAction::Debug(b0)) => cmp_debug_action(a0, b0),
-        (
-            GameAction::GrantDebugPermission { player_id: a0 },
-            GameAction::GrantDebugPermission { player_id: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            GameAction::RevokeDebugPermission { player_id: a0 },
-            GameAction::RevokeDebugPermission { player_id: b0 },
-        ) => cmp_val(a0, b0),
-        (GameAction::Concede { player_id: a0 }, GameAction::Concede { player_id: b0 }) => {
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::PayManaAbilityMana { payment: a0 } => {
+            let GameAction::PayManaAbilityMana { payment: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        // Unreachable: `cmp_game_actions` only calls this after the discriminants
-        // compared `Equal`, which implies the same variant. `Equal` is the safe
-        // total-order identity for the (never-taken) mismatched-variant case.
-        _ => Ordering::Equal,
+        GameAction::CastPreparedCopy { source: a0 } => {
+            let GameAction::CastPreparedCopy { source: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseSpecializeColor { color: a0 } => {
+            let GameAction::ChooseSpecializeColor { color: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::CastParadigmCopy { source: a0 } => {
+            let GameAction::CastParadigmCopy { source: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::PassParadigmOffer => {
+            let GameAction::PassParadigmOffer = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            Ordering::Equal
+        }
+        GameAction::Debug(a0) => {
+            let GameAction::Debug(b0) = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_debug_action(a0, b0)
+        }
+        GameAction::GrantDebugPermission { player_id: a0 } => {
+            let GameAction::GrantDebugPermission { player_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::RevokeDebugPermission { player_id: a0 } => {
+            let GameAction::RevokeDebugPermission { player_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::Concede { player_id: a0 } => {
+            let GameAction::Concede { player_id: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
     }
 }
 
@@ -669,296 +1027,385 @@ fn debug_action_rank(a: &DebugAction) -> u16 {
     }
 }
 
+/// Compares payloads of two debug actions with the same discriminant.
+/// Exhaustive on `DebugAction`; mismatched variants `unreachable!`.
 fn cmp_debug_action_payload(a: &DebugAction, b: &DebugAction) -> Ordering {
-    match (a, b) {
-        (
-            DebugAction::MoveToZone {
-                object_id: a0,
-                to_zone: a1,
-                library_position: a2,
-                simulate: a3,
-            },
-            DebugAction::MoveToZone {
+    match a {
+        DebugAction::MoveToZone {
+            object_id: a0,
+            to_zone: a1,
+            library_position: a2,
+            simulate: a3,
+        } => {
+            let DebugAction::MoveToZone {
                 object_id: b0,
                 to_zone: b1,
                 library_position: b2,
                 simulate: b3,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_opt_library_position(a2, b2))
-            .then_with(|| cmp_val(a3, b3)),
-        (
-            DebugAction::CreateCard {
-                card_name: a0,
-                owner: a1,
-                zone: a2,
-                attach_to: a3,
-                run_etb: a4,
-            },
-            DebugAction::CreateCard {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_opt_library_position(a2, b2))
+                .then_with(|| cmp_val(a3, b3))
+        }
+        DebugAction::CreateCard {
+            card_name: a0,
+            owner: a1,
+            zone: a2,
+            attach_to: a3,
+            run_etb: a4,
+        } => {
+            let DebugAction::CreateCard {
                 card_name: b0,
                 owner: b1,
                 zone: b2,
                 attach_to: b3,
                 run_etb: b4,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2))
-            .then_with(|| cmp_val(a3, b3))
-            .then_with(|| cmp_val(a4, b4)),
-        (
-            DebugAction::RemoveObject { object_id: a0 },
-            DebugAction::RemoveObject { object_id: b0 },
-        ) => cmp_val(a0, b0),
-        (DebugAction::Sacrifice { object_id: a0 }, DebugAction::Sacrifice { object_id: b0 }) => {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+                .then_with(|| cmp_val(a3, b3))
+                .then_with(|| cmp_val(a4, b4))
+        }
+        DebugAction::RemoveObject { object_id: a0 } => {
+            let DebugAction::RemoveObject { object_id: b0 } = b else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
             cmp_val(a0, b0)
         }
-        (
-            DebugAction::DrawCards {
-                player_id: a0,
-                count: a1,
-            },
-            DebugAction::DrawCards {
+        DebugAction::Sacrifice { object_id: a0 } => {
+            let DebugAction::Sacrifice { object_id: b0 } = b else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        DebugAction::DrawCards {
+            player_id: a0,
+            count: a1,
+        } => {
+            let DebugAction::DrawCards {
                 player_id: b0,
                 count: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::Mill {
-                player_id: a0,
-                count: a1,
-            },
-            DebugAction::Mill {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::Mill {
+            player_id: a0,
+            count: a1,
+        } => {
+            let DebugAction::Mill {
                 player_id: b0,
                 count: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::Reveal {
-                player_id: a0,
-                count: a1,
-            },
-            DebugAction::Reveal {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::Reveal {
+            player_id: a0,
+            count: a1,
+        } => {
+            let DebugAction::Reveal {
                 player_id: b0,
                 count: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::ShuffleLibrary { player_id: a0 },
-            DebugAction::ShuffleLibrary { player_id: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            DebugAction::Proliferate { player_id: a0 },
-            DebugAction::Proliferate { player_id: b0 },
-        ) => cmp_val(a0, b0),
-        (
-            DebugAction::SetBasePowerToughness {
-                object_id: a0,
-                power: a1,
-                toughness: a2,
-            },
-            DebugAction::SetBasePowerToughness {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::ShuffleLibrary { player_id: a0 } => {
+            let DebugAction::ShuffleLibrary { player_id: b0 } = b else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        DebugAction::Proliferate { player_id: a0 } => {
+            let DebugAction::Proliferate { player_id: b0 } = b else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        DebugAction::SetBasePowerToughness {
+            object_id: a0,
+            power: a1,
+            toughness: a2,
+        } => {
+            let DebugAction::SetBasePowerToughness {
                 object_id: b0,
                 power: b1,
                 toughness: b2,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2)),
-        (
-            DebugAction::ModifyCounters {
-                object_id: a0,
-                counter_type: a1,
-                delta: a2,
-            },
-            DebugAction::ModifyCounters {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+        }
+        DebugAction::ModifyCounters {
+            object_id: a0,
+            counter_type: a1,
+            delta: a2,
+        } => {
+            let DebugAction::ModifyCounters {
                 object_id: b0,
                 counter_type: b1,
                 delta: b2,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2)),
-        (
-            DebugAction::SetTapped {
-                object_id: a0,
-                tapped: a1,
-            },
-            DebugAction::SetTapped {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+        }
+        DebugAction::SetTapped {
+            object_id: a0,
+            tapped: a1,
+        } => {
+            let DebugAction::SetTapped {
                 object_id: b0,
                 tapped: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::SetPrepared {
-                object_id: a0,
-                prepared: a1,
-            },
-            DebugAction::SetPrepared {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::SetPrepared {
+            object_id: a0,
+            prepared: a1,
+        } => {
+            let DebugAction::SetPrepared {
                 object_id: b0,
                 prepared: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::SetController {
-                object_id: a0,
-                controller: a1,
-            },
-            DebugAction::SetController {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::SetController {
+            object_id: a0,
+            controller: a1,
+        } => {
+            let DebugAction::SetController {
                 object_id: b0,
                 controller: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::SetSummoningSickness {
-                object_id: a0,
-                sick: a1,
-            },
-            DebugAction::SetSummoningSickness {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::SetSummoningSickness {
+            object_id: a0,
+            sick: a1,
+        } => {
+            let DebugAction::SetSummoningSickness {
                 object_id: b0,
                 sick: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::SetFaceState {
-                object_id: a0,
-                face_down: a1,
-                transformed: a2,
-                flipped: a3,
-            },
-            DebugAction::SetFaceState {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::SetFaceState {
+            object_id: a0,
+            face_down: a1,
+            transformed: a2,
+            flipped: a3,
+        } => {
+            let DebugAction::SetFaceState {
                 object_id: b0,
                 face_down: b1,
                 transformed: b2,
                 flipped: b3,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2))
-            .then_with(|| cmp_val(a3, b3)),
-        (
-            DebugAction::Attach {
-                object_id: a0,
-                target: a1,
-            },
-            DebugAction::Attach {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+                .then_with(|| cmp_val(a3, b3))
+        }
+        DebugAction::Attach {
+            object_id: a0,
+            target: a1,
+        } => {
+            let DebugAction::Attach {
                 object_id: b0,
                 target: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (DebugAction::Detach { object_id: a0 }, DebugAction::Detach { object_id: b0 }) => {
-            cmp_val(a0, b0)
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
         }
-        (
-            DebugAction::GrantKeyword {
-                object_id: a0,
-                keyword: a1,
-            },
-            DebugAction::GrantKeyword {
+        DebugAction::Detach { object_id: a0 } => {
+            let DebugAction::Detach { object_id: b0 } = b else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            {
+                cmp_val(a0, b0)
+            }
+        }
+        DebugAction::GrantKeyword {
+            object_id: a0,
+            keyword: a1,
+        } => {
+            let DebugAction::GrantKeyword {
                 object_id: b0,
                 keyword: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(&a1.kind(), &b1.kind())),
-        (
-            DebugAction::RemoveKeyword {
-                object_id: a0,
-                keyword: a1,
-            },
-            DebugAction::RemoveKeyword {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(&a1.kind(), &b1.kind()))
+        }
+        DebugAction::RemoveKeyword {
+            object_id: a0,
+            keyword: a1,
+        } => {
+            let DebugAction::RemoveKeyword {
                 object_id: b0,
                 keyword: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(&a1.kind(), &b1.kind())),
-        (
-            DebugAction::SetLife {
-                player_id: a0,
-                life: a1,
-            },
-            DebugAction::SetLife {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(&a1.kind(), &b1.kind()))
+        }
+        DebugAction::SetLife {
+            player_id: a0,
+            life: a1,
+        } => {
+            let DebugAction::SetLife {
                 player_id: b0,
                 life: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::ModifyPlayerCounters {
-                player_id: a0,
-                counter_kind: a1,
-                delta: a2,
-            },
-            DebugAction::ModifyPlayerCounters {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::ModifyPlayerCounters {
+            player_id: a0,
+            counter_kind: a1,
+            delta: a2,
+        } => {
+            let DebugAction::ModifyPlayerCounters {
                 player_id: b0,
                 counter_kind: b1,
                 delta: b2,
-            },
-        ) => cmp_val(a0, b0)
-            .then_with(|| cmp_val(a1, b1))
-            .then_with(|| cmp_val(a2, b2)),
-        (
-            DebugAction::ModifyEnergy {
-                player_id: a0,
-                delta: a1,
-            },
-            DebugAction::ModifyEnergy {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+                .then_with(|| cmp_val(a1, b1))
+                .then_with(|| cmp_val(a2, b2))
+        }
+        DebugAction::ModifyEnergy {
+            player_id: a0,
+            delta: a1,
+        } => {
+            let DebugAction::ModifyEnergy {
                 player_id: b0,
                 delta: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::AddMana {
-                player_id: a0,
-                mana: a1,
-            },
-            DebugAction::AddMana {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::AddMana {
+            player_id: a0,
+            mana: a1,
+        } => {
+            let DebugAction::AddMana {
                 player_id: b0,
                 mana: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::SetInfiniteMana {
-                player_id: a0,
-                enabled: a1,
-            },
-            DebugAction::SetInfiniteMana {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::SetInfiniteMana {
+            player_id: a0,
+            enabled: a1,
+        } => {
+            let DebugAction::SetInfiniteMana {
                 player_id: b0,
                 enabled: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::SetPhase {
-                phase: a0,
-                active_player: a1,
-            },
-            DebugAction::SetPhase {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::SetPhase {
+            phase: a0,
+            active_player: a1,
+        } => {
+            let DebugAction::SetPhase {
                 phase: b0,
                 active_player: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (DebugAction::RunStateBasedActions, DebugAction::RunStateBasedActions) => Ordering::Equal,
-        (
-            DebugAction::CreateToken {
-                request: a0,
-                run_etb: a1,
-            },
-            DebugAction::CreateToken {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::RunStateBasedActions => {
+            let DebugAction::RunStateBasedActions = b else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            Ordering::Equal
+        }
+        DebugAction::CreateToken {
+            request: a0,
+            run_etb: a1,
+        } => {
+            let DebugAction::CreateToken {
                 request: b0,
                 run_etb: b1,
-            },
-        ) => cmp_debug_token_request(a0, b0).then_with(|| cmp_val(a1, b1)),
-        (
-            DebugAction::CreateTokenCopy {
-                source_id: a0,
-                owner: a1,
-            },
-            DebugAction::CreateTokenCopy {
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_debug_token_request(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        DebugAction::CreateTokenCopy {
+            source_id: a0,
+            owner: a1,
+        } => {
+            let DebugAction::CreateTokenCopy {
                 source_id: b0,
                 owner: b1,
-            },
-        ) => cmp_val(a0, b0).then_with(|| cmp_val(a1, b1)),
-        // Unreachable: reached only after `debug_action_rank` compared `Equal`,
-        // which implies the same variant.
-        _ => Ordering::Equal,
+            } = b
+            else {
+                unreachable!("cmp_debug_action_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
     }
 }
 
