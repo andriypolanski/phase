@@ -14371,7 +14371,7 @@ fn quantity_ref_is_board_state_relative(qty: &QuantityRef) -> bool {
 /// without routing through `enter_payment_step`. Removal-first and `{X}` detours
 /// already hoist mana through `finalize_mana_payment`, which shares this pause
 /// helper — this path covers bare mana + non-removal residual tails only.
-fn try_pause_activation_phyrexian_payment(
+pub(super) fn try_pause_activation_phyrexian_payment(
     state: &mut GameState,
     player: PlayerId,
     source_id: ObjectId,
@@ -15082,20 +15082,6 @@ pub fn handle_activate_ability(
                 events,
             );
         }
-
-        // CR 107.4f + GH #600: K'rrik/Phyrexian per-shard consent for activated
-        // mana legs that would otherwise be paid inline after target auto-select.
-        if let Some(waiting) = try_pause_activation_phyrexian_payment(
-            state,
-            player,
-            source_id,
-            ability_index,
-            &resolved,
-            cost,
-            events,
-        ) {
-            return Ok(waiting);
-        }
     }
 
     let target_slots = build_target_slots(state, &resolved)?;
@@ -15119,6 +15105,17 @@ pub fn handle_activate_ability(
                     ));
                 }
                 stamp_self_ref_discard_cost_paid_object(state, source_id, &mut resolved, cost);
+                if let Some(waiting) = try_pause_activation_phyrexian_payment(
+                    state,
+                    player,
+                    source_id,
+                    ability_index,
+                    &resolved,
+                    cost,
+                    events,
+                ) {
+                    return Ok(waiting);
+                }
                 if let PaymentOutcome::Paused { remaining_cost } = pay_ability_cost_for_activation(
                     state,
                     player,
@@ -15225,6 +15222,17 @@ pub fn handle_activate_ability(
             ));
         }
         stamp_self_ref_discard_cost_paid_object(state, source_id, &mut resolved, cost);
+        if let Some(waiting) = try_pause_activation_phyrexian_payment(
+            state,
+            player,
+            source_id,
+            ability_index,
+            &resolved,
+            cost,
+            events,
+        ) {
+            return Ok(waiting);
+        }
         if let PaymentOutcome::Paused { remaining_cost } = pay_ability_cost_for_activation(
             state,
             player,
