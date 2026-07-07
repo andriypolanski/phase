@@ -4029,7 +4029,10 @@ fn apply_combat_assignment_rule_effects_filtered(
 /// affected objects. This is run AFTER all keyword grants/removals are applied,
 /// so the denial wins regardless of grant timestamp — the rules-correct "can't
 /// have" outcome (a concurrent anthem can't restore a denied keyword).
-fn apply_cant_have_keyword_denials(state: &mut GameState, restrict_to: Option<&BTreeSet<ObjectId>>) {
+fn apply_cant_have_keyword_denials(
+    state: &mut GameState,
+    restrict_to: Option<&BTreeSet<ObjectId>>,
+) {
     // Collect (affected object, denied keyword) pairs under an immutable borrow,
     // then strip — avoids a borrow conflict with the per-object mutation.
     let mut denials: Vec<(ObjectId, Keyword)> = Vec::new();

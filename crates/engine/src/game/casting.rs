@@ -882,10 +882,11 @@ pub fn spell_objects_available_to_cast(state: &GameState, player: PlayerId) -> V
     // CR 117.1c: per-turn frequency is enforced inside the helper, not by
     // active-player gating, so the same logic covers the rare case of an
     // `Unlimited` printing on either player's turn.
-    let exile_permission_ids: BTreeSet<ObjectId> = exile_objects_castable_by_permission(state, player)
-        .iter()
-        .map(|(obj_id, _source_id, _freq)| *obj_id)
-        .collect();
+    let exile_permission_ids: BTreeSet<ObjectId> =
+        exile_objects_castable_by_permission(state, player)
+            .iter()
+            .map(|(obj_id, _source_id, _freq)| *obj_id)
+            .collect();
     objects.extend(exile_permission_ids);
 
     // CR 401.5 + CR 118.9 + CR 601.2a: Top card of library castable via a
