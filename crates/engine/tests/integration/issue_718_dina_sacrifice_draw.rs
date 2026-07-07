@@ -113,7 +113,12 @@ fn dina_draw_trigger_fires_only_once_per_turn() {
     first.assert_hand_drawn(P0, 1);
     first.assert_life_delta(P0, 3);
 
-    runner.state_mut().objects.get_mut(&dina).expect("Dina").tapped = false;
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&dina)
+        .expect("Dina")
+        .tapped = false;
 
     let second = runner
         .activate(dina, 0)
@@ -125,7 +130,7 @@ fn dina_draw_trigger_fires_only_once_per_turn() {
 
     let hand_after_first = first.state().players[0].hand.len();
     assert_eq!(
-        runner.state().players[0].hand.len(),
+        second.state().players[0].hand.len(),
         hand_after_first,
         "the second sacrifice must not draw again this turn"
     );
@@ -158,7 +163,7 @@ fn dina_draws_when_you_sacrifice_a_token_creature() {
     outcome.assert_hand_drawn(P0, 1);
     outcome.assert_life_delta(P0, 2);
     assert!(
-        !runner.state().objects.contains_key(&token),
+        !outcome.state().objects.contains_key(&token),
         "sacrificed tokens cease to exist (CR 111.7)"
     );
 }
