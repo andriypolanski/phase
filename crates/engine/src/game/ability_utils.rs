@@ -1997,14 +1997,14 @@ fn collect_target_slots(
         if attach_host_filter_needs_target_slot(target) {
             let legal_targets =
                 legal_targets_for_ability_filter(state, ability, target, &acc.slots);
-            if legal_targets.is_empty() && !ability.targeting_is_optional() {
+            if legal_targets.is_empty() && !ability.optional_targeting {
                 return Err(EngineError::ActionNotAllowed(
                     "No legal targets available".to_string(),
                 ));
             }
             acc.push(TargetSelectionSlot {
                 legal_targets,
-                optional: ability.targeting_is_optional(),
+                optional: ability.optional_targeting,
             });
         }
     } else if let Effect::CreateDamageReplacement {
@@ -2891,6 +2891,29 @@ fn collect_attach_attachment_target_slot_specs(
     }
 }
 
+/// Slot bounds for the attachment operand of `Effect::Attach`, mirroring
+/// `collect_attach_attachment_target_slots` so assignment consumes exactly the
+/// surfaced attachment window and does not bleed into a trailing host slot.
+fn attach_attachment_slot_bounds(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    attachment: &TargetFilter,
+) -> Result<Option<MultiTargetBounds>, EngineError> {
+    if !attach_attachment_filter_needs_target_slot(attachment) {
+        return Ok(None);
+    }
+    if let Some(spec) = &ability.multi_target {
+        let legal_targets = legal_targets_for_ability_filter(state, ability, attachment, &[]);
+        let bounds = resolve_multi_target_bounds(state, ability, spec, legal_targets.len())?;
+        Ok(Some(bounds))
+    } else {
+        Ok(Some(MultiTargetBounds {
+            min: usize::from(!ability.targeting_is_optional()),
+            max: 1,
+        }))
+    }
+}
+
 fn assign_attach_attachment_selected_slots(
     state: &GameState,
     ability: &mut ResolvedAbility,
@@ -2898,15 +2921,13 @@ fn assign_attach_attachment_selected_slots(
     selected_slots: &[Option<TargetRef>],
     next_slot: &mut usize,
 ) -> Result<(), EngineError> {
-    if !attach_attachment_filter_needs_target_slot(attachment) {
+    let Some(bounds) = attach_attachment_slot_bounds(state, ability, attachment)? else {
         return Ok(());
-    }
+    };
     let allow_skip = ability.targeting_is_optional();
-    if let Some(spec) = ability.multi_target.as_ref() {
-        let remaining_after_current = selected_slots.len().saturating_sub(*next_slot);
-        let bounds = resolve_multi_target_bounds(state, ability, spec, remaining_after_current)
-            .map_err(|err| EngineError::InvalidAction(format!("{err:?}")))?;
-        let end_slot = *next_slot + remaining_after_current.min(bounds.max);
+    if ability.multi_target.is_some() {
+        let attachment_slot_count = bounds.max;
+        let end_slot = *next_slot + attachment_slot_count;
         let Some(window) = selected_slots.get(*next_slot..end_slot) else {
             return Err(EngineError::InvalidAction(
                 "Missing target selection".to_string(),
@@ -2950,19 +2971,16 @@ fn assign_attach_attachment_declared_targets(
     targets: &[TargetRef],
     next_target: &mut usize,
 ) -> Result<(), EngineError> {
-    if !attach_side_needs_target_slot(attachment, true) {
+    let Some(bounds) = attach_attachment_slot_bounds(state, ability, attachment)? else {
         return Ok(());
-    }
+    };
     let allow_skip = ability.targeting_is_optional();
-    if let Some(spec) = ability.multi_target.as_ref() {
-        let remaining = targets.len().saturating_sub(*next_target);
-        let bounds = resolve_multi_target_bounds(state, ability, spec, remaining)
-            .map_err(|err| EngineError::InvalidAction(format!("{err:?}")))?;
-        for _ in 0..bounds.max {
+    if ability.multi_target.is_some() {
+        for slot_index in 0..bounds.max {
             if let Some(target) = targets.get(*next_target) {
                 ability.targets.push(target.clone());
                 *next_target += 1;
-            } else if !allow_skip && ability.targets.len() < bounds.min {
+            } else if slot_index < bounds.min {
                 return Err(EngineError::InvalidAction(
                     "Missing required target".to_string(),
                 ));
@@ -3676,7 +3694,7 @@ fn collect_target_slot_specs(
             *next_instance += 1;
             specs.push(TargetSlotSpec {
                 filter: target.clone(),
-                optional: ability.targeting_is_optional(),
+                optional: ability.optional_targeting,
                 instance: id,
             });
         }
@@ -5458,7 +5476,7 @@ fn assign_targets_recursive(
             if let Some(target) = targets.get(*next_target) {
                 ability.targets.push(target.clone());
                 *next_target += 1;
-            } else if !ability.targeting_is_optional() {
+            } else if !ability.optional_targeting {
                 return Err(EngineError::InvalidAction(
                     "Missing required target".to_string(),
                 ));
@@ -5733,7 +5751,7 @@ fn assign_selected_slots_recursive(
             };
             match selected_slot {
                 Some(target) => ability.targets.push(target.clone()),
-                None if ability.targeting_is_optional() => {}
+                None if ability.optional_targeting => {}
                 None => {
                     return Err(EngineError::InvalidAction(
                         "Missing required target".to_string(),
@@ -10088,6 +10106,85 @@ mod tests {
         assert_eq!(
             flatten_targets_in_chain(&ability),
             vec![TargetRef::Player(PlayerId(1))]
+        );
+    }
+
+    /// CR 115.1d + CR 701.3a: variable-count Equipment attachment slots must not
+    /// consume a trailing explicit host target (issue #5339 review).
+    #[test]
+    fn assign_selected_slots_attach_multi_target_preserves_explicit_host() {
+        let mut state = GameState::new_two_player(42);
+        let source = ObjectId(1);
+        let equipment_a = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(0),
+            "Bonesplitter".to_string(),
+            Zone::Battlefield,
+        );
+        let equipment_b = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "Skullclamp".to_string(),
+            Zone::Battlefield,
+        );
+        let host = create_object(
+            &mut state,
+            CardId(12),
+            PlayerId(0),
+            "Grizzly Bears".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [equipment_a, equipment_b] {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Equipment".to_string());
+        }
+        {
+            let obj = state.objects.get_mut(&host).unwrap();
+            obj.card_types.core_types = vec![CoreType::Creature];
+        }
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Attach {
+                attachment: TargetFilter::Typed(
+                    TypedFilter::new(TypeFilter::Artifact)
+                        .subtype("Equipment".to_string())
+                        .controller(ControllerRef::You),
+                ),
+                target: TargetFilter::Typed(TypedFilter::creature()),
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.multi_target = Some(MultiTargetSpec::unlimited(0));
+
+        let slots = build_target_slots(&state, &ability).expect("slot build");
+        assert_eq!(
+            slots.len(),
+            3,
+            "two optional Equipment slots plus one required host slot"
+        );
+        assert!(slots[0].optional && slots[1].optional);
+        assert!(!slots[2].optional, "explicit host must stay required");
+
+        assign_selected_slots_in_chain(
+            &state,
+            &mut ability,
+            &[
+                Some(TargetRef::Object(equipment_a)),
+                None,
+                Some(TargetRef::Object(host)),
+            ],
+        )
+        .expect("assign attachment window then host");
+
+        assert_eq!(
+            ability.targets,
+            vec![TargetRef::Object(equipment_a), TargetRef::Object(host),],
+            "host must not be folded into the attachment multi-target window"
         );
     }
 
