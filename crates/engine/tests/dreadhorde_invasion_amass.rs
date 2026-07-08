@@ -8,17 +8,17 @@
 //!
 //! CR ANCHORS (verified against docs/MagicCompRules.txt):
 //!   * CR 701.47a — Amass [subtype] N creates an Army token / puts counters /
-//!                 adds the subtype.
-//!   * CR 603.1  — Triggered ability places on the stack and resolves its
-//!                 effect.
+//!     adds the subtype.
+//!   * CR 603.1 — Triggered ability places on the stack and resolves its
+//!     effect.
 //!   * CR 608.2c — Instructions are followed in written order (LoseLife then
-//!                 Amass).
+//!     Amass).
 //!
 //! CARD TEXT (verified from client/public/card-data.json):
-//!   "At the beginning of your upkeep, you lose 1 life and amass Zombies 1.
-//!    (Put a +1/+1 counter on an Army you control. It's also a Zombie. If you
-//!    don't control an Army, create a 0/0 black Zombie Army creature token
-//!    first.)"
+//! "At the beginning of your upkeep, you lose 1 life and amass Zombies 1.
+//! (Put a +1/+1 counter on an Army you control. It's also a Zombie. If you
+//! don't control an Army, create a 0/0 black Zombie Army creature token
+//! first.)"
 
 use engine::game::scenario::{GameScenario, P0};
 use engine::types::card_type::CoreType;
