@@ -1794,9 +1794,8 @@ pub fn score_candidates_with_session(
         merge_into(&mut acc, &mut positions, &mut counts, scored);
     }
     let mut out = finalize_mean(acc, counts, k as usize);
-    if config.execution_mode.is_measurement() {
-        out.sort_by_cached_key(|(action, _)| action_order_key(action));
-    }
+    // Issue #4878: canonical order after K-sample merge (measurement + play).
+    out.sort_by(|a, b| a.0.cmp_stable(&b.0));
     out
 }
 

@@ -413,6 +413,12 @@ fn cmp_payload(a: &GameAction, b: &GameAction) -> Ordering {
                 cmp_val(a0, b0)
             }
         }
+        GameAction::SubmitLifeRedistribution { option_index: a0 } => {
+            let GameAction::SubmitLifeRedistribution { option_index: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
         GameAction::ChooseDamageSource { source: a0 } => {
             let GameAction::ChooseDamageSource { source: b0 } = b else {
                 unreachable!("cmp_payload: same-variant invariant");
