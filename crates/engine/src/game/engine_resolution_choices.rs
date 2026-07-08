@@ -77,7 +77,7 @@ fn batch_or_drain_observer_triggers(
     }
 }
 
-/// CR 603.2 + CR 603.3b + CR 707.10: after a search tutor's put/shuffle
+/// CR 603.2 + CR 603.3b + CR 701.23: after a search tutor's put/shuffle
 /// continuation drains, park ETB/dies/discards observers for the next priority
 /// checkpoint instead of dispatching them while the test harness (or UI) may
 /// still be inside the same `SelectCards` action (issue #5336).
