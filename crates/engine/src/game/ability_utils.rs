@@ -1993,20 +1993,18 @@ fn collect_target_slots(
             });
         }
     } else if let Effect::Attach { attachment, target } = &ability.effect {
-        for (is_attachment, filter) in [(true, attachment), (false, target)] {
-            if !attach_side_needs_target_slot(filter, is_attachment) {
-                continue;
-            }
+        collect_attach_attachment_target_slots(state, ability, attachment, acc)?;
+        if attach_host_filter_needs_target_slot(target) {
             let legal_targets =
-                legal_targets_for_ability_filter(state, ability, filter, &acc.slots);
-            if legal_targets.is_empty() && !ability.optional_targeting {
+                legal_targets_for_ability_filter(state, ability, target, &acc.slots);
+            if legal_targets.is_empty() && !ability.targeting_is_optional() {
                 return Err(EngineError::ActionNotAllowed(
                     "No legal targets available".to_string(),
                 ));
             }
             acc.push(TargetSelectionSlot {
                 legal_targets,
-                optional: ability.optional_targeting,
+                optional: ability.targeting_is_optional(),
             });
         }
     } else if let Effect::CreateDamageReplacement {
@@ -2824,6 +2822,165 @@ fn attach_side_needs_target_slot(filter: &TargetFilter, is_attachment: bool) -> 
     }
 }
 
+/// CR 115.1d: "attach any number of target Equipment" carries a `multi_target`
+/// spec with min 0. Honor it on the attachment operand instead of the single-slot
+/// `optional_targeting` path so the controller can choose zero Equipment.
+fn collect_attach_attachment_target_slots(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    attachment: &TargetFilter,
+    acc: &mut SlotAccumulator,
+) -> Result<(), EngineError> {
+    if !attach_attachment_filter_needs_target_slot(attachment) {
+        return Ok(());
+    }
+    let legal_targets = legal_targets_for_ability_filter(state, ability, attachment, &acc.slots);
+    if legal_targets.is_empty() && !ability.targeting_is_optional() {
+        return Err(EngineError::ActionNotAllowed(
+            "No legal targets available".to_string(),
+        ));
+    }
+    if let Some(spec) = ability.multi_target.as_ref() {
+        let bounds = resolve_multi_target_bounds(state, ability, spec, legal_targets.len())?;
+        for slot_index in 0..bounds.max {
+            acc.push(TargetSelectionSlot {
+                legal_targets: legal_targets.clone(),
+                optional: slot_index >= bounds.min,
+            });
+        }
+    } else {
+        acc.push(TargetSelectionSlot {
+            legal_targets,
+            optional: ability.targeting_is_optional(),
+        });
+    }
+    Ok(())
+}
+
+fn collect_attach_attachment_target_slot_specs(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    attachment: &TargetFilter,
+    specs: &mut Vec<TargetSlotSpec>,
+    next_instance: &mut usize,
+) {
+    if !attach_attachment_filter_needs_target_slot(attachment) {
+        return;
+    }
+    if let Some(spec) = ability.multi_target.as_ref() {
+        let legal_targets = legal_targets_for_ability_filter(state, ability, attachment, &[]);
+        if let Ok(bounds) = resolve_multi_target_bounds(state, ability, spec, legal_targets.len()) {
+            let id = TargetInstanceId(*next_instance);
+            *next_instance += 1;
+            for slot_index in 0..bounds.max {
+                specs.push(TargetSlotSpec {
+                    filter: attachment.clone(),
+                    optional: slot_index >= bounds.min,
+                    instance: id,
+                });
+            }
+        }
+    } else {
+        let id = TargetInstanceId(*next_instance);
+        *next_instance += 1;
+        specs.push(TargetSlotSpec {
+            filter: attachment.clone(),
+            optional: ability.targeting_is_optional(),
+            instance: id,
+        });
+    }
+}
+
+fn assign_attach_attachment_selected_slots(
+    state: &GameState,
+    ability: &mut ResolvedAbility,
+    attachment: &TargetFilter,
+    selected_slots: &[Option<TargetRef>],
+    next_slot: &mut usize,
+) -> Result<(), EngineError> {
+    if !attach_attachment_filter_needs_target_slot(attachment) {
+        return Ok(());
+    }
+    let allow_skip = ability.targeting_is_optional();
+    if let Some(spec) = ability.multi_target.as_ref() {
+        let remaining_after_current = selected_slots.len().saturating_sub(*next_slot);
+        let bounds = resolve_multi_target_bounds(state, ability, spec, remaining_after_current)
+            .map_err(|err| EngineError::InvalidAction(format!("{err:?}")))?;
+        let end_slot = *next_slot + remaining_after_current.min(bounds.max);
+        let Some(window) = selected_slots.get(*next_slot..end_slot) else {
+            return Err(EngineError::InvalidAction(
+                "Missing target selection".to_string(),
+            ));
+        };
+        if window.len() < bounds.min
+            || window[..bounds.min.min(window.len())]
+                .iter()
+                .any(Option::is_none)
+        {
+            return Err(EngineError::InvalidAction(
+                "Missing required target".to_string(),
+            ));
+        }
+        ability.targets.extend(window.iter().flatten().cloned());
+        *next_slot = end_slot;
+    } else {
+        let Some(selected_slot) = selected_slots.get(*next_slot) else {
+            return Err(EngineError::InvalidAction(
+                "Missing target selection".to_string(),
+            ));
+        };
+        match selected_slot {
+            Some(target) => ability.targets.push(target.clone()),
+            None if allow_skip => {}
+            None => {
+                return Err(EngineError::InvalidAction(
+                    "Missing required target".to_string(),
+                ));
+            }
+        }
+        *next_slot += 1;
+    }
+    Ok(())
+}
+
+fn assign_attach_attachment_declared_targets(
+    state: &GameState,
+    ability: &mut ResolvedAbility,
+    attachment: &TargetFilter,
+    targets: &[TargetRef],
+    next_target: &mut usize,
+) -> Result<(), EngineError> {
+    if !attach_side_needs_target_slot(attachment, true) {
+        return Ok(());
+    }
+    let allow_skip = ability.targeting_is_optional();
+    if let Some(spec) = ability.multi_target.as_ref() {
+        let remaining = targets.len().saturating_sub(*next_target);
+        let bounds = resolve_multi_target_bounds(state, ability, spec, remaining)
+            .map_err(|err| EngineError::InvalidAction(format!("{err:?}")))?;
+        for _ in 0..bounds.max {
+            if let Some(target) = targets.get(*next_target) {
+                ability.targets.push(target.clone());
+                *next_target += 1;
+            } else if !allow_skip && ability.targets.len() < bounds.min {
+                return Err(EngineError::InvalidAction(
+                    "Missing required target".to_string(),
+                ));
+            } else {
+                break;
+            }
+        }
+    } else if let Some(target) = targets.get(*next_target) {
+        ability.targets.push(target.clone());
+        *next_target += 1;
+    } else if !allow_skip {
+        return Err(EngineError::InvalidAction(
+            "Missing required target".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Tree-walks a `TargetFilter` and returns true if any `TypedFilter` inside it
 /// carries a `controller` (or `Owned` property) satisfying `pred`. Shared walker
 /// behind `filter_references_target_player` / `filter_references_target_opponent`.
@@ -3507,16 +3664,21 @@ fn collect_target_slot_specs(
             }
         }
     } else if let Effect::Attach { attachment, target } = &ability.effect {
-        for (is_attachment, filter) in [(true, attachment), (false, target)] {
-            if attach_side_needs_target_slot(filter, is_attachment) {
-                let id = TargetInstanceId(*next_instance);
-                *next_instance += 1;
-                specs.push(TargetSlotSpec {
-                    filter: filter.clone(),
-                    optional: ability.optional_targeting,
-                    instance: id,
-                });
-            }
+        collect_attach_attachment_target_slot_specs(
+            state,
+            ability,
+            attachment,
+            specs,
+            next_instance,
+        );
+        if attach_host_filter_needs_target_slot(target) {
+            let id = TargetInstanceId(*next_instance);
+            *next_instance += 1;
+            specs.push(TargetSlotSpec {
+                filter: target.clone(),
+                optional: ability.targeting_is_optional(),
+                instance: id,
+            });
         }
     } else if let Effect::CreateDamageReplacement {
         recipient_object_filter,
@@ -5283,16 +5445,23 @@ fn assign_targets_recursive(
     }
 
     if let Effect::Attach { attachment, target } = &ability.effect {
-        for (is_attachment, filter) in [(true, attachment), (false, target)] {
-            if attach_side_needs_target_slot(filter, is_attachment) {
-                if let Some(target) = targets.get(*next_target) {
-                    ability.targets.push(target.clone());
-                    *next_target += 1;
-                } else if !ability.optional_targeting {
-                    return Err(EngineError::InvalidAction(
-                        "Missing required target".to_string(),
-                    ));
-                }
+        let attachment = attachment.clone();
+        let target = target.clone();
+        assign_attach_attachment_declared_targets(
+            state,
+            ability,
+            &attachment,
+            targets,
+            next_target,
+        )?;
+        if attach_host_filter_needs_target_slot(&target) {
+            if let Some(target) = targets.get(*next_target) {
+                ability.targets.push(target.clone());
+                *next_target += 1;
+            } else if !ability.targeting_is_optional() {
+                return Err(EngineError::InvalidAction(
+                    "Missing required target".to_string(),
+                ));
             }
         }
         if defers_sub_ability_target_selection(&ability.effect) {
@@ -5547,24 +5716,31 @@ fn assign_selected_slots_recursive(
     }
 
     if let Effect::Attach { attachment, target } = &ability.effect {
-        for (is_attachment, filter) in [(true, attachment), (false, target)] {
-            if attach_side_needs_target_slot(filter, is_attachment) {
-                let Some(selected_slot) = selected_slots.get(*next_slot) else {
+        let attachment = attachment.clone();
+        let target = target.clone();
+        assign_attach_attachment_selected_slots(
+            state,
+            ability,
+            &attachment,
+            selected_slots,
+            next_slot,
+        )?;
+        if attach_host_filter_needs_target_slot(&target) {
+            let Some(selected_slot) = selected_slots.get(*next_slot) else {
+                return Err(EngineError::InvalidAction(
+                    "Missing target selection".to_string(),
+                ));
+            };
+            match selected_slot {
+                Some(target) => ability.targets.push(target.clone()),
+                None if ability.targeting_is_optional() => {}
+                None => {
                     return Err(EngineError::InvalidAction(
-                        "Missing target selection".to_string(),
+                        "Missing required target".to_string(),
                     ));
-                };
-                match selected_slot {
-                    Some(target) => ability.targets.push(target.clone()),
-                    None if ability.optional_targeting => {}
-                    None => {
-                        return Err(EngineError::InvalidAction(
-                            "Missing required target".to_string(),
-                        ));
-                    }
                 }
-                *next_slot += 1;
             }
+            *next_slot += 1;
         }
         if defers_sub_ability_target_selection(&ability.effect) {
             assign_selected_slots_after_deferred_effect(
