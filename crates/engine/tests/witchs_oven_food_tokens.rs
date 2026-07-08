@@ -3,7 +3,7 @@
 //!
 //! CR 608.2c: "Create a Food token. If … create two Food tokens instead."
 //! CR 400.7j: the sacrificed creature's LKI toughness is checked at resolution.
-//! CR 117.1: the sacrifice cost object is the referent for "the sacrificed creature".
+//! CR 608.2k: the sacrifice cost object is the referent for "the sacrificed creature".
 
 use engine::game::scenario::{GameScenario, P0};
 use engine::types::card_type::CoreType;
