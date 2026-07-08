@@ -2964,10 +2964,34 @@ fn assign_attach_attachment_selected_slots(
     Ok(())
 }
 
+fn attach_declared_host_slot_reserve(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    host: &TargetFilter,
+    targets: &[TargetRef],
+    next_target: usize,
+) -> usize {
+    if !attach_host_filter_needs_target_slot(host) {
+        return 0;
+    }
+    if !ability.optional_targeting {
+        return 1;
+    }
+    let Some(last) = targets.last() else {
+        return 0;
+    };
+    if targets.len() <= next_target {
+        return 0;
+    }
+    let legal_hosts = legal_targets_for_ability_filter(state, ability, host, &[]);
+    usize::from(legal_hosts.contains(last))
+}
+
 fn assign_attach_attachment_declared_targets(
     state: &GameState,
     ability: &mut ResolvedAbility,
     attachment: &TargetFilter,
+    host: &TargetFilter,
     targets: &[TargetRef],
     next_target: &mut usize,
 ) -> Result<(), EngineError> {
@@ -2976,7 +3000,16 @@ fn assign_attach_attachment_declared_targets(
     };
     let allow_skip = ability.targeting_is_optional();
     if ability.multi_target.is_some() {
-        for slot_index in 0..bounds.max {
+        let remaining = targets.len().saturating_sub(*next_target);
+        let host_reserved =
+            attach_declared_host_slot_reserve(state, ability, host, targets, *next_target);
+        let attachment_window = remaining.saturating_sub(host_reserved).min(bounds.max);
+        if remaining.saturating_sub(host_reserved) < bounds.min {
+            return Err(EngineError::InvalidAction(
+                "Missing required target".to_string(),
+            ));
+        }
+        for slot_index in 0..attachment_window {
             if let Some(target) = targets.get(*next_target) {
                 ability.targets.push(target.clone());
                 *next_target += 1;
@@ -5469,6 +5502,7 @@ fn assign_targets_recursive(
             state,
             ability,
             &attachment,
+            &target,
             targets,
             next_target,
         )?;
@@ -10185,6 +10219,73 @@ mod tests {
             ability.targets,
             vec![TargetRef::Object(equipment_a), TargetRef::Object(host),],
             "host must not be folded into the attachment multi-target window"
+        );
+    }
+
+    /// CR 601.2c: compact declared targets (no per-slot `None` padding) must
+    /// reserve the explicit host on the attachment operand window — mirrors the
+    /// selected-slot path (issue #5339 review).
+    #[test]
+    fn assign_targets_in_chain_attach_compact_declared_preserves_explicit_host() {
+        let mut state = GameState::new_two_player(42);
+        let source = ObjectId(1);
+        let equipment_a = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(0),
+            "Bonesplitter".to_string(),
+            Zone::Battlefield,
+        );
+        let _equipment_b = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "Skullclamp".to_string(),
+            Zone::Battlefield,
+        );
+        let host = create_object(
+            &mut state,
+            CardId(12),
+            PlayerId(0),
+            "Grizzly Bears".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [equipment_a, _equipment_b] {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Equipment".to_string());
+        }
+        {
+            let obj = state.objects.get_mut(&host).unwrap();
+            obj.card_types.core_types = vec![CoreType::Creature];
+        }
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Attach {
+                attachment: TargetFilter::Typed(
+                    TypedFilter::new(TypeFilter::Artifact)
+                        .subtype("Equipment".to_string())
+                        .controller(ControllerRef::You),
+                ),
+                target: TargetFilter::Typed(TypedFilter::creature()),
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.multi_target = Some(MultiTargetSpec::unlimited(0));
+
+        assign_targets_in_chain(
+            &state,
+            &mut ability,
+            &[TargetRef::Object(equipment_a), TargetRef::Object(host)],
+        )
+        .expect("compact declared targets: one Equipment plus required host");
+
+        assert_eq!(
+            ability.targets,
+            vec![TargetRef::Object(equipment_a), TargetRef::Object(host),],
+            "declared-target path must not consume the host as a second attachment"
         );
     }
 
