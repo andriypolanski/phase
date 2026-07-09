@@ -3506,6 +3506,7 @@ fn trigger_events_match_for_ordering(
     same_event_conflict: bool,
     batch_conflict: bool,
     c2_order_independent: bool,
+    disjoint_per_attacker_fanout: bool,
 ) -> bool {
     // C1 (CR 603.3b): same firing event auto-orders only when the identical
     // siblings' resolution functions provably COMMUTE — the `ability_rw` kind/
@@ -3548,13 +3549,13 @@ fn trigger_events_match_for_ordering(
                 return true;
             }
         }
-        // C0-distinct (CR 603.3b + CR 508.3): distinct firing events the batch
-        // profiler certifies conflict-clean auto-order without the coarse C2
-        // walker. Covers per-attacker fan-out (Stonehoof Chieftain #5335) where
-        // each sibling's event object is disjoint but the AST uses event context
-        // (`TriggeringSource`), so C2 stays fail-closed while ability_rw proves
-        // commutation.
-        return true;
+        // C0-distinct (CR 603.3b + CR 508.3): per-attacker fan-out whose event
+        // objects are proven disjoint can auto-order without the coarse C2
+        // walker. Other distinct-event groups still fall through to C2 so the
+        // sibling-mutable axis remains load-bearing.
+        if disjoint_per_attacker_fanout {
+            return true;
+        }
     }
 
     // C2 (adopted from #5084 + a series soundness conjunct, CR 603.3b): distinct
@@ -3822,6 +3823,7 @@ fn group_is_order_independent(state: &GameState, group: &[PendingTriggerContext]
                 same_event_conflict,
                 batch_conflict,
                 c2_order_independent,
+                disjoint_per_attacker_fanout,
             )
             && t.subject_match_count == first.pending.subject_match_count
             && t.may_trigger_origin == first.pending.may_trigger_origin
