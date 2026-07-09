@@ -4804,11 +4804,33 @@ fn rw_effect(
             // CR 611.2c: the player-chosen `target` slot names the affected object
             // when present; otherwise transient static grants (Stonehoof #5335)
             // carry `affected: TriggeringSource` on the nested static.
-            let tf = target.clone().or_else(|| {
-                static_abilities.iter().find_map(|s| s.affected.clone())
-            }).unwrap_or(TargetFilter::SelfRef);
-            let (mut p, sc) = obj(StateKind::ObjectPt, &tf);
-            place_object_write(&mut p, StateKind::SetMembership, scope_of(&tf, chain_root));
+            let target_filters: Vec<_> = target.clone().map_or_else(
+                || {
+                    let nested: Vec<_> = static_abilities
+                        .iter()
+                        .filter_map(|s| s.affected.clone())
+                        .collect();
+                    if nested.is_empty() {
+                        vec![TargetFilter::SelfRef]
+                    } else {
+                        nested
+                    }
+                },
+                |tf| vec![tf],
+            );
+            let mut p = RwProfile::empty();
+            let mut sc = None;
+            for tf in target_filters {
+                let (target_profile, target_scope) = obj(StateKind::ObjectPt, &tf);
+                p.merge(target_profile);
+                place_object_write(&mut p, StateKind::SetMembership, scope_of(&tf, chain_root));
+                sc = match (sc, target_scope) {
+                    (None, next) => next,
+                    (current, None) => current,
+                    (Some(current), Some(next)) if current == next => Some(current),
+                    (Some(_), Some(_)) => Some(WriteScope::External),
+                };
+            }
             if let Some(d) = duration {
                 p.merge(rw_duration(d));
             }
