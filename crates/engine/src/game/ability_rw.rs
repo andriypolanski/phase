@@ -4797,11 +4797,16 @@ fn rw_effect(
         }
         Effect::TurnFaceDown { target, profile: _ } => obj(StateKind::ObjectPt, target),
         Effect::GenericEffect {
-            static_abilities: _,
+            static_abilities,
             duration,
             target,
         } => {
-            let tf = target.clone().unwrap_or(TargetFilter::SelfRef);
+            // CR 611.2c: the player-chosen `target` slot names the affected object
+            // when present; otherwise transient static grants (Stonehoof #5335)
+            // carry `affected: TriggeringSource` on the nested static.
+            let tf = target.clone().or_else(|| {
+                static_abilities.iter().find_map(|s| s.affected.clone())
+            }).unwrap_or(TargetFilter::SelfRef);
             let (mut p, sc) = obj(StateKind::ObjectPt, &tf);
             place_object_write(&mut p, StateKind::SetMembership, scope_of(&tf, chain_root));
             if let Some(d) = duration {

@@ -3548,6 +3548,13 @@ fn trigger_events_match_for_ordering(
                 return true;
             }
         }
+        // C0-distinct (CR 603.3b + CR 508.3): distinct firing events the batch
+        // profiler certifies conflict-clean auto-order without the coarse C2
+        // walker. Covers per-attacker fan-out (Stonehoof Chieftain #5335) where
+        // each sibling's event object is disjoint but the AST uses event context
+        // (`TriggeringSource`), so C2 stays fail-closed while ability_rw proves
+        // commutation.
+        return true;
     }
 
     // C2 (adopted from #5084 + a series soundness conjunct, CR 603.3b): distinct
@@ -3563,6 +3570,34 @@ fn trigger_events_match_for_ordering(
     // Precision dominates coarseness: C2 may auto-order only when the batch profiler
     // ALSO agrees the group is conflict-clean.
     c2_order_independent && !batch_conflict
+}
+
+/// CR 508.3 + CR 603.3b: per-attacker attack fan-out (Stonehoof Chieftain #5335)
+/// where each sibling carries a single-attacker `AttackersDeclared` event whose
+/// object is disjoint from every member's trigger source.
+fn attack_triggers_have_disjoint_event_objects(group: &[PendingTriggerContext]) -> bool {
+    let mut seen_attackers = std::collections::HashSet::new();
+    for ctx in group {
+        let Some(GameEvent::AttackersDeclared {
+            attacker_ids,
+            attacks,
+            ..
+        }) = ctx.pending.trigger_event.as_ref()
+        else {
+            return false;
+        };
+        if attacker_ids.len() != 1 || attacks.len() != 1 {
+            return false;
+        }
+        let attacker = attacker_ids[0];
+        if ctx.pending.source_id == attacker {
+            return false;
+        }
+        if !seen_attackers.insert(attacker) {
+            return false;
+        }
+    }
+    true
 }
 
 /// CR 603.3c/603.3d + CR 601.2c/601.2d: A trigger requires ordering-relevant
@@ -3751,10 +3786,17 @@ fn group_is_order_independent(state: &GameState, group: &[PendingTriggerContext]
     };
     let same_event_conflict =
         crate::game::ability_rw::profiles_conflict(&profile, &same_event_structure);
+    // CR 508.3 + CR 603.3b (#5335): per-attacker attack fan-out with disjoint
+    // event objects commutes — the D3 `legacy_batch_prompt` parity gate applies
+    // to co-departure batches with frozen look-back reads, not to distinct
+    // single-attacker events that only write their own event object.
+    let disjoint_per_attacker_fanout = attack_triggers_have_disjoint_event_objects(group)
+        && event_object_excludes_sources
+        && event_object_present;
     // D3 / D5: the batch branch keeps prompting the 12 retained event-context
     // refs (`legacy_batch_prompt`) for strict parity, plus the freeze-invalidation
     // / live-read/write feed rows from `profiles_conflict`.
-    let batch_conflict = profile.legacy_batch_prompt()
+    let batch_conflict = (!disjoint_per_attacker_fanout && profile.legacy_batch_prompt())
         || crate::game::ability_rw::profiles_conflict(&profile, &batch_structure);
 
     // C2 (fail-closed AST walker): two distinct soundness axes (event context,
