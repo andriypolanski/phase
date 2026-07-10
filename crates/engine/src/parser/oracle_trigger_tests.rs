@@ -13,6 +13,7 @@ use crate::types::ability::{
     QuantityRef, SharedQuality, TapStateChange, TargetFilter, TriggerCondition, TypeFilter,
     TypedFilter, ZoneRef,
 };
+use crate::types::card_type::Supertype;
 use crate::types::counter::{CounterMatch, CounterType};
 use crate::types::game_state::WaitingFor;
 use crate::types::keywords::Keyword;
@@ -18117,6 +18118,58 @@ fn trigger_intervening_if_source_is_exiled_sets_trigger_zone() {
         def.condition,
         Some(TriggerCondition::SourceInZone { zone: Zone::Exile }),
     );
+}
+
+/// CR 508.4 + CR 608.2c: Senu, Keen-Eyed Protector — exile-zone attack trigger
+/// returns the source attacking, not the legendary attacker that satisfied
+/// `valid_card`.
+#[test]
+fn senu_keen_eyed_protector_exile_attack_trigger_lowers_correctly() {
+    let def = parse_trigger_line(
+        "When a legendary creature you control attacks and isn't blocked, if this card is exiled, put it onto the battlefield attacking.",
+        "Senu, Keen-Eyed Protector",
+    );
+
+    assert_eq!(def.mode, TriggerMode::YouAttackUnblocked);
+    assert_eq!(def.trigger_zones, vec![Zone::Exile]);
+    assert_eq!(
+        def.condition,
+        Some(TriggerCondition::SourceInZone { zone: Zone::Exile }),
+    );
+    match def.valid_card.as_ref() {
+        Some(TargetFilter::Typed(tf)) => {
+            assert!(tf.type_filters.contains(&TypeFilter::Creature));
+            assert_eq!(tf.controller, Some(ControllerRef::You));
+            assert!(
+                tf.properties.iter().any(|p| matches!(
+                    p,
+                    FilterProp::HasSupertype {
+                        value: Supertype::Legendary
+                    }
+                )),
+                "valid_card must require legendary creatures you control"
+            );
+        }
+        other => panic!("expected Typed legendary creature filter, got {other:?}"),
+    }
+
+    let execute = def.execute.as_ref().expect("trigger must execute");
+    match &*execute.effect {
+        Effect::ChangeZone {
+            destination,
+            target,
+            enters_attacking,
+            ..
+        } => {
+            assert_eq!(*destination, Zone::Battlefield);
+            assert_eq!(*target, TargetFilter::SelfRef);
+            assert!(
+                *enters_attacking,
+                "must enter the battlefield attacking (CR 508.4)"
+            );
+        }
+        other => panic!("expected ChangeZone to battlefield attacking, got {other:?}"),
+    }
 }
 
 #[test]
