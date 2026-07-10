@@ -5169,21 +5169,6 @@ fn apply_trigger_doubling(state: &GameState, pending: &mut Vec<PendingTriggerCon
     pending.extend(extra);
 }
 
-/// CR 603.2d: Predicate check — does a `TriggerCause` match the event that
-/// spawned a pending trigger? Called once per (doubler, pending-trigger) pair.
-///
-/// - `TriggerCause::Any` matches any event (even absent events — some state
-///   triggers carry `trigger_event = None`, and unrestricted doublers should
-///   still cover them).
-/// - `TriggerCause::EntersBattlefield { core_types }` matches `ZoneChanged`
-///   events moving to the battlefield whose object's core types intersect
-///   the predicate's `core_types`. An empty `core_types` list means "any
-///   permanent" (reserved for hypothetical cards that don't narrow by type).
-/// - `TriggerCause::CreatureAttacking` matches `AttackersDeclared` events.
-///   CR 508.1a: every object declared as an attacker must be a creature,
-///   so no further type check is required.
-/// - `TriggerCause::ControlledCreatureDealtDamage` matches `DamageDealt`
-///   events whose target is a creature controlled by `doubler_controller`.
 /// CR 603.6a + CR 603.6c: Disjunctive qualifier check against a zone-change
 /// snapshot. Empty qualifiers match any permanent.
 fn zone_change_qualifiers_match(
@@ -5199,6 +5184,21 @@ fn zone_change_qualifiers_match(
     })
 }
 
+/// CR 603.2d: Predicate check — does a `TriggerCause` match the event that
+/// spawned a pending trigger? Called once per (doubler, pending-trigger) pair.
+///
+/// - `TriggerCause::Any` matches any event (even absent events — some state
+///   triggers carry `trigger_event = None`, and unrestricted doublers should
+///   still cover them).
+/// - `TriggerCause::EntersBattlefield { core_types }` matches `ZoneChanged`
+///   events moving to the battlefield whose object's core types intersect
+///   the predicate's `core_types`. An empty `core_types` list means "any
+///   permanent" (reserved for hypothetical cards that don't narrow by type).
+/// - `TriggerCause::CreatureAttacking` matches `AttackersDeclared` events.
+///   CR 508.1a: every object declared as an attacker must be a creature,
+///   so no further type check is required.
+/// - `TriggerCause::ControlledCreatureDealtDamage` matches `DamageDealt`
+///   events whose target is a creature controlled by `doubler_controller`.
 fn trigger_cause_matches(
     state: &GameState,
     cause: &TriggerCause,
