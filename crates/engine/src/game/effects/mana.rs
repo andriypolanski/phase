@@ -2348,7 +2348,7 @@ mod tests {
         };
         use crate::types::events::GameEvent;
         use crate::types::game_state::ZoneChangeRecord;
-        use crate::types::identifiers::{CardId, ObjectId};
+        use crate::types::identifiers::CardId;
         use crate::types::player::PlayerId;
 
         let mut state = GameState::new_two_player(42);
