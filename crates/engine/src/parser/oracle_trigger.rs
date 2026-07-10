@@ -7336,11 +7336,9 @@ fn rewrite_off_battlefield_source_self_target(ability: &mut AbilityDefinition) {
                 rewrite_parent_target(target);
             }
             Effect::ApplyPerpetual { target, .. } => rewrite_parent_target(target),
-            Effect::GenericEffect { target, .. } => {
-                if let Some(t) = target {
-                    rewrite_parent_target(t);
-                }
-            }
+            Effect::GenericEffect {
+                target: Some(t), ..
+            } => rewrite_parent_target(t),
             _ => {}
         }
         if let Some(sub) = ability.sub_ability.as_deref_mut() {
