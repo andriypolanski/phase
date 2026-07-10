@@ -2425,6 +2425,7 @@ fn conditional_mana_keyword_grant_applies_to_matching_spell() {
         grants: vec![ManaSpellGrant::AddKeywordUntilEndOfTurn {
             keyword: Keyword::Haste,
             restriction: Some(ManaRestriction::OnlyForCreatureType("Dragon".to_string())),
+            duration: crate::types::ability::Duration::UntilEndOfTurn,
         }],
         expiry: None,
     };
