@@ -4198,13 +4198,31 @@ fn per_opponent_target_fanout_min(text: &str) -> usize {
 /// one of those creatures" rider before lifting the `for each` repeat suffix.
 /// Returns whether the rider was present so chain lowering can stamp
 /// `RetargetEachCopyToIterationMember` even after sentence splitting.
+fn parse_zada_distinct_copy_target_rider_clause(i: &str) -> OracleResult<'_, ()> {
+    all_consuming((
+        tag("each copy targets a different one of those creatures"),
+        opt(tag(".")),
+        multispace0::<_, OracleError<'_>>,
+    ))
+    .parse(i)
+    .map(|(rest, _)| (rest, ()))
+}
+
 pub(super) fn strip_each_copy_targets_distinct_member_suffix(text: &str) -> (bool, String) {
-    const SUFFIX: &str = "each copy targets a different one of those creatures";
     let lower = text.to_ascii_lowercase();
-    if let Some(idx) = lower.rfind(SUFFIX) {
+    if let Some(((consumed, ()), _remainder)) = nom_on_lower(text, &lower, |input| {
+        let before = input.len();
+        let (rest, _) = terminated(
+            take_until("each copy targets a different one of those creatures"),
+            parse_zada_distinct_copy_target_rider_clause,
+        )
+        .parse(input)?;
+        Ok((rest, (before - rest.len(), ())))
+    }) {
         (
             true,
-            text[..idx]
+            text[..consumed]
+                .trim_end()
                 .trim_end_matches(|c: char| c == '.' || c.is_whitespace())
                 .to_string(),
         )
@@ -4233,8 +4251,9 @@ fn filter_has_could_be_targeted_by_triggering_spell(filter: &TargetFilter) -> bo
 /// target rider (already stripped at chain level when possible; this absorbs a
 /// residual standalone sentence after period splitting).
 pub(super) fn recognize_zada_copy_distinct_target_rider(lower: &str) -> bool {
-    const SUFFIX: &str = "each copy targets a different one of those creatures";
-    lower.trim().trim_end_matches('.').trim() == SUFFIX
+    all_consuming(parse_zada_distinct_copy_target_rider_clause)
+        .parse(lower.trim())
+        .is_ok()
 }
 
 /// CR 707.10 + CR 115.1: Zada's `for each other creature ... the spell could
@@ -4261,10 +4280,16 @@ pub(super) fn strip_for_each_repeat_suffix(text: &str) -> (Option<QuantityExpr>,
         Ok((rest, (base.len(), qty)))
     });
     if let Some(((base_len, qty), _)) = parsed {
-        return (
-            Some(QuantityExpr::Ref { qty }),
-            text[..base_len].trim_end().to_string(),
-        );
+        if matches!(&qty, QuantityRef::CommanderCastFromCommandZoneCount)
+            || zada_repeat_for_implies_distinct_copy_targets(&QuantityExpr::Ref {
+                qty: qty.clone(),
+            })
+        {
+            return (
+                Some(QuantityExpr::Ref { qty }),
+                text[..base_len].trim_end().to_string(),
+            );
+        }
     }
     (None, text)
 }
