@@ -4265,7 +4265,6 @@ pub(crate) fn take_pending_trigger_event_batch(
 /// sub-abilities that produce a new parent referent during resolution (The
 /// Tenth Doctor's Allons-y! Suspend grant) keep the existing rebinding path.
 pub(crate) fn seed_batched_attack_parent_targets(
-    state: &GameState,
     ability: &mut ResolvedAbility,
     trigger_event: Option<&GameEvent>,
 ) {
@@ -4276,17 +4275,6 @@ pub(crate) fn seed_batched_attack_parent_targets(
         return;
     }
     if !effect_uses_parent_target(&ability.effect) || !ability.targets.is_empty() {
-        return;
-    }
-    // CR 608.2c: Exile/graveyard/hand triggers whose effect returns the source
-    // itself (Senu, Keen-Eyed Protector) bind "it" to the ability source, not the
-    // attacking creatures that satisfied `valid_card`. Skip batched-attack seeding
-    // so `ParentTarget` falls back to `source_id` at resolution.
-    if state
-        .objects
-        .get(&ability.source_id)
-        .is_some_and(|obj| obj.zone != Zone::Battlefield)
-    {
         return;
     }
     ability.targets = attacker_ids
@@ -4370,7 +4358,7 @@ pub(crate) fn push_pending_trigger_to_stack_with_event_batch(
     if let Some(origin) = may_trigger_origin {
         ability.set_may_trigger_origin_recursive(origin);
     }
-    seed_batched_attack_parent_targets(state, &mut ability, trigger_event.as_ref());
+    seed_batched_attack_parent_targets(&mut ability, trigger_event.as_ref());
     seed_event_context_parent_targets(&mut ability, trigger_event.as_ref());
 
     let entry_id = ObjectId(state.next_object_id);
@@ -7976,7 +7964,7 @@ pub mod tests {
         ChosenSubtypeKind, CommanderOwnership, Comparator, ContinuousModification, ControllerRef,
         DamageChannel, DamageKindFilter, DelayedTriggerCondition, DiscardSelfScope, Duration,
         EachDamageRecipient, Effect, FilterProp, KickerVariant, MultiTargetSpec, PlayerFilter,
-        PlayerScope, PtStat, PtValueScope, QuantityExpr, QuantityRef, ResolvedAbility,
+        PlayerScope, PtStat, PtValue, PtValueScope, QuantityExpr, QuantityRef, ResolvedAbility,
         SearchSelectionConstraint, SharedQuality, SharedQualityRelation, StaticCondition,
         StaticDefinition, TargetFilter, TargetRef, TriggerCondition, TriggerConstraint,
         TriggerDefinition, TypeFilter, TypedFilter,
@@ -10222,6 +10210,33 @@ pub mod tests {
             StackEntryKind::TriggeredAbility { ability, .. }
                 if matches!(&ability.effect, Effect::Draw { .. })
         )));
+    }
+
+    /// CR 608.2c: Off-battlefield attack triggers whose body refers to the
+    /// attacking creatures ("that creature gets +1/+1") must still receive
+    /// batched-attack parent targets — zone is not the right discriminator.
+    #[test]
+    fn seed_batched_attack_parent_targets_seeds_off_battlefield_parent_target_pump() {
+        use crate::types::ability::ResolvedAbility;
+
+        let attacker = ObjectId(42);
+        let mut ability = ResolvedAbility::new(
+            Effect::Pump {
+                power: PtValue::Quantity(QuantityExpr::Fixed { value: 1 }),
+                toughness: PtValue::Quantity(QuantityExpr::Fixed { value: 1 }),
+                target: TargetFilter::ParentTarget,
+            },
+            vec![],
+            ObjectId(99),
+            PlayerId(0),
+        );
+        let event = GameEvent::AttackersDeclared {
+            attacker_ids: vec![attacker],
+            defending_player: PlayerId(1),
+            attacks: vec![],
+        };
+        super::seed_batched_attack_parent_targets(&mut ability, Some(&event));
+        assert_eq!(ability.targets, vec![TargetRef::Object(attacker)]);
     }
 
     /// CR 508.4 + CR 608.2c + CR 113.6k: Senu, Keen-Eyed Protector — exile-zone

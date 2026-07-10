@@ -7292,19 +7292,6 @@ fn trigger_object_pronoun_ref_for_condition(condition_text: &str) -> Option<Targ
         return Some(TargetFilter::TriggeringSource);
     }
 
-    // CR 608.2k: Intervening-if / zone-qualified triggers whose body refers to
-    // "this card" / "~" while the ability is registered off the battlefield
-    // (Senu, Keen-Eyed Protector: "if this card is exiled, put it onto the
-    // battlefield attacking"; Cosima: "if ~ is exiled, put a voyage counter on
-    // it") bind object anaphors to the source, not the event's valid_card.
-    if scan_contains(&lower, "this card is exiled")
-        || scan_contains(&lower, "~ is exiled")
-        || scan_contains(&lower, "this card is in your graveyard")
-        || scan_contains(&lower, "~ is in your graveyard")
-    {
-        return Some(TargetFilter::SelfRef);
-    }
-
     None
 }
 
@@ -7332,22 +7319,29 @@ fn trigger_object_pronoun_ref_for_intervening_if(
 }
 
 /// CR 608.2c: Rewrite a trigger body's self-return anaphor from `ParentTarget`
-/// / `TriggeringSource` to `SelfRef` when the source is registered off the
-/// battlefield.
+/// to `SelfRef` when the source is registered off the battlefield. Only
+/// `ParentTarget` is rewritten — `TriggeringSource` ("that creature" referring
+/// to the event object) is left intact.
 fn rewrite_off_battlefield_source_self_target(ability: &mut AbilityDefinition) {
+    fn rewrite_parent_target(target: &mut TargetFilter) {
+        if matches!(target, TargetFilter::ParentTarget) {
+            *target = TargetFilter::SelfRef;
+        }
+    }
+
     fn walk(ability: &mut AbilityDefinition) {
-        if let Effect::ChangeZone {
-            destination: Zone::Battlefield,
-            target,
-            ..
-        } = ability.effect.as_mut()
-        {
-            if matches!(
-                target,
-                TargetFilter::ParentTarget | TargetFilter::TriggeringSource
-            ) {
-                *target = TargetFilter::SelfRef;
+        match ability.effect.as_mut() {
+            Effect::ChangeZone { target, .. } => rewrite_parent_target(target),
+            Effect::Pump { target, .. } | Effect::PumpAll { target, .. } => {
+                rewrite_parent_target(target);
             }
+            Effect::ApplyPerpetual { target, .. } => rewrite_parent_target(target),
+            Effect::GenericEffect { target, .. } => {
+                if let Some(t) = target {
+                    rewrite_parent_target(t);
+                }
+            }
+            _ => {}
         }
         if let Some(sub) = ability.sub_ability.as_deref_mut() {
             walk(sub);

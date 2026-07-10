@@ -18172,6 +18172,61 @@ fn senu_keen_eyed_protector_exile_attack_trigger_lowers_correctly() {
     }
 }
 
+/// CR 608.2c: Managorger Phoenix — off-battlefield return + perpetual pump both
+/// bind bare "it" anaphors to the source, not the cast spell event object.
+#[test]
+fn managorger_phoenix_graveyard_return_rewrites_self_anaphors() {
+    let def = parse_trigger_line(
+        "Whenever you cast a spell, if Managorger Phoenix is in your graveyard, put a flame counter on Managorger Phoenix for each {R} in that spell's mana cost. If Managorger Phoenix has five or more flame counters on it, return it to the battlefield and it perpetually gets +1/+1.",
+        "Managorger Phoenix",
+    );
+
+    assert_eq!(def.mode, TriggerMode::SpellCast);
+    assert_eq!(def.trigger_zones, vec![Zone::Graveyard]);
+    assert_eq!(
+        def.condition,
+        Some(TriggerCondition::SourceInZone {
+            zone: Zone::Graveyard,
+        }),
+    );
+
+    let execute = def.execute.as_ref().expect("trigger must execute");
+    // Root: flame counter clause. Conditional sibling: return + perpetual pump.
+    let return_branch = execute
+        .sub_ability
+        .as_ref()
+        .expect("counter clause must chain to return branch");
+    match &*return_branch.effect {
+        Effect::ChangeZone {
+            destination,
+            target,
+            ..
+        } => {
+            assert_eq!(*destination, Zone::Battlefield);
+            assert_eq!(
+                *target,
+                TargetFilter::SelfRef,
+                "return it must target the Phoenix in graveyard"
+            );
+        }
+        other => panic!("expected ChangeZone return, got {other:?}"),
+    }
+    let pump = return_branch
+        .sub_ability
+        .as_ref()
+        .expect("return must chain to perpetual pump");
+    match &*pump.effect {
+        Effect::Pump { target, .. } | Effect::ApplyPerpetual { target, .. } => {
+            assert_eq!(
+                *target,
+                TargetFilter::SelfRef,
+                "it perpetually gets +1/+1 must target the Phoenix, not the cast spell"
+            );
+        }
+        other => panic!("expected Pump/ApplyPerpetual perpetual clause, got {other:?}"),
+    }
+}
+
 #[test]
 fn trigger_intervening_if_this_card_is_suspended() {
     let def = parse_trigger_line(
