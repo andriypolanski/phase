@@ -150,8 +150,8 @@ pub fn resolve(
     state.stack.push_back(copy_entry);
     events.push(GameEvent::StackPushed { object_id: copy_id });
 
-    // CR 707.10c + CR 608.2c: Zada — each copy targets the current iteration
-    // member without a player choice.
+    // CR 707.10d: Zada — each copy is put on the stack targeting the current
+    // iteration member; no controller choice to change targets.
     if matches!(
         ability.effect,
         Effect::CopySpell {
@@ -776,7 +776,7 @@ fn preserve_ability_copy_source_recursive(ability: &mut ResolvedAbility) {
     set_resolved_source_recursive(ability, source_id);
 }
 
-/// CR 707.10c: Replace every object target on a copied spell with `new_target`.
+/// CR 707.10d: Replace every object target on a copied spell with `new_target`.
 fn rewrite_copy_spell_object_targets(ability: &mut ResolvedAbility, new_target: ObjectId) {
     for target in &mut ability.targets {
         if matches!(target, TargetRef::Object(_)) {

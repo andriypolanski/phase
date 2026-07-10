@@ -12429,10 +12429,10 @@ pub enum CopyRetargetPermission {
     KeepOriginalTargets,
     /// Oracle text grants "you may choose new targets for the copy."
     MayChooseNewTargets,
-    /// CR 707.10c + CR 608.2c: Each copy is automatically targeted to a distinct
-    /// iteration member (Zada, Hedron Grinder — "each copy targets a different one
-    /// of those creatures"). No player choice — the member-driven `repeat_for`
-    /// loop binds the target before the copy is created.
+    /// CR 707.10d: Each copy is automatically targeted to a distinct iteration
+    /// member (Zada, Hedron Grinder — "each copy targets a different one of those
+    /// creatures"). No player choice — the member-driven `repeat_for` loop binds
+    /// the target before the copy is created.
     RetargetEachCopyToIterationMember,
 }
 
