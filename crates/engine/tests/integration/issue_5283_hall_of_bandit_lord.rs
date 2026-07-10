@@ -37,7 +37,7 @@ fn hall_of_bandit_lord_mana_ability_parses_creature_haste_grant() {
         &[ManaSpellGrant::AddKeywordUntilEndOfTurn {
             keyword: Keyword::Haste,
             restriction: Some(ManaRestriction::OnlyForSpellType("Creature".to_string())),
-            duration: engine::types::ability::Duration::Permanent,
+            duration: Box::new(engine::types::ability::Duration::Permanent),
         }]
     );
     assert!(

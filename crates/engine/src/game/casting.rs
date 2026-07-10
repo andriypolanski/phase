@@ -13190,8 +13190,11 @@ fn apply_mana_spell_grants(
         }) {
             continue;
         }
-        if !keyword_grants.iter().any(|(k, _)| k == keyword) {
-            keyword_grants.push((keyword.clone(), duration.clone()));
+        if !keyword_grants
+            .iter()
+            .any(|(k, d)| k == keyword && d == duration.as_ref())
+        {
+            keyword_grants.push((keyword.clone(), duration.as_ref().clone()));
         }
     }
 

@@ -828,8 +828,8 @@ impl ManaRestriction {
 
 /// CR 106.6: Additional effect that the mana confers upon the spell it is spent on.
 /// E.g., "that spell can't be countered" (Cavern of Souls, Delighted Halfling).
-fn default_mana_keyword_grant_duration() -> crate::types::ability::Duration {
-    crate::types::ability::Duration::UntilEndOfTurn
+fn default_mana_keyword_grant_duration() -> Box<crate::types::ability::Duration> {
+    Box::new(crate::types::ability::Duration::UntilEndOfTurn)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -844,7 +844,7 @@ pub enum ManaSpellGrant {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         restriction: Option<ManaRestriction>,
         #[serde(default = "default_mana_keyword_grant_duration")]
-        duration: crate::types::ability::Duration,
+        duration: Box<crate::types::ability::Duration>,
     },
     /// CR 106.6 + CR 603.3: "When you spend this mana to cast a [filter] spell,
     /// [effect]" — a reflexive trigger riding the produced mana (Lapis Orb of

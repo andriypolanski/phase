@@ -2418,7 +2418,7 @@ fn parse_conditional_keyword_grant(lower: &str) -> Option<ManaSpellGrant> {
     Some(ManaSpellGrant::AddKeywordUntilEndOfTurn {
         keyword,
         restriction,
-        duration,
+        duration: Box::new(duration),
     })
 }
 
@@ -3670,7 +3670,7 @@ mod tests {
             vec![ManaSpellGrant::AddKeywordUntilEndOfTurn {
                 keyword: crate::types::keywords::Keyword::Haste,
                 restriction: Some(ManaRestriction::OnlyForCreatureType("Dragon".to_string())),
-                duration: Duration::UntilEndOfTurn,
+                duration: Box::new(Duration::UntilEndOfTurn),
             }]
         );
     }
@@ -3687,7 +3687,7 @@ mod tests {
             vec![ManaSpellGrant::AddKeywordUntilEndOfTurn {
                 keyword: crate::types::keywords::Keyword::Haste,
                 restriction: Some(ManaRestriction::OnlyForSpellType("Creature".to_string())),
-                duration: Duration::Permanent,
+                duration: Box::new(Duration::Permanent),
             }]
         );
     }
