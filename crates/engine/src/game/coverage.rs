@@ -21,11 +21,12 @@ use crate::types::ability::{
     Comparator, ContinuousModification, ControllerRef, CountScope, CounterSourceRider,
     DelayedTriggerCondition, DieRollModifier, DoublePTMode, Duration, EachDamageRecipient, Effect,
     EffectOutcomeSignal, EffectScope, FilterProp, GameRestriction, LibraryPosition, ManaProduction,
-    ObjectProperty, ObjectScope, PlayerFilter, PlayerScope, PtStat, PtValue, PtValueScope,
-    QuantityExpr, QuantityRef, ReplacementCondition, ReplacementDefinition, ReplacementMode,
-    SeatDirection, SharedQuality, SharedQualityRelation, SpeedDelta, SpellCastingOption,
-    SpellCastingOptionKind, SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition,
-    TapStateChange, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
+    ObjectProperty, ObjectScope, PerpetualModification, PlayerFilter, PlayerScope, PtStat, PtValue,
+    PtValueScope, QuantityExpr, QuantityRef, ReplacementCondition, ReplacementDefinition,
+    ReplacementMode, SeatDirection, SharedQuality, SharedQualityRelation, SpeedDelta,
+    SpellCastingOption, SpellCastingOptionKind, SpellStackToGraveyardReplacement, StaticCondition,
+    StaticDefinition, TapStateChange, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter,
+    ZoneRef,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::CoreType;
@@ -624,7 +625,10 @@ fn fmt_target(filter: &TargetFilter) -> String {
         }
         TargetFilter::ExiledBySource => "cards exiled by source".into(),
         TargetFilter::HasChosenName => "card with the chosen name".into(),
-        TargetFilter::ChosenDamageSource => "chosen damage source".into(),
+        TargetFilter::ChosenDamageSource { filter: Some(f) } => {
+            format!("chosen damage source matching {}", fmt_target(f))
+        }
+        TargetFilter::ChosenDamageSource { filter: None } => "chosen damage source".into(),
         TargetFilter::Named { name } => format!("card named {name}"),
         TargetFilter::Not { filter } => format!("not {}", fmt_target(filter)),
         TargetFilter::Or { filters } => filters
@@ -892,6 +896,7 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::ToughnessGTPower => parts.push("toughness > power".into()),
             FilterProp::PowerExceedsBase => parts.push("power > base power".into()),
             FilterProp::DifferentNameFrom { .. } => parts.push("different name".into()),
+            FilterProp::DistinctFrom { .. } => parts.push("other than target".into()),
             FilterProp::Other { value } => parts.push(value.clone()),
             FilterProp::InAnyZone { zones } => {
                 let zone_strs: Vec<_> = zones.iter().map(fmt_zone).collect();
@@ -7511,10 +7516,37 @@ pub fn audit_semantic(card_db: &CardDatabase) -> SemanticAuditSummary {
 /// Check if an ability definition has a pump effect matching the given P/T values.
 /// Checks `Effect::Pump`, `Effect::PumpAll`, and `Effect::GenericEffect` with
 /// `AddPower`/`AddToughness` continuous modifications.
+/// Whether the current Oracle line permits a *perpetual* power/toughness
+/// modification to satisfy its "+N/+M" text. "[object] perpetually gets +N/+M"
+/// lowers to `Effect::ApplyPerpetual { ModifyPowerToughness }`; a temporary
+/// "gets +N/+M until end of turn" must NOT be satisfied by a perpetual
+/// (permanent) modification — admitting it would silence the semantic audit for
+/// a real duration-mislowering bug (an until-end-of-turn line that wrongly
+/// lowered to a permanent effect). Derived once from the line at the call site.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PerpetualPump {
+    /// The line says "perpetual(ly)" — an `ApplyPerpetual` P/T delta is expected.
+    Allowed,
+    /// No "perpetual" in the line — only `Pump` / static modifications satisfy it.
+    Disallowed,
+}
+
+impl PerpetualPump {
+    /// Classify an already-lowercased Oracle line.
+    fn from_lower_line(lower_line: &str) -> Self {
+        if lower_line.contains("perpetual") {
+            Self::Allowed
+        } else {
+            Self::Disallowed
+        }
+    }
+}
+
 fn pump_matches_oracle(
     def: &AbilityDefinition,
     expected_power: i32,
     expected_toughness: i32,
+    perpetual: PerpetualPump,
 ) -> bool {
     fn pt_matches(power: &PtValue, toughness: &PtValue, ep: i32, et: i32) -> bool {
         let p_match = match power {
@@ -7540,6 +7572,28 @@ fn pump_matches_oracle(
         Effect::GenericEffect {
             static_abilities, ..
         } if static_has_pump_modification(static_abilities, expected_power, expected_toughness) => {
+            return true;
+        }
+        // Digital-only Alchemy "[object] perpetually gets +N/+M" (no CR entry for
+        // "perpetually"; the delta applies as a CR 613.4c layer-7c power/toughness
+        // modification) lowers to `Effect::ApplyPerpetual` carrying a
+        // `ModifyPowerToughness` delta rather than a top-level `Effect::Pump`.
+        // Without this arm every perpetual-pump card (Heir to Dragonfire, Perennial
+        // Gravewarden, Tomakul Phoenix, …) is a spurious `WrongParameter: no matching
+        // pump effect` finding. Gated on `PerpetualPump::Allowed` so a *temporary*
+        // "+N/+M until end of turn" line that mis-lowered to a permanent
+        // `ApplyPerpetual` is still flagged rather than silently accepted.
+        Effect::ApplyPerpetual {
+            modification:
+                PerpetualModification::ModifyPowerToughness {
+                    power_delta,
+                    toughness_delta,
+                },
+            ..
+        } if perpetual == PerpetualPump::Allowed
+            && *power_delta == expected_power
+            && *toughness_delta == expected_toughness =>
+        {
             return true;
         }
         _ => {}
@@ -7892,19 +7946,19 @@ impl<'a> ParsedElement<'a> {
     }
 
     /// Check if this element has a pump effect matching the given P/T.
-    fn has_pump(&self, power: i32, toughness: i32) -> bool {
+    fn has_pump(&self, power: i32, toughness: i32, perpetual: PerpetualPump) -> bool {
         match self {
             ParsedElement::Ability(a) => {
-                ability_tree_any(a, &|d| pump_matches_oracle(d, power, toughness))
+                ability_tree_any(a, &|d| pump_matches_oracle(d, power, toughness, perpetual))
             }
             ParsedElement::Trigger(t) => t.execute.as_ref().is_some_and(|e| {
-                ability_tree_any(e, &|d| pump_matches_oracle(d, power, toughness))
+                ability_tree_any(e, &|d| pump_matches_oracle(d, power, toughness, perpetual))
             }),
             ParsedElement::Static(s) => {
                 static_has_pump_modification(std::slice::from_ref(s), power, toughness)
             }
             ParsedElement::Replacement(r) => r.execute.as_ref().is_some_and(|e| {
-                ability_tree_any(e, &|d| pump_matches_oracle(d, power, toughness))
+                ability_tree_any(e, &|d| pump_matches_oracle(d, power, toughness, perpetual))
             }),
         }
     }
@@ -9018,15 +9072,23 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
                     }
                 }
             } else {
+                // Admit a perpetual P/T modification only when this line actually
+                // says "perpetually" — a temporary "+N/+M until end of turn" that
+                // mis-lowered to a permanent `ApplyPerpetual` must still be flagged.
+                let perpetual = PerpetualPump::from_lower_line(&lower_for_pt);
                 let any_has_pump = if matched_via_split {
-                    matched.iter().all(|e| e.has_pump(power, toughness))
+                    matched
+                        .iter()
+                        .all(|e| e.has_pump(power, toughness, perpetual))
                 } else {
-                    matched.iter().any(|e| e.has_pump(power, toughness))
+                    matched
+                        .iter()
+                        .any(|e| e.has_pump(power, toughness, perpetual))
                         || modal_any(&|d: &AbilityDefinition| {
-                            pump_matches_oracle(d, power, toughness)
+                            pump_matches_oracle(d, power, toughness, perpetual)
                         })
                         || covered_ability_effect_type_any(&|d: &AbilityDefinition| {
-                            pump_matches_oracle(d, power, toughness)
+                            pump_matches_oracle(d, power, toughness, perpetual)
                         })
                 };
                 if !any_has_pump {
@@ -11688,6 +11750,90 @@ mod tests {
                 |f| matches!(f, SemanticFinding::WrongParameter { field, .. } if field == "counter")
             ),
             "ChooseOneOf counter branches should satisfy counter parameter audit: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn test_audit_pump_parameter_perpetual_gated_by_oracle_line() {
+        use crate::types::ability::PerpetualModification;
+
+        // "[object] perpetually gets +N/+M" lowers to
+        // `Effect::ApplyPerpetual{ModifyPowerToughness}`, not a top-level
+        // `Effect::Pump`. The pump-parameter audit must accept that delta — but
+        // ONLY when the line says "perpetually". A temporary "+N/+M until end of
+        // turn" that mis-lowered to a permanent `ApplyPerpetual` (a real duration
+        // bug) must still be flagged, so the audit stays discriminating.
+        let perpetual_pump = |power_delta: i32, toughness_delta: i32| {
+            AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::ApplyPerpetual {
+                    target: TargetFilter::Any,
+                    modification: PerpetualModification::ModifyPowerToughness {
+                        power_delta,
+                        toughness_delta,
+                    },
+                },
+            )
+        };
+        let pump_findings = |findings: &[SemanticFinding]| {
+            findings
+                .iter()
+                .filter(|f| {
+                    matches!(f, SemanticFinding::WrongParameter { field, .. } if field == "pump")
+                })
+                .count()
+        };
+
+        // Discrimination, at the gating authority itself: the same
+        // `ApplyPerpetual{+1/+1}` satisfies a "+1/+1" line ONLY when the line is
+        // perpetual. This is the arm the review asked to be gated — proving the
+        // Disallowed branch rejects it is the whole point of the fix.
+        assert!(
+            pump_matches_oracle(&perpetual_pump(1, 1), 1, 1, PerpetualPump::Allowed),
+            "a perpetual line must accept ApplyPerpetual{{ModifyPowerToughness}}"
+        );
+        assert!(
+            !pump_matches_oracle(&perpetual_pump(1, 1), 1, 1, PerpetualPump::Disallowed),
+            "a temporary (non-perpetual) line must NOT be satisfied by a permanent ApplyPerpetual"
+        );
+
+        // End-to-end accept: a perpetual line whose only effect is the perpetual
+        // pump produces no spurious pump WrongParameter.
+        let perpetual_line = "This creature perpetually gets +1/+1.";
+        let mut perpetual_face = make_face();
+        perpetual_face.oracle_text = Some(perpetual_line.to_string());
+        perpetual_face.abilities.push(perpetual_pump(1, 1));
+        assert_eq!(
+            pump_findings(&audit_card_lines(perpetual_line, &perpetual_face)),
+            0,
+            "perpetual line + ApplyPerpetual must satisfy the pump audit"
+        );
+
+        // Delta discrimination (at the gating authority): even on a perpetual
+        // line, an ApplyPerpetual whose delta does not match the "+N/+M" text is
+        // rejected — the arm compares the deltas, it does not blanket-accept
+        // ApplyPerpetual. Together with the accept above this proves the +1/+1
+        // acceptance passes for the right reason, not vacuously.
+        assert!(
+            !pump_matches_oracle(&perpetual_pump(2, 2), 1, 1, PerpetualPump::Allowed),
+            "a perpetual ApplyPerpetual delta that does not match the +N/+M text must be rejected"
+        );
+
+        // End-to-end discrimination: a temporary "+N/+M until end of turn" line
+        // whose effect mis-lowered to a PERMANENT ApplyPerpetual is still flagged.
+        // The permanent effect no longer matches the temporary pump line, so it
+        // surfaces as a SilentDrop rather than being silently accepted as a valid
+        // pump — exactly the mislowering the review wanted the audit to keep
+        // catching, and proof that audit_card_lines does emit findings here (so
+        // the perpetual accept above is meaningful).
+        let temporary_line = "Target creature gets +1/+1 until end of turn.";
+        let mut temporary_face = make_face();
+        temporary_face.oracle_text = Some(temporary_line.to_string());
+        temporary_face.abilities.push(perpetual_pump(1, 1));
+        let temporary_findings = audit_card_lines(temporary_line, &temporary_face);
+        assert!(
+            !temporary_findings.is_empty(),
+            "a temporary +N/+M line mislowered to a permanent ApplyPerpetual must still be flagged: {temporary_findings:?}"
         );
     }
 
