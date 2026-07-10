@@ -22,7 +22,9 @@ use crate::types::keywords::WardCost;
 use crate::types::keywords::{Keyword, KeywordKind};
 use crate::types::phase::Phase;
 use crate::types::player::{Player, PlayerCounterKind, PlayerId};
-use crate::types::statics::{StaticMode, SuppressedTriggerEvent, TriggerCause};
+use crate::types::statics::{
+    StaticMode, SuppressedTriggerEvent, TriggerCause, ZoneChangeQualifier,
+};
 use crate::types::triggers::{AttackTargetFilter, TriggerMode};
 use crate::types::zones::Zone;
 
@@ -5182,6 +5184,21 @@ fn apply_trigger_doubling(state: &GameState, pending: &mut Vec<PendingTriggerCon
 ///   so no further type check is required.
 /// - `TriggerCause::ControlledCreatureDealtDamage` matches `DamageDealt`
 ///   events whose target is a creature controlled by `doubler_controller`.
+/// CR 603.6a + CR 603.6c: Disjunctive qualifier check against a zone-change
+/// snapshot. Empty qualifiers match any permanent.
+fn zone_change_qualifiers_match(
+    record: &crate::types::game_state::ZoneChangeRecord,
+    qualifiers: &[ZoneChangeQualifier],
+) -> bool {
+    if qualifiers.is_empty() {
+        return true;
+    }
+    qualifiers.iter().any(|qualifier| match qualifier {
+        ZoneChangeQualifier::CoreType(core_type) => record.core_types.contains(core_type),
+        ZoneChangeQualifier::Supertype(supertype) => record.supertypes.contains(supertype),
+    })
+}
+
 fn trigger_cause_matches(
     state: &GameState,
     cause: &TriggerCause,
@@ -5287,6 +5304,27 @@ fn trigger_cause_matches(
                     .iter()
                     .any(|ct| core_types.contains(ct))
             })
+        }
+        TriggerCause::BattlefieldTransition {
+            enter,
+            leave,
+            qualifiers,
+        } => {
+            // CR 603.6a + CR 603.6c: Match zone changes to/from the battlefield
+            // whose causing permanent satisfies the disjunctive qualifier list.
+            let Some(GameEvent::ZoneChanged {
+                from, to, record, ..
+            }) = event
+            else {
+                return false;
+            };
+            let is_enter = *to == Zone::Battlefield;
+            let is_leave = from.as_ref() == Some(&Zone::Battlefield);
+            let direction_ok = (*enter && is_enter) || (*leave && is_leave);
+            if !direction_ok {
+                return false;
+            }
+            zone_change_qualifiers_match(record, qualifiers)
         }
     }
 }
