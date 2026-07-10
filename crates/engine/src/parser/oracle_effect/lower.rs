@@ -4194,9 +4194,65 @@ fn per_opponent_target_fanout_min(text: &str) -> usize {
 /// action should be repeated rather than have an embedded amount replaced. The
 /// repeat count is an integer per-each quantity (count templating), not the
 /// CR 609.3 "do as much as possible" rule.
+/// CR 707.10 + CR 608.2c: Strip Zada's trailing "each copy targets a different
+/// one of those creatures" rider before lifting the `for each` repeat suffix.
+/// Returns whether the rider was present so chain lowering can stamp
+/// `RetargetEachCopyToIterationMember` even after sentence splitting.
+pub(super) fn strip_each_copy_targets_distinct_member_suffix(text: &str) -> (bool, String) {
+    const SUFFIX: &str = "each copy targets a different one of those creatures";
+    let lower = text.to_ascii_lowercase();
+    if let Some(idx) = lower.rfind(SUFFIX) {
+        (
+            true,
+            text[..idx]
+                .trim_end_matches(|c: char| c == '.' || c.is_whitespace())
+                .to_string(),
+        )
+    } else {
+        (false, text.to_string())
+    }
+}
+
+/// CR 707.10 + CR 115.1: Zada's `for each other creature ... the spell could
+/// target` repeat count implies each copy targets a distinct iteration member.
+fn filter_has_could_be_targeted_by_triggering_spell(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(tf) => tf
+            .properties
+            .iter()
+            .any(|p| matches!(p, FilterProp::CouldBeTargetedByTriggeringSpell)),
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => filters
+            .iter()
+            .any(filter_has_could_be_targeted_by_triggering_spell),
+        TargetFilter::Not { filter } => filter_has_could_be_targeted_by_triggering_spell(filter),
+        _ => false,
+    }
+}
+
+/// CR 707.10 + CR 608.2c: True when a clause chunk is only Zada's distinct-copy
+/// target rider (already stripped at chain level when possible; this absorbs a
+/// residual standalone sentence after period splitting).
+pub(super) fn recognize_zada_copy_distinct_target_rider(lower: &str) -> bool {
+    const SUFFIX: &str = "each copy targets a different one of those creatures";
+    lower.trim().trim_end_matches('.').trim() == SUFFIX
+}
+
+/// CR 707.10 + CR 115.1: Zada's `for each other creature ... the spell could
+/// target` repeat count implies each copy targets a distinct iteration member.
+pub(super) fn zada_repeat_for_implies_distinct_copy_targets(qty: &QuantityExpr) -> bool {
+    let QuantityExpr::Ref {
+        qty: QuantityRef::ObjectCount { filter },
+    } = qty
+    else {
+        return false;
+    };
+    filter_has_could_be_targeted_by_triggering_spell(filter)
+}
+
 pub(super) fn strip_for_each_repeat_suffix(text: &str) -> (Option<QuantityExpr>, String) {
+    let (_, text) = strip_each_copy_targets_distinct_member_suffix(text);
     let lower = text.to_lowercase();
-    let parsed = nom_on_lower(text, &lower, |input| {
+    let parsed = nom_on_lower(&text, &lower, |input| {
         let (rest, base) = take_until::<_, _, OracleError<'_>>(" for each ").parse(input)?;
         let (rest, _) = tag(" for each ").parse(rest)?;
         let (rest, qty) = nom_quantity::parse_for_each_clause_ref(rest)?;
@@ -4205,14 +4261,12 @@ pub(super) fn strip_for_each_repeat_suffix(text: &str) -> (Option<QuantityExpr>,
         Ok((rest, (base.len(), qty)))
     });
     if let Some(((base_len, qty), _)) = parsed {
-        if matches!(qty, QuantityRef::CommanderCastFromCommandZoneCount) {
-            return (
-                Some(QuantityExpr::Ref { qty }),
-                text[..base_len].trim_end().to_string(),
-            );
-        }
+        return (
+            Some(QuantityExpr::Ref { qty }),
+            text[..base_len].trim_end().to_string(),
+        );
     }
-    (None, text.to_string())
+    (None, text)
 }
 
 /// CR 107.1: Strip "twice" / "three times" / "N times" suffix to produce a

@@ -509,6 +509,36 @@ pub fn check_fizzle(original_targets: &[TargetRef], legal_targets: &[TargetRef])
     legal_targets.is_empty()
 }
 
+/// CR 115.1 + CR 707.10: True when `candidate_id` could be chosen as a target of
+/// the spell that triggered the current `SpellCast` event (Zada copy-count filter).
+pub(crate) fn object_could_be_targeted_by_triggering_spell(
+    state: &GameState,
+    candidate_id: ObjectId,
+) -> bool {
+    let Some(event) = state.current_trigger_event.as_ref() else {
+        return false;
+    };
+    let Some(spell_id) = extract_source_from_event(event) else {
+        return false;
+    };
+    let Some(spell_ability) = state
+        .stack
+        .iter()
+        .rev()
+        .find(|entry| entry.id == spell_id)
+        .and_then(|entry| entry.ability())
+    else {
+        return false;
+    };
+    let Ok(slots) = crate::game::ability_utils::build_target_slots(state, spell_ability) else {
+        return false;
+    };
+    slots.iter().any(|slot| {
+        slot.legal_targets
+            .contains(&TargetRef::Object(candidate_id))
+    })
+}
+
 /// Resolve event-context TargetFilter variants using the current trigger event.
 /// These variants auto-resolve at effect resolution time from `state.current_trigger_event`
 /// without requiring player selection (CR 603.2).

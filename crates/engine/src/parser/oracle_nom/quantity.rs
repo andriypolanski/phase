@@ -3325,6 +3325,7 @@ fn parse_for_each_clause_ref_with_they_controller(
         // an unconsumed remainder, dropping the quantity (Skycat Sovereign, Aven
         // Gagglemaster, Aerial Assault, Alert Heedbonder, Overgrown Battlement).
         parse_for_each_controlled_type_with_keyword,
+        parse_for_each_controlled_creature_spell_could_target,
         parse_for_each_controlled_type,
         // CR 201.2: "for each [other] <type> named <CardName> you control"
         // (Seven Dwarves). The `named X` qualifier sits between the type word
@@ -4480,6 +4481,35 @@ fn parse_for_each_controlled_type_with_keyword(input: &str) -> OracleResult<'_, 
                 type_filters: vec![tf],
                 controller: Some(ControllerRef::You),
                 properties,
+            }),
+        },
+    ))
+}
+
+/// CR 115.1 + CR 707.10: "other creature you control that the spell could target"
+/// (Zada, Hedron Grinder copy count). Optional "other"/"another" excludes the
+/// trigger source; `CouldBeTargetedByTriggeringSpell` gates on spell legality.
+fn parse_for_each_controlled_creature_spell_could_target(
+    input: &str,
+) -> OracleResult<'_, QuantityRef> {
+    let (rest, has_other) = opt(alt((
+        value((), tag::<_, _, OracleError<'_>>("other ")),
+        value((), tag("another ")),
+    )))
+    .parse(input)?;
+    let (rest, _) = tag("creature you control that the spell could target").parse(rest)?;
+    let mut properties = vec![FilterProp::CouldBeTargetedByTriggeringSpell];
+    if has_other.is_some() {
+        properties.push(FilterProp::Another);
+    }
+    Ok((
+        rest,
+        QuantityRef::ObjectCount {
+            filter: TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Creature],
+                controller: Some(ControllerRef::You),
+                properties,
+                ..TypedFilter::default()
             }),
         },
     ))
