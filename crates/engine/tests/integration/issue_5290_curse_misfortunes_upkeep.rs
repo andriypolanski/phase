@@ -191,7 +191,7 @@ fn curse_of_misfortunes_upkeep_search_attaches_to_enchanted_player() {
         WaitingFor::SearchChoice { player, cards, .. } => {
             assert_eq!(*player, P0, "Misfortunes search must be P0's library");
             assert!(
-                cards.iter().any(|id| *id == searched_curse_id),
+                cards.contains(&searched_curse_id),
                 "Curse of Thirst must be a legal different-name Curse candidate"
             );
         }
