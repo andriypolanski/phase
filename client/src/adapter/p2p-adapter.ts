@@ -93,6 +93,7 @@ interface DeckSeatPayload {
   commander: string[];
   planar_deck?: string[];
   scheme_deck?: string[];
+  vanguard?: string[];
   bracket_tier?: string;
 }
 

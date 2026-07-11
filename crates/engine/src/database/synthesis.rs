@@ -9009,9 +9009,10 @@ fn parse_vanguard_modifier(raw: &str) -> i32 {
     })
 }
 
-/// CR 902.6 / CR 902.7: Vanguard cards remain face up in the command zone and
-/// their abilities function from there. CR 902.5b: the hand modifier also sets
-/// starting and maximum hand size via a synthesized `MaximumHandSize` static.
+/// CR 902.3 / CR 902.7: Vanguard cards remain face up in the command zone and
+/// their abilities function from there. CR 902.5b: the hand modifier sets
+/// maximum hand size via a synthesized `MaximumHandSize` static (CR 902.5
+/// starting hand size is resolved separately in `game::vanguard`).
 /// Idempotent: only stamps `Zone::Command` when absent.
 pub fn synthesize_vanguard(face: &mut CardFace) {
     if !face.card_type.core_types.contains(&CoreType::Vanguard) {
@@ -9039,7 +9040,7 @@ pub fn synthesize_vanguard(face: &mut CardFace) {
                     TypedFilter::default().controller(ControllerRef::You),
                 ))
                 .description(format!(
-                    "CR 902.5b: Vanguard hand modifier adjusts starting and maximum hand size by {}.",
+                    "CR 902.5b: Vanguard hand modifier adjusts maximum hand size by {}.",
                     face.hand_modifier
                 )),
             );
@@ -9363,7 +9364,7 @@ pub fn synthesize_all(face: &mut CardFace) {
     // CR 905.4 / CR 113.6b: stamp Zone::Command onto conspiracy triggers and
     // statics so the command-zone scans evaluate them.
     synthesize_conspiracy(face);
-    // CR 902.6 / CR 902.7 / CR 902.5b: stamp Zone::Command onto vanguard
+    // CR 902.3 / CR 902.7 / CR 902.5b: stamp Zone::Command onto vanguard
     // triggers/statics and synthesize the hand-size modifier static.
     synthesize_vanguard(face);
 }

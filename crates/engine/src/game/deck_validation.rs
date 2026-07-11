@@ -592,7 +592,7 @@ fn evaluate_vanguard(
     }
     if !(2..=6).contains(&request.player_count) {
         reasons.push(format!(
-            "Vanguard requires 2 to 6 players (found {})",
+            "Vanguard supports 2 to 6 players in this client (found {})",
             request.player_count
         ));
     }
@@ -631,7 +631,7 @@ fn evaluate_vanguard(
 }
 
 fn validate_vanguard_card(db: &CardDatabase, vanguard: &[String], reasons: &mut Vec<String>) {
-    // CR 902.6: Each player chooses exactly one vanguard card.
+    // CR 902.2: Each player chooses exactly one vanguard card.
     if vanguard.len() != 1 {
         reasons.push(format!(
             "Vanguard selection must contain exactly 1 card (found {})",

@@ -13,7 +13,7 @@ use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
-/// CR 902.6: Whether `id` is a player's vanguard card in the command zone.
+/// CR 902.3: Whether `id` is a player's vanguard card in the command zone.
 pub fn is_vanguard_object(state: &GameState, id: ObjectId) -> bool {
     state.objects.get(&id).is_some_and(|obj| obj.is_vanguard)
 }
@@ -28,7 +28,7 @@ pub fn vanguard_for_player(state: &GameState, player: PlayerId) -> Option<Object
     })
 }
 
-/// CR 902.6: Create a vanguard `GameObject` face up in the command zone.
+/// CR 902.3: Create a vanguard `GameObject` face up in the command zone.
 pub fn create_vanguard_from_card_face(
     state: &mut GameState,
     card_face: &CardFace,
@@ -67,9 +67,16 @@ pub fn apply_vanguard_starting_life_modifiers(state: &mut GameState) {
 }
 
 /// CR 902.5: Opening-hand draw size for `player` (7 ± vanguard hand modifier).
+///
+/// Read directly from the vanguard object's printed modifier — do not route
+/// through the continuous-effects layer system (CR 902.5b maximum hand size).
 pub fn opening_hand_size(state: &GameState, player: PlayerId) -> usize {
     if state.format_config.format != GameFormat::Vanguard {
         return 7;
     }
-    super::turns::maximum_hand_size_for_player(state, player)
+    let modifier = vanguard_for_player(state, player)
+        .and_then(|id| state.objects.get(&id))
+        .map(|obj| obj.hand_modifier)
+        .unwrap_or(0);
+    (7i32 + modifier).max(0) as usize
 }

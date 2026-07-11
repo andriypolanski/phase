@@ -14,6 +14,7 @@ use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 use crate::types::statics::{HandSizeModification, StaticMode};
+use crate::types::StaticDefinition;
 use crate::types::zones::Zone;
 
 fn synthesized_vanguard_face(hand_modifier: i32, life_modifier: i32) -> CardFace {
@@ -96,6 +97,30 @@ fn opening_hand_size_uses_vanguard_hand_modifier() {
 
     assert_eq!(opening_hand_size(&state, PlayerId(0)), 8);
     assert_eq!(opening_hand_size(&state, PlayerId(1)), 7);
+}
+
+#[test]
+fn opening_hand_size_does_not_use_maximum_hand_size_layer() {
+    let mut state = vanguard_state();
+    let face = synthesized_vanguard_face(1, 0);
+    let id = create_vanguard_from_card_face(&mut state, &face, PlayerId(0));
+
+    // A printed maximum-hand-size static must not affect CR 902.5 opening draw.
+    state
+        .objects
+        .get_mut(&id)
+        .expect("vanguard object")
+        .static_definitions
+        .push(
+            StaticDefinition::new(StaticMode::MaximumHandSize {
+                modification: HandSizeModification::AdjustedBy(5),
+            })
+            .affected(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::You),
+            )),
+        );
+
+    assert_eq!(opening_hand_size(&state, PlayerId(0)), 8);
 }
 
 #[test]

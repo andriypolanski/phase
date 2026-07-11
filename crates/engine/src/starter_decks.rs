@@ -21,7 +21,7 @@ pub struct DeckData {
     /// CR 904.3: Supplementary Archenemy scheme deck as card names.
     #[serde(default)]
     pub scheme_deck: Vec<String>,
-    /// CR 902.6: Per-player Vanguard card as card names.
+    /// CR 902.2: Per-player Vanguard card as card names.
     #[serde(default)]
     pub vanguard: Vec<String>,
     /// Unstable Contraptions: supplementary Contraption deck as card names.

@@ -162,6 +162,7 @@ export interface HostingDeck {
   commander: string[];
   planar_deck?: string[];
   scheme_deck?: string[];
+  vanguard?: string[];
 }
 
 /** Persisted snapshot of the host-setup form so the lobby remembers the

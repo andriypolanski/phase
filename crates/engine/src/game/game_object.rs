@@ -773,7 +773,7 @@ pub struct GameObject {
     // Commander: whether this object is a commander card
     #[serde(default)]
     pub is_commander: bool,
-    /// CR 902.6: Whether this object is a player's vanguard card.
+    /// CR 902.3: Whether this object is a player's vanguard card in the command zone.
     #[serde(default)]
     pub is_vanguard: bool,
     /// CR 902.5: Vanguard hand-size modifier copied from `CardFace` at load time.

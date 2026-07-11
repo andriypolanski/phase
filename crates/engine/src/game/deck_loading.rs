@@ -76,8 +76,8 @@ pub struct PlayerDeckPayload {
     /// archenemy seat's payload is loaded as the scheme deck.
     #[serde(default)]
     pub scheme_deck: Vec<DeckEntry>,
-    /// CR 902.6: Optional per-player Vanguard card (exactly one when playing
-    /// the Vanguard format).
+    /// CR 902.2 / CR 902.3: Optional per-player Vanguard card (exactly one when
+    /// playing the Vanguard format).
     #[serde(default)]
     pub vanguard: Vec<DeckEntry>,
     /// Unstable Contraptions: optional supplementary Contraption deck.
@@ -868,7 +868,7 @@ pub fn load_deck_into_state(state: &mut GameState, payload: &DeckPayload) {
         load_shared_scheme_deck(state, entries, archenemy);
     }
 
-    // CR 902.6: Place each player's vanguard face up in the command zone.
+    // CR 902.3: Place each player's vanguard face up in the command zone.
     let vanguard_decks: Vec<(PlayerId, &[DeckEntry])> =
         std::iter::once((PlayerId(0), payload.player.vanguard.as_slice()))
             .chain(std::iter::once((

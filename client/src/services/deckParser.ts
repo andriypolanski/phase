@@ -15,6 +15,8 @@ export interface ParsedDeck {
   sticker_sheets?: string[];
   planar_deck?: string[];
   scheme_deck?: string[];
+  /** CR 902.2: per-player Vanguard card name (0 or 1 entries). */
+  vanguard?: string[];
   /** Oathbreaker RC: the signature spell card name (0 or 1 entries). */
   signature_spell?: string[];
   companion?: string;
