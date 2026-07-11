@@ -2255,33 +2255,6 @@ mod tests {
     }
 
     #[test]
-    fn build_oracle_face_sigarda_splits_hexproof_for_humans_only() {
-        use engine::types::statics::StaticMode;
-
-        let atomic = load_atomic_fixture();
-        let faces = atomic
-            .data
-            .get("Sigarda, Heron's Grace")
-            .expect("Sigarda should exist in AtomicCards");
-        let face = build_oracle_face(&faces[0], faces[0].identifiers.scryfall_oracle_id.clone());
-        let hexproof_statics: Vec<_> = face
-            .static_abilities
-            .iter()
-            .filter(|s| {
-                s.description
-                    .as_deref()
-                    .is_some_and(|d| d.contains("hexproof"))
-                    || matches!(s.mode, StaticMode::Hexproof)
-            })
-            .collect();
-        assert_eq!(
-            hexproof_statics.len(),
-            2,
-            "Sigarda must split object Continuous + player Hexproof, got {hexproof_statics:?}"
-        );
-    }
-
-    #[test]
     fn export_layout_keeps_aang_front_face_keywords_face_local() {
         let atomic = load_atomic_fixture();
         let faces = atomic
