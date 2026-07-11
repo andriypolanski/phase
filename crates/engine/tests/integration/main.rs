@@ -781,7 +781,6 @@ mod indestructible_survives_destroy;
 mod issue_4365_msh_legality;
 mod issue_4937_iona_chosen_color;
 mod issue_4945_zada_hedron_grinder;
-mod issue_5263_chaos_warp;
 mod karplusan_yeti_fight_back;
 mod kav_landseeker_delayed_sacrifice;
 mod kellan_daring_traveler_mana_value_gate;
