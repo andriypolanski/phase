@@ -14,8 +14,8 @@ use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 use crate::types::statics::{HandSizeModification, StaticMode};
-use crate::types::StaticDefinition;
 use crate::types::zones::Zone;
+use crate::types::StaticDefinition;
 
 fn synthesized_vanguard_face(hand_modifier: i32, life_modifier: i32) -> CardFace {
     let mut face = CardFace::default();
