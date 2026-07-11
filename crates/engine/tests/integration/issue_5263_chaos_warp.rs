@@ -1,13 +1,13 @@
-//! Issue #5263 — Chaos Warp must shuffle the targeted permanent into its
-//! owner's library, then reveal the top of that owner's library (not the
-//! caster's). Fixed on `main` in PR #5234 (#2406 owner-library routing).
+//! Issue #5263 — Chaos Warp cast-pipeline coverage: shuffle/reveal uses the
+//! targeted permanent's owner's library, not the caster's. Behavior already on
+//! `main` (#5234 / #2406). Parser AST coverage lives in
+//! `issue_2406_chaos_warp_owner_library_shuffle_and_reveal`; resolver-unit
+//! coverage lives in `chaos_warp_owner_library.rs`.
 //!
-//! CR 400.3 + CR 400.7j: zone changes and reveals follow the targeted
-//! permanent's owner, not the spell's controller.
+//! CR 400.3: A permanent shuffled into a library goes to its owner's library.
+//! The reveal step follows the card's wording ("their library" = that owner).
 
 use engine::game::scenario::{GameScenario, P0, P1};
-use engine::parser::oracle::parse_oracle_text;
-use engine::types::ability::{Effect, TargetFilter};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
@@ -34,57 +34,12 @@ fn put_library_top(runner: &mut engine::game::scenario::GameRunner, id: ObjectId
 }
 
 #[test]
-fn chaos_warp_parse_oracle_text_owner_library_shuffle_reveal_chain() {
-    let parsed = parse_oracle_text(
-        CHAOS_WARP_ORACLE,
-        "Chaos Warp",
-        &[],
-        &["Instant".to_string()],
-        &[],
-    );
-    let ability = parsed.abilities.first().expect("spell ability");
-    let Effect::ChangeZone {
-        owner_library: true,
-        destination,
-        ..
-    } = ability.effect.as_ref()
-    else {
-        panic!("expected owner-library ChangeZone, got {:?}", ability.effect);
-    };
-    assert_eq!(*destination, Zone::Library);
-
-    let shuffle = ability.sub_ability.as_ref().expect("shuffle sub");
-    assert_eq!(
-        shuffle.effect.target_filter(),
-        Some(&TargetFilter::ParentTargetOwner)
-    );
-
-    let reveal = shuffle
-        .sub_ability
-        .as_ref()
-        .expect("reveal sub")
-        .effect
-        .as_ref();
-    let Effect::RevealTop {
-        player,
-        count: 1,
-    } = reveal
-    else {
-        panic!("expected RevealTop, got {reveal:?}");
-    };
-    assert_eq!(*player, TargetFilter::ParentTargetOwner);
-}
-
-#[test]
 fn chaos_warp_cast_reveals_target_owner_library_not_caster() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
 
     let target = scenario.add_creature(P1, "Opponent Bear", 2, 2).id();
-    let owner_library_creature = scenario.add_creature(P1, "Owner Library Bear", 3, 3).id();
-    let caster_library_instant = scenario
-        .add_spell_to_library_top(P0, "Caster Top Bolt", true)
-        .id();
+    let caster_library_creature = scenario.add_creature(P0, "Caster Top Creature", 1, 1).id();
 
     let warp = scenario
         .add_spell_to_hand_from_oracle(P0, "Chaos Warp", true, CHAOS_WARP_ORACLE)
@@ -104,28 +59,30 @@ fn chaos_warp_cast_reveals_target_owner_library_not_caster() {
     );
 
     let mut runner = scenario.build();
-    put_library_top(&mut runner, owner_library_creature);
+    put_library_top(&mut runner, caster_library_creature);
 
-    runner
-        .cast(warp)
-        .target_object(target)
-        .resolve();
+    runner.cast(warp).target_object(target).resolve();
 
     assert_eq!(
-        runner.state().objects[&caster_library_instant].zone,
+        runner.state().last_revealed_ids,
+        vec![target],
+        "Chaos Warp must reveal the top of the targeted permanent owner's library"
+    );
+    assert_eq!(
+        runner.state().objects[&target].zone,
+        Zone::Battlefield,
+        "revealed permanent from the target owner's library must enter the battlefield"
+    );
+    assert_eq!(
+        runner.state().objects[&caster_library_creature].zone,
         Zone::Library,
-        "caster's library top must not be consumed by Chaos Warp reveal"
+        "caster's library top must stay in the library when reveal routes to the target owner"
     );
     assert!(
-        !runner.state().last_revealed_ids.contains(&caster_library_instant),
-        "Chaos Warp must reveal the target owner's library, not the caster's"
-    );
-    assert!(
-        runner
+        !runner
             .state()
             .last_revealed_ids
-            .iter()
-            .all(|id| runner.state().objects[id].owner == P1),
-        "revealed cards must belong to the targeted permanent's owner (P1)"
+            .contains(&caster_library_creature),
+        "Chaos Warp must not reveal from the caster's library"
     );
 }
