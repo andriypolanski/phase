@@ -714,6 +714,7 @@ mod bring_to_light_converge_mana_value;
 mod captain_america_first_tap_msh_wave2;
 mod celestial_reunion_behold_choose_type;
 mod chaos_warp_owner_library;
+mod issue_5263_chaos_warp;
 mod chicago_loop_pay_speed_x_mana;
 mod chord_of_calling;
 mod cinder_strike_additional_cost_instead;
