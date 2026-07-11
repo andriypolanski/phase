@@ -11003,7 +11003,8 @@ fn investigate_twice_uses_repeat_for() {
         "first effect should be Investigate, got {:?}",
         def.effect,
     );
-    // CR 609.3: "twice" → repeat_for = Fixed(2), resolver handles repetition.
+    // CR 608.2c: "twice" → repeat_for = Fixed(2); the instruction is followed as
+    // written, once per iteration, and the resolver handles the repetition.
     assert_eq!(def.repeat_for, Some(QuantityExpr::Fixed { value: 2 }));
     assert!(def.sub_ability.is_none());
 }
@@ -11164,7 +11165,8 @@ fn investigate_three_times_uses_repeat_for() {
     use crate::parser::oracle_effect::parse_effect_chain;
     let def = parse_effect_chain("investigate three times", AbilityKind::Spell);
     assert!(matches!(*def.effect, Effect::Investigate));
-    // CR 609.3: "three times" → repeat_for = Fixed(3), not cloned sub_ability chain.
+    // CR 608.2c: "three times" → repeat_for = Fixed(3) — the instruction is followed
+    // as written, once per iteration — not a cloned sub_ability chain.
     assert_eq!(
         def.repeat_for,
         Some(QuantityExpr::Fixed { value: 3 }),
@@ -13895,6 +13897,105 @@ fn strive_cost_parsed_from_oracle_text() {
     let r = parse(text, "Test Card", &[], &["Instant"], &[]);
     assert!(r.strive_cost.is_some());
     assert_eq!(r.strive_cost.unwrap().mana_value(), 3);
+}
+
+/// CR 207.2c + CR 601.2f: Fireball (Alpha 1993) carries the identical
+/// per-target cost-increase clause 21 years before the "Strive" ability word
+/// existed, so its line is BARE (no em-dash label). The bare fallback in
+/// `parse_strive_cost_line` must populate `strive_cost` just like the labeled
+/// path does for modern Strive cards.
+#[test]
+fn strive_cost_parsed_from_bare_clause_fireball() {
+    use crate::types::ability::Effect;
+    use crate::types::mana::ManaCost;
+    let r = parse(
+        "This spell costs {1} more to cast for each target beyond the first.\nFireball deals X damage divided evenly, rounded down, among any number of targets.",
+        "Fireball",
+        &[],
+        &["Sorcery"],
+        &[],
+    );
+    let cost = r
+        .strive_cost
+        .as_ref()
+        .expect("bare (unlabeled) cost-increase clause must set strive_cost");
+    match cost {
+        ManaCost::Cost { shards, generic } => {
+            assert_eq!(
+                *generic, 1,
+                "Fireball's per-target surcharge is {{1}} generic"
+            );
+            assert!(shards.is_empty(), "no colored shards in {{1}}: {shards:?}");
+        }
+        other => panic!("expected a concrete Cost, got {other:?}"),
+    }
+    // Positive reach-guard: the second (damage-division) clause still parses to
+    // a real DealDamage effect — proving the bare-fallback fix does not regress
+    // the already-correct second clause and that this test reaches real parsing.
+    assert!(
+        !r.abilities.is_empty(),
+        "Fireball's damage clause must produce a spell ability"
+    );
+    let has_damage = r
+        .abilities
+        .iter()
+        .any(|a| matches!(&*a.effect, Effect::DealDamage { .. }));
+    assert!(
+        has_damage,
+        "Fireball's damage-division clause must parse to DealDamage: {:#?}",
+        r.abilities
+    );
+}
+
+/// CR 207.2c + CR 601.2f: Officious Interrogation (Murders at Karlov Manor,
+/// 2024) also carries a BARE cost-increase clause — printed nine years after
+/// Strive existed, WotC chose not to apply the label. This is the class-
+/// coverage proof: a different colored surcharge ({W}{U}) on the same pattern.
+#[test]
+fn strive_cost_parsed_from_bare_clause_officious_interrogation() {
+    use crate::types::mana::{ManaCost, ManaCostShard};
+    let r = parse(
+        "This spell costs {W}{U} more to cast for each target beyond the first.\nChoose any number of target players. Investigate X times, where X is the total number of creatures those players control.",
+        "Officious Interrogation",
+        &[],
+        &["Instant"],
+        &[],
+    );
+    let cost = r
+        .strive_cost
+        .as_ref()
+        .expect("bare (unlabeled) cost-increase clause must set strive_cost");
+    match cost {
+        ManaCost::Cost { shards, generic } => {
+            assert_eq!(*generic, 0, "{{W}}{{U}} carries no generic component");
+            assert_eq!(
+                shards,
+                &vec![ManaCostShard::White, ManaCostShard::Blue],
+                "surcharge must be {{W}}{{U}}: {shards:?}"
+            );
+        }
+        other => panic!("expected a concrete Cost, got {other:?}"),
+    }
+}
+
+/// Precision guard: the bare fallback must NOT over-match ordinary cost-
+/// modification text. A line with no "for each target beyond the first"
+/// suffix must return `None`, because `parse_strive_cost_body`'s
+/// `all_consuming` tail requires the full suffix.
+#[test]
+fn strive_cost_bare_clause_requires_full_suffix_match() {
+    let r = parse(
+        "This spell costs {1} more to cast.\nDraw a card.",
+        "Not A Strive Card",
+        &[],
+        &["Sorcery"],
+        &[],
+    );
+    assert!(
+        r.strive_cost.is_none(),
+        "bare fallback must not match a cost line lacking the per-target suffix: {:?}",
+        r.strive_cost
+    );
 }
 
 #[test]
