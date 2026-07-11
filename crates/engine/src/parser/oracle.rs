@@ -93,8 +93,9 @@ use super::oracle_static::{
     parse_collect_evidence_alt_cost, parse_compound_you_control_chosen_type_static_prefix,
     parse_every_creature_type_static_prefix, parse_flashback_trailing_self_spell_cost_reduction,
     parse_spells_alternative_cost, parse_static_line, parse_static_line_multi,
-    try_parse_graveyard_keyword_grant_clause, try_parse_graveyard_keyword_grant_static,
-    try_parse_top_of_library_cast_permission, GrantedCastKeywordKind,
+    split_misparsed_you_and_player_keyword_statics, try_parse_graveyard_keyword_grant_clause,
+    try_parse_graveyard_keyword_grant_static, try_parse_top_of_library_cast_permission,
+    GrantedCastKeywordKind,
 };
 use super::oracle_trigger::{lower_trigger_ir, parse_trigger_lines_at_index};
 use super::oracle_util::{
@@ -5768,6 +5769,7 @@ pub fn parse_oracle_text(
     );
     let mut parsed = lower_oracle_ir(&ir);
     scrub_granting_placeholder_descriptions(&mut parsed);
+    split_misparsed_you_and_player_keyword_statics(&mut parsed.statics);
     parsed
 }
 

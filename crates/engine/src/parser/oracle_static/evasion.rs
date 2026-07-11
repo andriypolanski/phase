@@ -581,6 +581,89 @@ pub(crate) fn parse_compound_subject_keyword_static(
     Some(vec![object_def, player_def])
 }
 
+/// CR 702.11 + CR 611.3a: Repair a misparsed `"You and <objects> have
+/// <player-applicable keyword>"` line that collapsed into one Continuous
+/// `Or{empty-typed You, objects}` static. The release-profile single-return
+/// fallback produces this shape when [`parse_compound_subject_keyword_static`]
+/// fails to claim the line first; layers then treat the empty-typed `You`
+/// disjunct as all permanents you control (issue #5322 / Sigarda, Heron's Grace).
+pub(crate) fn split_misparsed_you_and_player_keyword_statics(statics: &mut Vec<StaticDefinition>) {
+    let original = std::mem::take(statics);
+    let mut repaired = Vec::with_capacity(original.len() + 1);
+    for def in original {
+        if let Some(split) = try_split_misparsed_you_and_keyword_static(&def) {
+            repaired.extend(split);
+        } else {
+            repaired.push(def);
+        }
+    }
+    *statics = repaired;
+}
+
+fn try_split_misparsed_you_and_keyword_static(
+    def: &StaticDefinition,
+) -> Option<Vec<StaticDefinition>> {
+    if !matches!(def.mode, StaticMode::Continuous) {
+        return None;
+    }
+    let TargetFilter::Or { filters } = def.affected.as_ref()? else {
+        return None;
+    };
+    if filters.len() != 2 {
+        return None;
+    }
+
+    let mut player_branch = None;
+    let mut object_branch = None;
+    for filter in filters {
+        if rule_static_affected_is_player_scope(filter) {
+            if player_branch.is_some() {
+                return None;
+            }
+            player_branch = Some(filter.clone());
+        } else if object_branch.is_some() {
+            return None;
+        } else {
+            object_branch = Some(filter.clone());
+        }
+    }
+    let object_affected = object_branch?;
+    if player_branch.is_none() || rule_static_affected_is_player_scope(&object_affected) {
+        return None;
+    }
+
+    let player_mode = def.modifications.iter().find_map(|m| match m {
+        ContinuousModification::AddKeyword {
+            keyword: crate::types::keywords::Keyword::Protection(pt),
+        } => Some(StaticMode::PlayerProtection(pt.clone())),
+        ContinuousModification::AddKeyword {
+            keyword: crate::types::keywords::Keyword::Hexproof,
+        } => Some(StaticMode::Hexproof),
+        ContinuousModification::AddKeyword {
+            keyword: crate::types::keywords::Keyword::Shroud,
+        } => Some(StaticMode::Shroud),
+        _ => None,
+    })?;
+
+    let description = def.description.clone().unwrap_or_default();
+    let condition = def.condition.clone();
+
+    let mut object_def = StaticDefinition::continuous()
+        .affected(object_affected)
+        .modifications(def.modifications.clone())
+        .description(description.clone());
+    object_def.condition = condition.clone();
+
+    let mut player_def = StaticDefinition::new(player_mode)
+        .affected(TargetFilter::Typed(
+            TypedFilter::default().controller(ControllerRef::You),
+        ))
+        .description(description);
+    player_def.condition = condition;
+
+    Some(vec![object_def, player_def])
+}
+
 /// CR 611.3a: Resolve an Oxford-comma object-subject list (`"<A>, <B>, and
 /// <C>"`) into an `Or` of per-conjunct filters for
 /// [`parse_compound_subject_keyword_static`]'s N-item form. Shalai, Voice of

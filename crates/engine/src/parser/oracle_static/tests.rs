@@ -242,6 +242,52 @@ fn compound_subject_keyword_static_splits_sigarda_hexproof() {
     );
 }
 
+/// CR 702.11 + CR 611.3a: Release-profile single-return fallback can emit one
+/// bogus Continuous Or{empty-typed You, Human}; normalization must recover the
+/// canonical object Continuous + player Hexproof split (issue #5322).
+#[test]
+fn split_misparsed_you_and_keyword_static_recovers_sigarda_or() {
+    use crate::parser::oracle_static::split_misparsed_you_and_player_keyword_statics;
+    use crate::types::keywords::Keyword;
+
+    let bogus = StaticDefinition::continuous()
+        .affected(TargetFilter::Or {
+            filters: vec![
+                TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You)),
+                TargetFilter::Typed(
+                    TypedFilter::creature()
+                        .controller(ControllerRef::You)
+                        .subtype("Human".to_string()),
+                ),
+            ],
+        })
+        .modifications(vec![ContinuousModification::AddKeyword {
+            keyword: Keyword::Hexproof,
+        }])
+        .description("You and Humans you control have hexproof.".to_string());
+
+    let mut statics = vec![bogus];
+    split_misparsed_you_and_player_keyword_statics(&mut statics);
+    assert_eq!(
+        statics.len(),
+        2,
+        "expected split into object + player halves"
+    );
+
+    let object_def = &statics[0];
+    assert_eq!(object_def.mode, StaticMode::Continuous);
+    match &object_def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert_eq!(tf.get_subtype(), Some("Human"));
+        }
+        other => panic!("object-half must remain Typed(Human), got {other:?}"),
+    }
+
+    let player_def = &statics[1];
+    assert_eq!(player_def.mode, StaticMode::Hexproof);
+    assert!(player_def.modifications.is_empty());
+}
+
 /// CR 702.11 + CR 611.3a: "You and permanents you control have hexproof."
 /// (I Am Untouchable / scheme static class).
 #[test]

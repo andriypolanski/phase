@@ -141,6 +141,7 @@ pub(crate) use cost_mod::{
     parse_alternative_keyword_cost, parse_cast_spells_alternative_cost_multi,
     parse_collect_evidence_alt_cost, parse_spells_alternative_cost,
 };
+pub(crate) use evasion::split_misparsed_you_and_player_keyword_statics;
 pub(crate) use evasion::{
     classify_block_exception, is_extra_blockers_static_candidate, is_forced_block_static_candidate,
     parse_forced_block_blocker_slot,
