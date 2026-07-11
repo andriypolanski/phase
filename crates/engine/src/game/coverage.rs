@@ -3156,6 +3156,22 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             ));
             d.push(("zone".into(), fmt_zone(zone)));
         }
+        Effect::ForEachCategoryPutCounter {
+            category,
+            target,
+            counter_type,
+            ..
+        } => {
+            d.push((
+                "category".into(),
+                match category {
+                    crate::types::ability::IterationCategory::Color => "color".to_string(),
+                    crate::types::ability::IterationCategory::CardType => "card type".to_string(),
+                },
+            ));
+            d.push(("target".into(), fmt_target(target)));
+            d.push(("counter_type".into(), counter_type.as_str().to_string()));
+        }
         Effect::ChooseObjectsIntoTrackedSet {
             chooser,
             filter,

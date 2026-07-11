@@ -3292,6 +3292,7 @@ fn legacy_effect(x: &Effect) -> bool {
         | Effect::AssembleContraptionsFromRollDifference
         | Effect::ProcessRadCounters
         | Effect::ForEachCategoryExile { .. }
+        | Effect::ForEachCategoryPutCounter { .. }
         | Effect::GiftDelivery { .. }
         | Effect::SetDayNight { .. }
         | Effect::Conjure { .. }
@@ -5423,6 +5424,7 @@ fn rw_effect(
         | Effect::ChooseAndSacrificeRest { .. }
         | Effect::RememberCard { .. }
         | Effect::ForEachCategoryExile { .. }
+        | Effect::ForEachCategoryPutCounter { .. }
         | Effect::VentureInto { .. }
         | Effect::TakeTheInitiative
         | Effect::RollToVisitAttractions

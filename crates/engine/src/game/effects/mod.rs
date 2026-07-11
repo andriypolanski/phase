@@ -3357,6 +3357,9 @@ pub fn resolve_effect(
         Effect::ForEachCategoryExile { .. } => {
             choose_from_zone::resolve_for_each_category(state, ability, events)
         }
+        Effect::ForEachCategoryPutCounter { .. } => {
+            choose_from_zone::resolve_for_each_category_put_counter(state, ability, events)
+        }
         Effect::ChooseObjectsIntoTrackedSet { .. } => {
             choose_objects_into_tracked_set::resolve(state, ability, events)
         }

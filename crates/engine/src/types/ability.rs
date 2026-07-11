@@ -11462,6 +11462,31 @@ pub enum Effect {
         #[serde(default = "default_true")]
         up_to: bool,
     },
+    /// CR 608.2c + CR 105.1 / CR 122.1: For each member of a fixed category
+    /// (the five colors, or CR 205.2a card types), put counters on one
+    /// battlefield permanent matching a base filter augmented with that member —
+    /// "for each color, put a +1/+1 counter on a Dragon you control of that
+    /// color" (Call the Spirit Dragons). Category-iteration sibling of
+    /// [`Effect::ForEachCategoryExile`]: scans the battlefield pool once, parks
+    /// one `ChooseFromZoneChoice` per member when multiple candidates exist,
+    /// auto-applies when exactly one candidate exists, and accumulates every
+    /// countered object into the chain tracked set for downstream "this way"
+    /// references.
+    ForEachCategoryPutCounter {
+        /// CR 105.1 / CR 205.2a: Which fixed category's members are iterated.
+        category: IterationCategory,
+        /// Base permanent filter before the per-member color/type restriction
+        /// ("a Dragon you control").
+        target: TargetFilter,
+        /// CR 122.1: Counter type placed on each chosen permanent.
+        counter_type: crate::types::counter::CounterType,
+        /// CR 122.1: Number of counters placed per member iteration.
+        count: QuantityExpr,
+        /// CR 700.2: Who makes each per-member choice when multiple candidates
+        /// exist. Controller by default.
+        #[serde(default)]
+        chooser: Chooser,
+    },
     /// CR 603.7e: An affected-player-chosen battlefield permanent set, written
     /// into the chain's tracked object set so downstream effects ("pay {N} for
     /// each ... chosen this way", "untap those creatures") reference the exact
@@ -13563,6 +13588,7 @@ impl Effect {
             | Effect::ReturnAsAura { .. }
             | Effect::ChooseFromZone { .. }
             | Effect::ForEachCategoryExile { .. }
+            | Effect::ForEachCategoryPutCounter { .. }
             | Effect::ChooseAndSacrificeRest { .. }
             | Effect::EachPlayerCopyChosen { .. }
             | Effect::GainEnergy { .. }
@@ -13917,6 +13943,7 @@ impl Effect {
             | Effect::ChooseFromZone { .. }
             | Effect::RememberCard { .. }
             | Effect::ForEachCategoryExile { .. }
+            | Effect::ForEachCategoryPutCounter { .. }
             | Effect::ChooseObjectsIntoTrackedSet { .. }
             | Effect::ChooseOneOf { .. }
             // CR 122.1: parent count is forwarded verbatim into the per-kind
@@ -14169,6 +14196,7 @@ impl Effect {
             | Effect::ChooseFromZone { .. }
             | Effect::RememberCard { .. }
             | Effect::ForEachCategoryExile { .. }
+            | Effect::ForEachCategoryPutCounter { .. }
             | Effect::ChooseObjectsIntoTrackedSet { .. }
             | Effect::ChooseOneOf { .. }
             // CR 122.1: parent count is forwarded verbatim into the per-kind
@@ -14414,6 +14442,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::ChooseFromZone { .. } => "ChooseFromZone",
         Effect::RememberCard { .. } => "RememberCard",
         Effect::ForEachCategoryExile { .. } => "ForEachCategoryExile",
+        Effect::ForEachCategoryPutCounter { .. } => "ForEachCategoryPutCounter",
         Effect::ChooseObjectsIntoTrackedSet { .. } => "ChooseObjectsIntoTrackedSet",
         Effect::ChooseAndSacrificeRest { .. } => "ChooseAndSacrificeRest",
         Effect::EachPlayerCopyChosen { .. } => "EachPlayerCopyChosen",
@@ -14925,6 +14954,7 @@ impl From<&Effect> for EffectKind {
             // The per-member iteration parks `ChooseFromZoneChoice` prompts and
             // emits `ChooseFromZone` resolution events; it shares the kind.
             Effect::ForEachCategoryExile { .. } => EffectKind::ChooseFromZone,
+            Effect::ForEachCategoryPutCounter { .. } => EffectKind::PutCounter,
             Effect::ChooseObjectsIntoTrackedSet { .. } => EffectKind::ChooseObjectsIntoTrackedSet,
             Effect::ChooseCounterKind { .. } => EffectKind::ChooseCounterKind,
             Effect::PutChosenCounter { .. } => EffectKind::PutChosenCounter,

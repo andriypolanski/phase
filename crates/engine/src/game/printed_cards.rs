@@ -1161,6 +1161,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::ChooseFromZone { .. }
         | Effect::RememberCard { .. }
         | Effect::ForEachCategoryExile { .. }
+        | Effect::ForEachCategoryPutCounter { .. }
         | Effect::ChooseObjectsIntoTrackedSet { .. }
         | Effect::ChooseAndSacrificeRest { .. }
         | Effect::EachPlayerCopyChosen { .. }

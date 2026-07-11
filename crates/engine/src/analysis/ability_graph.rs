@@ -958,6 +958,7 @@ fn effect_projection(effect: &Effect) -> Projection {
         | Effect::ChooseFromZone { .. }
         | Effect::RememberCard { .. }
         | Effect::ForEachCategoryExile { .. }
+        | Effect::ForEachCategoryPutCounter { .. }
         | Effect::ChooseObjectsIntoTrackedSet { .. }
         | Effect::ChooseAndSacrificeRest { .. }
         | Effect::EachPlayerCopyChosen { .. }

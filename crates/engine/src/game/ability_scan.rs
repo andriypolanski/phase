@@ -1198,6 +1198,9 @@ fn scan_effect(x: &Effect) -> Axes {
             chooser: _,
             up_to: _,
         } => Axes::NONE,
+        Effect::ForEachCategoryPutCounter {
+            target, chooser: _, ..
+        } => scan_target_filter(target),
         Effect::ChooseObjectsIntoTrackedSet {
             chooser,
             filter,
@@ -3628,6 +3631,7 @@ fn effect_resolution_choice_freedom(e: &Effect) -> ResolutionChoiceFreedom {
         | Effect::ChooseFromZone { .. }
         | Effect::RememberCard { .. }
         | Effect::ForEachCategoryExile { .. }
+        | Effect::ForEachCategoryPutCounter { .. }
         | Effect::ChooseObjectsIntoTrackedSet { .. }
         | Effect::ChooseAndSacrificeRest { .. }
         | Effect::Exploit { .. }

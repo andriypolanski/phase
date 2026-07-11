@@ -168,6 +168,39 @@ pub fn resolve_for_each_category(
     prompt_next_category_member(state, ability, &pool, member_filters, events)
 }
 
+/// CR 608.2c + CR 105.1 / CR 122.1: Resolve an `Effect::ForEachCategoryPutCounter`
+/// ("for each color/card type, put a counter on a permanent you control of that
+/// color/type"). Iterates the category's members in printed order, auto-applying
+/// when exactly one candidate exists and parking one `ChooseFromZoneChoice` per
+/// member when multiple candidates exist. Each countered object accumulates into
+/// a fresh chain tracked set for downstream "this way" references.
+pub fn resolve_for_each_category_put_counter(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let (category, target) = match &ability.effect {
+        Effect::ForEachCategoryPutCounter {
+            category, target, ..
+        } => (*category, target.clone()),
+        _ => {
+            return Err(EffectError::MissingParam(
+                "ForEachCategoryPutCounter".to_string(),
+            ))
+        }
+    };
+    let pool = resolve_put_counter_pool(state, ability, &target);
+    super::publish_fresh_tracked_set(state, Vec::new());
+    let member_filters = category
+        .member_filters()
+        .into_iter()
+        .map(|member| TargetFilter::And {
+            filters: vec![target.clone(), member],
+        })
+        .collect();
+    prompt_next_category_member(state, ability, &pool, member_filters, events)
+}
+
 /// CR 608.2c: Park the next category member's `ChooseFromZoneChoice` prompt for
 /// an `Effect::ForEachCategoryExile`. Members whose pool holds no matching card
 /// are skipped (CR 608.2c — nothing to exile of that color/type). When no member
@@ -181,16 +214,27 @@ fn prompt_next_category_member(
     mut remaining_member_filters: Vec<TargetFilter>,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let (zone, chooser, up_to) = match &ability.effect {
+    let (zone, chooser, up_to, put_counter) = match &ability.effect {
         Effect::ForEachCategoryExile {
             zone,
             chooser,
             up_to,
             ..
-        } => (*zone, *chooser, *up_to),
+        } => (*zone, *chooser, *up_to, None),
+        Effect::ForEachCategoryPutCounter {
+            counter_type,
+            count,
+            chooser,
+            ..
+        } => (
+            Zone::Battlefield,
+            *chooser,
+            false,
+            Some((counter_type.clone(), count.clone())),
+        ),
         _ => {
             return Err(EffectError::MissingParam(
-                "ForEachCategoryExile".to_string(),
+                "ForEachCategoryIteration".to_string(),
             ))
         }
     };
@@ -200,6 +244,25 @@ fn prompt_next_category_member(
         let cards = filter_category_pool(state, ability, pool, zone, &member_filter);
         if cards.is_empty() {
             continue;
+        }
+
+        if let Some((counter_type, count)) = put_counter.as_ref() {
+            if cards.len() == 1 {
+                let object_id = cards[0];
+                let count_val =
+                    crate::game::quantity::resolve_quantity_with_targets(state, count, ability)
+                        .max(0) as u32;
+                crate::game::effects::counters::apply_counter_addition(
+                    state,
+                    ability.controller,
+                    object_id,
+                    counter_type.clone(),
+                    count_val,
+                    events,
+                );
+                publish_tracked_set_unique(state, &[object_id]);
+                continue;
+            }
         }
 
         // CR 608.2d: "you may exile" → 0..=1 of that member; `up_to` is true.
@@ -224,10 +287,13 @@ fn prompt_next_category_member(
     }
 
     // CR 608.2c: No member had an eligible card — emit the resolution event so
-    // the parked continuation ("put the rest into your graveyard"/"you may cast
-    // a spell from among them") still runs.
+    // the parked continuation still runs.
+    let kind = match &ability.effect {
+        Effect::ForEachCategoryPutCounter { .. } => EffectKind::PutCounter,
+        _ => EffectKind::ChooseFromZone,
+    };
     events.push(GameEvent::EffectResolved {
-        kind: EffectKind::ChooseFromZone,
+        kind,
         source_id: ability.source_id,
     });
     Ok(())
@@ -252,23 +318,69 @@ pub(crate) fn drain_pending_per_category_zone_choice(
         remaining_member_filters,
     } = pending;
 
-    // CR 608.2c: "you may EXILE a card of that color/type" — the per-member
-    // action is the exile itself, so the chosen card moves to Exile now, then
-    // EXTENDS the chain tracked set ("the cards exiled this way") for a
-    // downstream "from among them" / "the rest" clause. The chain set was
-    // rebound to a fresh EMPTY set at iteration start (`resolve_for_each_category`),
-    // so an all-decline iteration correctly leaves it empty — a continuation
-    // such as Portent's "if you exiled four or more cards this way" never sees
-    // the producer's revealed pool. An empty pick (the player declined this
-    // member) extends by nothing.
-    for &card_id in chosen {
-        crate::game::zones::move_to_zone(state, card_id, Zone::Exile, events);
-    }
-    if !chosen.is_empty() {
-        super::publish_tracked_set(state, chosen.to_vec());
+    match &ability.effect {
+        Effect::ForEachCategoryExile { .. } => {
+            for &card_id in chosen {
+                crate::game::zones::move_to_zone(state, card_id, Zone::Exile, events);
+            }
+            if !chosen.is_empty() {
+                super::publish_tracked_set(state, chosen.to_vec());
+            }
+        }
+        Effect::ForEachCategoryPutCounter {
+            counter_type,
+            count,
+            ..
+        } => {
+            let count_val =
+                crate::game::quantity::resolve_quantity_with_targets(state, count, &ability).max(0)
+                    as u32;
+            for &card_id in chosen {
+                crate::game::effects::counters::apply_counter_addition(
+                    state,
+                    ability.controller,
+                    card_id,
+                    counter_type.clone(),
+                    count_val,
+                    events,
+                );
+            }
+            if !chosen.is_empty() {
+                publish_tracked_set_unique(state, chosen);
+            }
+        }
+        _ => {}
     }
 
     let _ = prompt_next_category_member(state, &ability, &pool, remaining_member_filters, events);
+}
+
+fn publish_tracked_set_unique(state: &mut GameState, ids: &[ObjectId]) {
+    let unique: Vec<ObjectId> = ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            state
+                .chain_tracked_set_id
+                .and_then(|set_id| state.tracked_object_sets.get(&set_id))
+                .is_none_or(|set| !set.contains(id))
+        })
+        .collect();
+    if !unique.is_empty() {
+        super::publish_tracked_set(state, unique);
+    }
+}
+
+fn resolve_put_counter_pool(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    target: &TargetFilter,
+) -> Vec<ObjectId> {
+    let filter_ctx = FilterContext::from_ability(ability);
+    crate::game::targeting::zone_object_ids(state, Zone::Battlefield)
+        .into_iter()
+        .filter(|id| matches_target_filter(state, *id, target, &filter_ctx))
+        .collect()
 }
 
 /// CR 608.2c: Snapshot the revealed/exiled pool for a `ForEachCategoryExile`
