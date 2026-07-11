@@ -49,6 +49,7 @@ export type GameFormat =
   | "TwoHeadedGiant"
   | "Archenemy"
   | "Planechase"
+  | "Vanguard"
   | "Limited"
   | "Momir";
 
@@ -221,6 +222,7 @@ export interface ReplayPlayerDeckList {
   commander: string[];
   planar_deck: string[];
   scheme_deck: string[];
+  vanguard: string[];
   contraption_deck: string[];
   sticker_sheets: string[];
   signature_spell: string[];

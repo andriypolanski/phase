@@ -773,6 +773,15 @@ pub struct GameObject {
     // Commander: whether this object is a commander card
     #[serde(default)]
     pub is_commander: bool,
+    /// CR 902.6: Whether this object is a player's vanguard card.
+    #[serde(default)]
+    pub is_vanguard: bool,
+    /// CR 902.5: Vanguard hand-size modifier copied from `CardFace` at load time.
+    #[serde(default)]
+    pub hand_modifier: i32,
+    /// CR 902.4: Vanguard life modifier copied from `CardFace` at load time.
+    #[serde(default)]
+    pub life_modifier: i32,
     /// Oathbreaker RC: command-zone signature-spell role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_spell: Option<SignatureSpellState>,
@@ -1547,6 +1556,9 @@ impl GameObject {
             available_mana_pips: Vec::new(),
             loyalty_activations_this_turn: 0,
             is_commander: false,
+            is_vanguard: false,
+            hand_modifier: 0,
+            life_modifier: 0,
             signature_spell: None,
             commander_tax: None,
             is_renowned: false,

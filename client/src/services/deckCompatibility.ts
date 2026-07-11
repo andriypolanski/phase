@@ -53,6 +53,7 @@ interface DeckCompatibilityRequest {
   commander: string[];
   planar_deck: string[];
   scheme_deck: string[];
+  vanguard: string[];
   /** Oathbreaker RC: signature spell card name (empty for non-Oathbreaker formats). */
   signature_spell: string[];
   selected_format?: GameFormat | null;

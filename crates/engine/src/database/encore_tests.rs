@@ -385,6 +385,8 @@ fn real_encore_card_synthesizes_encore_ability() {
         printings: Vec::new(),
         rulings: Vec::new(),
         is_game_changer: false,
+        hand: None,
+        life: None,
         identifiers: AtomicIdentifiers {
             scryfall_oracle_id: Some("coastline-marauders-oracle".to_string()),
             scryfall_id: Some("coastline-marauders-face".to_string()),

@@ -33,7 +33,7 @@ use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
 use crate::types::phase::Phase;
 use crate::types::player::PlayerCounterKind;
 use crate::types::replacements::ReplacementEvent;
-use crate::types::statics::StaticMode;
+use crate::types::statics::{HandSizeModification, StaticMode};
 use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 
@@ -8992,6 +8992,72 @@ pub fn synthesize_conspiracy(face: &mut CardFace) {
     }
 }
 
+/// Parse MTGJSON Vanguard `hand`/`life` modifier strings ("+1", "-3", "+0").
+fn parse_vanguard_modifier(raw: &str) -> i32 {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "0" {
+        return 0;
+    }
+    trimmed.parse().unwrap_or_else(|_| {
+        if let Some(rest) = trimmed.strip_prefix('+') {
+            rest.parse().unwrap_or(0)
+        } else if let Some(rest) = trimmed.strip_prefix('-') {
+            -(rest.parse().unwrap_or(0))
+        } else {
+            0
+        }
+    })
+}
+
+/// CR 902.6 / CR 902.7: Vanguard cards remain face up in the command zone and
+/// their abilities function from there. CR 902.5b: the hand modifier also sets
+/// starting and maximum hand size via a synthesized `MaximumHandSize` static.
+/// Idempotent: only stamps `Zone::Command` when absent.
+pub fn synthesize_vanguard(face: &mut CardFace) {
+    if !face.card_type.core_types.contains(&CoreType::Vanguard) {
+        return;
+    }
+
+    if face.hand_modifier != 0 {
+        let already_has_hand_static = face.static_abilities.iter().any(|static_def| {
+            matches!(
+                static_def.mode,
+                StaticMode::MaximumHandSize {
+                    modification: HandSizeModification::AdjustedBy(adj),
+                } if adj == face.hand_modifier
+            ) && static_def
+                .description
+                .as_deref()
+                .is_some_and(|d| d.contains("CR 902.5b"))
+        });
+        if !already_has_hand_static {
+            face.static_abilities.push(
+                StaticDefinition::new(StaticMode::MaximumHandSize {
+                    modification: HandSizeModification::AdjustedBy(face.hand_modifier),
+                })
+                .affected(TargetFilter::Typed(
+                    TypedFilter::default().controller(ControllerRef::You),
+                ))
+                .description(format!(
+                    "CR 902.5b: Vanguard hand modifier adjusts starting and maximum hand size by {}.",
+                    face.hand_modifier
+                )),
+            );
+        }
+    }
+
+    for trigger in face.triggers.iter_mut() {
+        if !trigger.trigger_zones.contains(&Zone::Command) {
+            trigger.trigger_zones.push(Zone::Command);
+        }
+    }
+    for static_def in face.static_abilities.iter_mut() {
+        if !static_def.active_zones.contains(&Zone::Command) {
+            static_def.active_zones.push(Zone::Command);
+        }
+    }
+}
+
 pub fn synthesize_all(face: &mut CardFace) {
     synthesize_basic_land_mana(face);
     synthesize_equip(face);
@@ -9297,6 +9363,9 @@ pub fn synthesize_all(face: &mut CardFace) {
     // CR 905.4 / CR 113.6b: stamp Zone::Command onto conspiracy triggers and
     // statics so the command-zone scans evaluate them.
     synthesize_conspiracy(face);
+    // CR 902.6 / CR 902.7 / CR 902.5b: stamp Zone::Command onto vanguard
+    // triggers/statics and synthesize the hand-size modifier static.
+    synthesize_vanguard(face);
 }
 
 /// CR 702.176a: Synthesize Impending's battlefield static and end-step trigger.
@@ -10042,6 +10111,16 @@ fn build_oracle_face_inner(
         metadata: Default::default(),
         rarities: Default::default(),
         attraction_lights: vec![],
+        hand_modifier: mtgjson
+            .hand
+            .as_deref()
+            .map(parse_vanguard_modifier)
+            .unwrap_or(0),
+        life_modifier: mtgjson
+            .life
+            .as_deref()
+            .map(parse_vanguard_modifier)
+            .unwrap_or(0),
     };
 
     face.brawl_commander = compute_brawl_commander(mtgjson, &face);
@@ -10557,6 +10636,8 @@ mod cycling_synthesis_tests {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: AtomicIdentifiers {
                 scryfall_oracle_id: Some("fractured-sanity-test".to_string()),
                 scryfall_id: Some("fractured-sanity-test-face".to_string()),
@@ -10626,6 +10707,8 @@ mod cycling_synthesis_tests {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: AtomicIdentifiers {
                 scryfall_oracle_id: Some("storm-queen-test".to_string()),
                 scryfall_id: Some("storm-queen-test-face".to_string()),
@@ -10678,6 +10761,8 @@ mod cycling_synthesis_tests {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: AtomicIdentifiers {
                 scryfall_oracle_id: Some("flying-men-test".to_string()),
                 scryfall_id: Some("flying-men-test-face".to_string()),
@@ -11281,8 +11366,10 @@ mod evoke_synthesis_tests {
             leadership_skills: None,
             printings: Vec::new(),
             rulings: Vec::new(),
-            is_game_changer: false,
-            identifiers: crate::database::mtgjson::AtomicIdentifiers {
+        is_game_changer: false,
+        hand: None,
+        life: None,
+        identifiers: crate::database::mtgjson::AtomicIdentifiers {
                 scryfall_id: None,
                 scryfall_oracle_id: None,
             },
@@ -13685,6 +13772,8 @@ mod provoke_synthesis_tests {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: crate::database::mtgjson::AtomicIdentifiers {
                 scryfall_id: None,
                 scryfall_oracle_id: None,
@@ -14762,6 +14851,8 @@ mod increment_synthesis_tests {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: crate::database::mtgjson::AtomicIdentifiers {
                 scryfall_oracle_id: Some("increment-dedupe-test".to_string()),
                 scryfall_id: Some("increment-dedupe-test-face".to_string()),
@@ -21280,8 +21371,10 @@ mod bloodthirst_synthesis_tests {
             leadership_skills: None,
             printings: Vec::new(),
             rulings: Vec::new(),
-            is_game_changer: false,
-            identifiers: crate::database::mtgjson::AtomicIdentifiers {
+        is_game_changer: false,
+        hand: None,
+        life: None,
+        identifiers: crate::database::mtgjson::AtomicIdentifiers {
                 scryfall_id: None,
                 scryfall_oracle_id: None,
             },
@@ -21345,6 +21438,8 @@ mod bloodthirst_synthesis_tests {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: crate::database::mtgjson::AtomicIdentifiers {
                 scryfall_id: None,
                 scryfall_oracle_id: None,
@@ -21465,6 +21560,8 @@ mod bloodthirst_synthesis_tests {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: crate::database::mtgjson::AtomicIdentifiers {
                 scryfall_id: None,
                 scryfall_oracle_id: None,
@@ -21597,6 +21694,8 @@ mod bloodthirst_synthesis_tests {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: crate::database::mtgjson::AtomicIdentifiers {
                 scryfall_id: None,
                 scryfall_oracle_id: None,

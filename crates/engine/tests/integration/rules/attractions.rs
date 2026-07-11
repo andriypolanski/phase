@@ -57,6 +57,8 @@ fn test_attraction_face(name: &str, oracle: &str, lights: Vec<u8>) -> CardFace {
         metadata: Default::default(),
         rarities: Default::default(),
         attraction_lights: lights,
+        hand_modifier: 0,
+        life_modifier: 0,
     }
 }
 

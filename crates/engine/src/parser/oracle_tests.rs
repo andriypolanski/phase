@@ -1520,6 +1520,8 @@ fn oracle_face_for(
         printings: Vec::new(),
         rulings: Vec::new(),
         is_game_changer: false,
+        hand: None,
+        life: None,
         identifiers: AtomicIdentifiers {
             scryfall_oracle_id: Some(format!("{}-oracle", name.to_lowercase())),
             scryfall_id: Some(format!("{}-face", name.to_lowercase())),
@@ -2034,6 +2036,8 @@ fn pupu_ufo_full_card_supported_dynamic_base_power() {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: AtomicIdentifiers {
                 scryfall_oracle_id: Some("pupu-ufo-oracle".to_string()),
                 scryfall_id: Some("pupu-ufo-face".to_string()),
@@ -2085,6 +2089,8 @@ fn sita_varma_full_card_supported_inverted_genitive_base_pt() {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: AtomicIdentifiers {
                 scryfall_oracle_id: Some("sita-varma-oracle".to_string()),
                 scryfall_id: Some("sita-varma-face".to_string()),

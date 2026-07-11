@@ -888,7 +888,7 @@ export class P2PHostAdapter implements EngineAdapter {
         guestDeckRaw,
       )
         ? guestDeckRaw
-        : { main_deck: [], sideboard: [], commander: [], planar_deck: [], scheme_deck: [] };
+        : { main_deck: [], sideboard: [], commander: [], planar_deck: [], scheme_deck: [], vanguard: [] };
 
       const token = crypto.randomUUID();
       this.playerTokens.set(pid, token);

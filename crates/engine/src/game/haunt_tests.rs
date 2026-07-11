@@ -502,6 +502,8 @@ fn atomic(name: &str, types: &[&str], type_line: &str, oracle: &str) -> AtomicCa
         printings: Vec::new(),
         rulings: Vec::new(),
         is_game_changer: false,
+        hand: None,
+        life: None,
         identifiers: AtomicIdentifiers {
             scryfall_oracle_id: Some(format!("{name}-oracle")),
             scryfall_id: Some(format!("{name}-face")),

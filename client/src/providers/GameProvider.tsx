@@ -220,6 +220,7 @@ type ExpandedDeckWithTier = {
   commander: string[];
   planar_deck: string[];
   scheme_deck: string[];
+  vanguard: string[];
   signature_spell: string[];
   sticker_sheets: string[];
   bracket_tier: CommanderBracketTier;
@@ -282,6 +283,7 @@ function buildPlayerOnlyDeckList(deck: ParsedDeck, playerBracket?: CommanderBrac
       commander: [],
       planar_deck: [],
       scheme_deck: [],
+      vanguard: [],
       signature_spell: [],
       sticker_sheets: [],
       bracket_tier: "core",
@@ -311,6 +313,7 @@ async function buildLocalAiDeckList(
       commander: [],
       planar_deck: [],
       scheme_deck: [],
+      vanguard: [],
       signature_spell: [],
       sticker_sheets: [],
       bracket_tier: "core",
@@ -1267,6 +1270,7 @@ export function GameProvider({
               commander: [] as string[],
               planar_deck: [] as string[],
               scheme_deck: [] as string[],
+              vanguard: [] as string[],
               sticker_sheets: [] as string[],
               signature_spell: [] as string[],
             },
@@ -1276,6 +1280,7 @@ export function GameProvider({
               commander: [] as string[],
               planar_deck: [] as string[],
               scheme_deck: [] as string[],
+              vanguard: [] as string[],
               sticker_sheets: [] as string[],
               signature_spell: [] as string[],
             },

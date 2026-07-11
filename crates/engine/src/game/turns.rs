@@ -1997,6 +1997,10 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
 /// statics from battlefield and command zone that affect the given player.
 /// SetTo overrides replace the base; AdjustedBy modifiers are accumulated additively.
 /// The result is clamped to a minimum of 0.
+pub(crate) fn maximum_hand_size_for_player(state: &GameState, player: PlayerId) -> usize {
+    compute_maximum_hand_size(state, player)
+}
+
 fn compute_maximum_hand_size(state: &GameState, player: PlayerId) -> usize {
     let context = super::static_abilities::StaticCheckContext {
         player_id: Some(player),

@@ -406,6 +406,8 @@ fn atomic_unearth_creature() -> AtomicCard {
         printings: Vec::new(),
         rulings: Vec::new(),
         is_game_changer: false,
+        hand: None,
+        life: None,
         identifiers: AtomicIdentifiers {
             scryfall_oracle_id: Some("hellspark-oracle".to_string()),
             scryfall_id: Some("hellspark-face".to_string()),

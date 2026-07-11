@@ -590,6 +590,8 @@ mod tests {
             metadata: Default::default(),
             rarities: Default::default(),
             attraction_lights: vec![],
+            hand_modifier: 0,
+            life_modifier: 0,
         }
     }
 

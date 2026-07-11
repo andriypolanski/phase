@@ -1826,6 +1826,8 @@ mod tests {
             printings: Vec::new(),
             rulings: Vec::new(),
             is_game_changer: false,
+            hand: None,
+            life: None,
             identifiers: AtomicIdentifiers {
                 scryfall_id: None,
                 scryfall_oracle_id: oracle_id.map(str::to_string),

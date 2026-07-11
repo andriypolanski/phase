@@ -2144,6 +2144,7 @@ fn fmt_core_type(ct: &CoreType) -> &'static str {
         CoreType::Phenomenon => "phenomenon",
         CoreType::Scheme => "scheme",
         CoreType::Conspiracy => "conspiracy",
+        CoreType::Vanguard => "vanguard",
     }
 }
 
@@ -11071,6 +11072,8 @@ mod tests {
             metadata: Default::default(),
             rarities: Default::default(),
             attraction_lights: vec![],
+            hand_modifier: 0,
+            life_modifier: 0,
         }
     }
 

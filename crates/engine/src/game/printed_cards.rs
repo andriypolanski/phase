@@ -165,6 +165,8 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
     obj.strive_cost = card_face.strive_cost.clone();
     obj.casting_restrictions = card_face.casting_restrictions.clone();
     obj.casting_options = card_face.casting_options.clone();
+    obj.hand_modifier = card_face.hand_modifier;
+    obj.life_modifier = card_face.life_modifier;
 
     // CR 716.2b: "A level is a designation that any permanent can have. A
     // Class retains its level even if it stops being a Class. Levels are not
@@ -1773,6 +1775,8 @@ mod tests {
             metadata: Default::default(),
             rarities: Default::default(),
             attraction_lights: vec![],
+            hand_modifier: 0,
+            life_modifier: 0,
         }
     }
 

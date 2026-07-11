@@ -258,6 +258,8 @@ mod tests {
                 printings: vec![],
                 rulings: vec![],
                 is_game_changer: false,
+                hand: None,
+                life: None,
                 identifiers: crate::database::mtgjson::AtomicIdentifiers {
                     scryfall_id: None,
                     scryfall_oracle_id: None,
@@ -305,6 +307,8 @@ mod tests {
                 printings: vec![],
                 rulings: vec![],
                 is_game_changer: false,
+                hand: None,
+                life: None,
                 identifiers: crate::database::mtgjson::AtomicIdentifiers {
                     scryfall_id: None,
                     scryfall_oracle_id: None,
@@ -339,6 +343,8 @@ mod tests {
                 printings: vec![],
                 rulings: vec![],
                 is_game_changer: false,
+                hand: None,
+                life: None,
                 identifiers: crate::database::mtgjson::AtomicIdentifiers {
                     scryfall_id: None,
                     scryfall_oracle_id: None,

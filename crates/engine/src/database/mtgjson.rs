@@ -80,6 +80,12 @@ pub struct AtomicCard {
     pub rulings: Vec<Ruling>,
     #[serde(default)]
     pub is_game_changer: bool,
+    /// CR 902.5: Vanguard hand-size modifier (e.g. "+1", "-3").
+    #[serde(default)]
+    pub hand: Option<String>,
+    /// CR 902.4: Vanguard starting-life modifier (e.g. "+7", "-3").
+    #[serde(default)]
+    pub life: Option<String>,
     pub identifiers: AtomicIdentifiers,
     /// Localized printings of this card from MTGJSON. Only display fields
     /// (name/text/type) are captured — used to emit per-language card-data

@@ -117,6 +117,7 @@ fn deck_payload_from_current_pools(state: &GameState) -> Result<DeckPayload, Str
             attraction_deck: Vec::new(),
             planar_deck: Vec::new(),
             scheme_deck: (*p.registered_scheme_deck).clone(),
+            vanguard: Vec::new(),
             contraption_deck: Vec::new(),
             sticker_sheets: state
                 .players
@@ -137,6 +138,7 @@ fn deck_payload_from_current_pools(state: &GameState) -> Result<DeckPayload, Str
             attraction_deck: Vec::new(),
             planar_deck: (*p0.registered_planar_deck).clone(),
             scheme_deck: (*p0.registered_scheme_deck).clone(),
+            vanguard: Vec::new(),
             contraption_deck: Vec::new(),
             sticker_sheets: state.players[0].sticker_sheets.clone(),
             signature_spell: (*p0.current_signature_spell).clone(),
@@ -149,6 +151,7 @@ fn deck_payload_from_current_pools(state: &GameState) -> Result<DeckPayload, Str
             attraction_deck: Vec::new(),
             planar_deck: Vec::new(),
             scheme_deck: (*p1.registered_scheme_deck).clone(),
+            vanguard: Vec::new(),
             contraption_deck: Vec::new(),
             sticker_sheets: state.players[1].sticker_sheets.clone(),
             signature_spell: (*p1.current_signature_spell).clone(),
@@ -406,6 +409,8 @@ mod tests {
             metadata: Default::default(),
             rarities: Default::default(),
             attraction_lights: vec![],
+            hand_modifier: 0,
+            life_modifier: 0,
         }
     }
 

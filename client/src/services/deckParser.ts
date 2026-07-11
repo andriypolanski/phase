@@ -35,6 +35,7 @@ export interface ExpandedDeck {
   commander: string[];
   planar_deck: string[];
   scheme_deck: string[];
+  vanguard: string[];
   sticker_sheets: string[];
   /** Oathbreaker RC: signature spell card name (empty for non-Oathbreaker formats). */
   signature_spell: string[];
@@ -64,6 +65,7 @@ export function expandParsedDeck(deck: ParsedDeck): ExpandedDeck {
     commander: deck.commander ?? [],
     planar_deck: deck.planar_deck ?? [],
     scheme_deck: deck.scheme_deck ?? [],
+    vanguard: deck.vanguard ?? [],
     sticker_sheets: deck.sticker_sheets ?? [],
     signature_spell: deck.signature_spell ?? [],
   };
@@ -304,6 +306,7 @@ function normalizeParsedDeck(
     sideboard: deduplicateEntries(normalizeEntries(deck.sideboard)),
     planar_deck: normalizeNames(deck.planar_deck),
     scheme_deck: normalizeNames(deck.scheme_deck),
+    vanguard: normalizeNames(deck.vanguard),
     sticker_sheets: deck.sticker_sheets ? [...deck.sticker_sheets] : undefined,
   };
 

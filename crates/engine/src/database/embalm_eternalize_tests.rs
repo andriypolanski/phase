@@ -400,6 +400,8 @@ fn atomic_creature(name: &str, mana_cost: &str, keyword: &str, oracle: &str) -> 
         printings: Vec::new(),
         rulings: Vec::new(),
         is_game_changer: false,
+        hand: None,
+        life: None,
         identifiers: crate::database::mtgjson::AtomicIdentifiers {
             scryfall_oracle_id: Some(format!("{name}-oracle")),
             scryfall_id: Some(format!("{name}-face")),
@@ -457,6 +459,8 @@ fn atomic_with_types(
         printings: Vec::new(),
         rulings: Vec::new(),
         is_game_changer: false,
+        hand: None,
+        life: None,
         identifiers: crate::database::mtgjson::AtomicIdentifiers {
             scryfall_oracle_id: Some(format!("{name}-oracle")),
             scryfall_id: Some(format!("{name}-face")),

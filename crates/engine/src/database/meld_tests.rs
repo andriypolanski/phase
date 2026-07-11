@@ -40,6 +40,8 @@ fn atomic(name: &str, type_line: &str, types: &[&str], text: &str) -> AtomicCard
         printings: Vec::new(),
         rulings: Vec::new(),
         is_game_changer: false,
+        hand: None,
+        life: None,
         identifiers: AtomicIdentifiers {
             scryfall_oracle_id: Some(format!("{}-oracle", name.to_lowercase())),
             scryfall_id: Some(format!("{}-face", name.to_lowercase())),

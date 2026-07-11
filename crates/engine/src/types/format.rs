@@ -64,6 +64,9 @@ pub enum GameFormat {
     /// Create a token that's a copy of a creature card with mana value X chosen
     /// at random."
     Momir,
+    /// CR 902: Vanguard — each player selects one vanguard card that remains
+    /// face up in the command zone alongside a normal 60-card deck.
+    Vanguard,
 }
 
 /// CR 100.4 / CR 100.4a: Per-format sideboard rules.
@@ -203,6 +206,7 @@ impl GameFormat {
             | GameFormat::TwoHeadedGiant
             | GameFormat::Archenemy
             | GameFormat::Planechase
+            | GameFormat::Vanguard
             // Momir's pool is the entire creature corpus — no legality restriction.
             | GameFormat::Momir
             | GameFormat::Limited => None,
@@ -238,6 +242,7 @@ impl GameFormat {
             | GameFormat::TwoHeadedGiant
             | GameFormat::Archenemy
             | GameFormat::Planechase
+            | GameFormat::Vanguard
             | GameFormat::Limited => SideboardPolicy::Unlimited,
         }
     }
@@ -314,6 +319,7 @@ impl GameFormat {
             GameFormat::TwoHeadedGiant => "Two-Headed Giant",
             GameFormat::Archenemy => "Archenemy",
             GameFormat::Planechase => "Planechase",
+            GameFormat::Vanguard => "Vanguard",
             GameFormat::Momir => "Momir's Madness",
         }
     }
@@ -484,6 +490,14 @@ impl GameFormat {
                 description: "60-card multiplayer with a communal planar deck",
                 group: FormatGroup::Multiplayer,
                 default_config: FormatConfig::planechase(),
+            },
+            FormatMetadata {
+                format: GameFormat::Vanguard,
+                label: "Vanguard",
+                short_label: "VNG",
+                description: "60-card multiplayer with a per-player vanguard avatar",
+                group: FormatGroup::Multiplayer,
+                default_config: FormatConfig::vanguard(),
             },
             FormatMetadata {
                 format: GameFormat::Limited,
@@ -880,6 +894,27 @@ impl FormatConfig {
         }
     }
 
+    /// CR 902.3–902.7: Vanguard with per-player vanguard cards in the command
+    /// zone and normal 60-card player decks.
+    pub fn vanguard() -> Self {
+        FormatConfig {
+            format: GameFormat::Vanguard,
+            starting_life: 20,
+            min_players: 2,
+            max_players: 6,
+            deck_size: 60,
+            singleton: false,
+            command_zone: true,
+            commander_damage_threshold: None,
+            range_of_influence: None,
+            team_based: false,
+            archenemy_player: None,
+            uses_commander: false,
+            supplies_fixed_deck: false,
+            allow_debug_actions: false,
+        }
+    }
+
     /// CR 904.1-904.11: Default Archenemy, not Supervillain Rumble (CR 904.12)
     /// and not Archenemy Commander (CR 904.13).
     pub fn archenemy() -> Self {
@@ -939,6 +974,7 @@ impl FormatConfig {
             GameFormat::TwoHeadedGiant => Self::two_headed_giant(),
             GameFormat::Archenemy => Self::archenemy(),
             GameFormat::Planechase => Self::planechase(),
+            GameFormat::Vanguard => Self::vanguard(),
             GameFormat::Momir => Self::momir(),
         }
     }

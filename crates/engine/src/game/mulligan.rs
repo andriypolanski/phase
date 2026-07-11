@@ -92,7 +92,8 @@ pub fn start_mulligan(state: &mut GameState, events: &mut Vec<GameEvent>) -> Wai
     // Draw the opening hand for each player in seat order.
     let seat_order = state.seat_order.clone();
     for &player_id in &seat_order {
-        draw_n(state, player_id, STARTING_HAND_SIZE, events);
+        let hand_size = crate::game::vanguard::opening_hand_size(state, player_id);
+        draw_n(state, player_id, hand_size, events);
     }
 
     let forced_pending = tiny_leaders_forced_mulligan_pending(state);
@@ -219,7 +220,8 @@ pub fn handle_mulligan_decision(
         MulliganChoice::Mulligan => {
             let new_count = current_count + 1;
             shuffle_hand_into_library(state, player, events);
-            draw_n(state, player, STARTING_HAND_SIZE, events);
+            let hand_size = crate::game::vanguard::opening_hand_size(state, player);
+            draw_n(state, player, hand_size, events);
             // CR 103.5: a fresh redraw makes any prior "already bottomed"
             // credit meaningless — the obligation for the new count starts
             // from scratch.

@@ -76,6 +76,10 @@ pub struct PlayerDeckPayload {
     /// archenemy seat's payload is loaded as the scheme deck.
     #[serde(default)]
     pub scheme_deck: Vec<DeckEntry>,
+    /// CR 902.6: Optional per-player Vanguard card (exactly one when playing
+    /// the Vanguard format).
+    #[serde(default)]
+    pub vanguard: Vec<DeckEntry>,
     /// Unstable Contraptions: optional supplementary Contraption deck.
     #[serde(default)]
     pub contraption_deck: Vec<DeckEntry>,
@@ -123,6 +127,8 @@ pub struct PlayerDeckList {
     pub planar_deck: Vec<String>,
     #[serde(default)]
     pub scheme_deck: Vec<String>,
+    #[serde(default)]
+    pub vanguard: Vec<String>,
     #[serde(default)]
     pub contraption_deck: Vec<String>,
     #[serde(default)]
@@ -185,6 +191,7 @@ pub fn resolve_player_deck_list(db: &CardDatabase, list: &PlayerDeckList) -> Pla
         attraction_deck: resolve_names(db, &list.attraction_deck),
         planar_deck: resolve_names(db, &list.planar_deck),
         scheme_deck: resolve_names(db, &list.scheme_deck),
+        vanguard: resolve_names(db, &list.vanguard),
         contraption_deck: resolve_names(db, &list.contraption_deck),
         sticker_sheets: list.sticker_sheets.clone(),
         signature_spell: resolve_names(db, &list.signature_spell),
@@ -208,6 +215,7 @@ pub fn resolve_deck_list(db: &CardDatabase, list: &DeckList) -> DeckPayload {
             attraction_deck: resolve_names(db, &list.player.attraction_deck),
             planar_deck: resolve_names(db, &list.player.planar_deck),
             scheme_deck: resolve_names(db, &list.player.scheme_deck),
+            vanguard: resolve_names(db, &list.player.vanguard),
             contraption_deck: resolve_names(db, &list.player.contraption_deck),
             sticker_sheets: list.player.sticker_sheets.clone(),
             signature_spell: resolve_names(db, &list.player.signature_spell),
@@ -220,6 +228,7 @@ pub fn resolve_deck_list(db: &CardDatabase, list: &DeckList) -> DeckPayload {
             attraction_deck: resolve_names(db, &list.opponent.attraction_deck),
             planar_deck: resolve_names(db, &list.opponent.planar_deck),
             scheme_deck: resolve_names(db, &list.opponent.scheme_deck),
+            vanguard: resolve_names(db, &list.opponent.vanguard),
             contraption_deck: resolve_names(db, &list.opponent.contraption_deck),
             sticker_sheets: list.opponent.sticker_sheets.clone(),
             signature_spell: resolve_names(db, &list.opponent.signature_spell),
@@ -235,6 +244,7 @@ pub fn resolve_deck_list(db: &CardDatabase, list: &DeckList) -> DeckPayload {
                 attraction_deck: resolve_names(db, &deck.attraction_deck),
                 planar_deck: resolve_names(db, &deck.planar_deck),
                 scheme_deck: resolve_names(db, &deck.scheme_deck),
+                vanguard: resolve_names(db, &deck.vanguard),
                 contraption_deck: resolve_names(db, &deck.contraption_deck),
                 sticker_sheets: deck.sticker_sheets.clone(),
                 signature_spell: resolve_names(db, &deck.signature_spell),
@@ -397,6 +407,7 @@ fn momir_fixed_deck_payload(db: &CardDatabase, submitted: &DeckPayload) -> DeckP
         attraction_deck: Vec::new(),
         planar_deck: Vec::new(),
         scheme_deck: Vec::new(),
+        vanguard: Vec::new(),
         contraption_deck: Vec::new(),
         sticker_sheets: Vec::new(),
         signature_spell: Vec::new(),
@@ -857,6 +868,30 @@ pub fn load_deck_into_state(state: &mut GameState, payload: &DeckPayload) {
         load_shared_scheme_deck(state, entries, archenemy);
     }
 
+    // CR 902.6: Place each player's vanguard face up in the command zone.
+    let vanguard_decks: Vec<(PlayerId, &[DeckEntry])> =
+        std::iter::once((PlayerId(0), payload.player.vanguard.as_slice()))
+            .chain(std::iter::once((
+                PlayerId(1),
+                payload.opponent.vanguard.as_slice(),
+            )))
+            .chain(
+                payload
+                    .ai_decks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| (PlayerId((2 + i) as u8), d.vanguard.as_slice())),
+            )
+            .collect();
+    for (owner, entries) in vanguard_decks {
+        for entry in entries {
+            for _ in 0..entry.count {
+                crate::game::vanguard::create_vanguard_from_card_face(state, &entry.card, owner);
+            }
+        }
+    }
+    crate::game::vanguard::apply_vanguard_starting_life_modifiers(state);
+
     // Momir Basic: grant each player a game-start command-zone emblem carrying
     // the random-creature-token activated ability (CR 114.1 / CR 113.1b). The
     // grant runs BEFORE `rehydrate_game_from_card_db` populates the Momir pool
@@ -1125,6 +1160,8 @@ mod tests {
             metadata: Default::default(),
             rarities: Default::default(),
             attraction_lights: vec![],
+            hand_modifier: 0,
+            life_modifier: 0,
         }
     }
 
@@ -1178,6 +1215,8 @@ mod tests {
             metadata: Default::default(),
             rarities: Default::default(),
             attraction_lights: vec![],
+            hand_modifier: 0,
+            life_modifier: 0,
         }
     }
 

@@ -72,6 +72,7 @@ function asDeckPayload(deck: HostingDeck): {
   commander: string[];
   planar_deck: string[];
   scheme_deck: string[];
+  vanguard: string[];
 } {
   return {
     main_deck: deck.main_deck,
@@ -79,6 +80,7 @@ function asDeckPayload(deck: HostingDeck): {
     commander: deck.commander,
     planar_deck: deck.planar_deck ?? [],
     scheme_deck: deck.scheme_deck ?? [],
+    vanguard: deck.vanguard ?? [],
   };
 }
 
@@ -1052,7 +1054,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           const adapter = new P2PHostAdapter(
             {
               player: asDeckPayload(deck),
-              opponent: { main_deck: [], sideboard: [], commander: [], planar_deck: [], scheme_deck: [] },
+              opponent: { main_deck: [], sideboard: [], commander: [], planar_deck: [], scheme_deck: [], vanguard: [] },
               ai_decks: [],
             },
             host.peer,

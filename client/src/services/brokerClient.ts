@@ -383,7 +383,7 @@ export function resolveGuestOver(
           // P2P channel once the guest has dialed the host. The display
           // name, however, must be non-blank — the broker validates it with
           // the required-label rule and silently drops the frame otherwise.
-          deck: { main_deck: [], sideboard: [], commander: [], planar_deck: [], scheme_deck: [] },
+          deck: { main_deck: [], sideboard: [], commander: [], planar_deck: [], scheme_deck: [], vanguard: [] },
           display_name: opts.displayName ?? "",
           password: password ?? null,
           reservation_token: opts.reservationToken ?? null,

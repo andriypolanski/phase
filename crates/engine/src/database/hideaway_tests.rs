@@ -384,6 +384,8 @@ fn real_hideaway_card_synthesizes_etb_trigger() {
         printings: Vec::new(),
         rulings: Vec::new(),
         is_game_changer: false,
+        hand: None,
+        life: None,
         identifiers: AtomicIdentifiers {
             scryfall_oracle_id: Some("windbrisk-heights-oracle".to_string()),
             scryfall_id: Some("windbrisk-heights-face".to_string()),

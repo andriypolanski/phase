@@ -80,6 +80,10 @@ pub enum CoreType {
     /// conspiracy applies its abilities and a hidden-agenda conspiracy
     /// (CR 905.4a + CR 702.106) starts face down.
     Conspiracy,
+    /// CR 902.3 / CR 902.6: Vanguards — nontraditional cards used in the Vanguard
+    /// variant; each player has one face-up vanguard in the command zone for the
+    /// whole game.
+    Vanguard,
 }
 
 impl FromStr for CoreType {
@@ -102,6 +106,7 @@ impl FromStr for CoreType {
             "Phenomenon" => Ok(CoreType::Phenomenon),
             "Scheme" => Ok(CoreType::Scheme),
             "Conspiracy" => Ok(CoreType::Conspiracy),
+            "Vanguard" => Ok(CoreType::Vanguard),
             _ => Err(()),
         }
     }
@@ -125,6 +130,7 @@ impl fmt::Display for CoreType {
             CoreType::Phenomenon => write!(f, "Phenomenon"),
             CoreType::Scheme => write!(f, "Scheme"),
             CoreType::Conspiracy => write!(f, "Conspiracy"),
+            CoreType::Vanguard => write!(f, "Vanguard"),
         }
     }
 }
@@ -198,7 +204,8 @@ impl CoreType {
             | CoreType::Plane
             | CoreType::Phenomenon
             | CoreType::Scheme
-            | CoreType::Conspiracy => None,
+            | CoreType::Conspiracy
+            | CoreType::Vanguard => None,
         }
     }
 }
@@ -452,5 +459,6 @@ mod tests {
         assert_eq!(CoreType::Phenomenon.protection_quality_str(), None);
         assert_eq!(CoreType::Scheme.protection_quality_str(), None);
         assert_eq!(CoreType::Conspiracy.protection_quality_str(), None);
+        assert_eq!(CoreType::Vanguard.protection_quality_str(), None);
     }
 }

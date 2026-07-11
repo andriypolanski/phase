@@ -202,6 +202,14 @@ pub struct CardFace {
     /// CR 717.1: Lit-up roll numbers for Attraction card variants (d6 values 1–6).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attraction_lights: Vec<u8>,
+    /// CR 902.5 / CR 902.5b: Vanguard hand-size modifier applied to starting and
+    /// maximum hand size (7 ± this value). Sourced from MTGJSON `hand` at build time.
+    #[serde(default)]
+    pub hand_modifier: i32,
+    /// CR 902.4: Vanguard starting-life modifier (20 ± this value). Sourced from
+    /// MTGJSON `life` at build time.
+    #[serde(default)]
+    pub life_modifier: i32,
     /// Parser diagnostic warnings — silent fallbacks, ignored remainders, bare filters.
     /// Populated at build time by the Oracle parser warning accumulator.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -123,6 +123,9 @@ pub mod planechase;
 #[cfg(test)]
 #[path = "planechase_tests.rs"]
 mod planechase_tests;
+pub mod vanguard;
+// Tests for `vanguard` live in a sibling file (declared here, not in
+// `vanguard.rs`, so `vanguard.rs` stays implementation-only).
 pub mod planeswalker;
 pub mod players;
 pub mod preview;
@@ -159,6 +162,9 @@ pub(crate) mod trigger_matchers;
 pub mod triggers;
 pub mod turn_control;
 pub mod turns;
+#[cfg(test)]
+#[path = "vanguard_tests.rs"]
+mod vanguard_tests;
 pub mod visibility;
 pub mod zone_pipeline;
 pub mod zones;
