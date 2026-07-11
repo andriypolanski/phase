@@ -2,7 +2,7 @@ use super::*;
 use crate::parser::parse_oracle_text;
 use crate::types::ability::CardPlayMode::{Cast, Play};
 use crate::types::ability::CastFromZoneDriver::{DuringResolution, LingeringPermission};
-use crate::types::ability::{AttachmentKind, PerpetualModification};
+use crate::types::ability::{AttachmentKind, ForEachCategoryAction, PerpetualModification};
 use crate::types::card_type::CoreType;
 use crate::types::mana::{ManaCost, ManaCostShard};
 use crate::types::statics::CostModifyMode;
@@ -554,9 +554,9 @@ fn for_each_card_type_exile_from_among_them() {
     assert!(
         matches!(
             effect,
-            Effect::ForEachCategoryExile {
+            Effect::ForEachCategory {
                 category: IterationCategory::CardType,
-                up_to: true,
+                action: ForEachCategoryAction::ExileFromPool { up_to: true, .. },
                 ..
             }
         ),
@@ -579,9 +579,9 @@ fn for_each_color_exile_from_revealed_cards() {
             assert!(
                 matches!(
                     effect,
-                    Effect::ForEachCategoryExile {
+                    Effect::ForEachCategory {
                         category: IterationCategory::Color,
-                        up_to: true,
+                        action: ForEachCategoryAction::ExileFromPool { up_to: true, .. },
                         ..
                     }
                 ),
@@ -603,9 +603,12 @@ fn for_each_color_put_counter_on_typed_permanent_of_that_color() {
     assert!(
         matches!(
             effect,
-            Effect::ForEachCategoryPutCounter {
+            Effect::ForEachCategory {
                 category: IterationCategory::Color,
-                counter_type: CounterType::Plus1Plus1,
+                action: ForEachCategoryAction::PutCounter {
+                    counter_type: CounterType::Plus1Plus1,
+                    ..
+                },
                 ..
             }
         ),
@@ -629,9 +632,12 @@ fn call_the_spirit_dragons_upkeep_parses_put_counter_and_win_rider() {
     assert!(
         matches!(
             &*def.effect,
-            Effect::ForEachCategoryPutCounter {
+            Effect::ForEachCategory {
                 category: IterationCategory::Color,
-                counter_type: CounterType::Plus1Plus1,
+                action: ForEachCategoryAction::PutCounter {
+                    counter_type: CounterType::Plus1Plus1,
+                    ..
+                },
                 ..
             }
         ),
@@ -31546,14 +31552,17 @@ fn sanar_vivid_reveal_until_keeps_library_pile_for_per_color_exile() {
     assert!(
         matches!(
             exile.effect.as_ref(),
-            Effect::ForEachCategoryExile {
+            Effect::ForEachCategory {
                 category: IterationCategory::Color,
-                zone: Zone::Library,
-                up_to: true,
+                action: ForEachCategoryAction::ExileFromPool {
+                    zone: Zone::Library,
+                    up_to: true,
+                    ..
+                },
                 ..
             }
         ),
-        "expected ForEachCategoryExile, got {:?}",
+        "expected ForEachCategory(ExileFromPool), got {:?}",
         exile.effect
     );
 }

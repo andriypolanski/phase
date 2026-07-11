@@ -12,7 +12,7 @@ use engine::game::ability_utils::build_resolved_from_def;
 use engine::game::effects::resolve_ability_chain;
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle_effect::parse_effect_chain;
-use engine::types::ability::{AbilityKind, Effect, IterationCategory};
+use engine::types::ability::{AbilityKind, Effect, ForEachCategoryAction, IterationCategory};
 use engine::types::counter::CounterType;
 use engine::types::game_state::WaitingFor;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard};
@@ -75,12 +75,16 @@ fn call_the_spirit_dragons_upkeep_puts_counters_on_five_dragons_and_wins() {
     assert!(
         matches!(
             &*def.effect,
-            Effect::ForEachCategoryPutCounter {
+            Effect::ForEachCategory {
                 category: IterationCategory::Color,
+                action: ForEachCategoryAction::PutCounter {
+                    counter_type: CounterType::Plus1Plus1,
+                    ..
+                },
                 ..
             }
         ),
-        "expected ForEachCategoryPutCounter, got {:?}",
+        "expected ForEachCategory(PutCounter), got {:?}",
         def.effect
     );
 

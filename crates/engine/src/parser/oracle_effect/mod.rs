@@ -5711,12 +5711,13 @@ fn try_parse_for_each_category_exile(tp: TextPair<'_>) -> Option<ParsedEffectCla
     }
 
     Some(ParsedEffectClause {
-        effect: Effect::ForEachCategoryExile {
+        effect: Effect::ForEachCategory {
             category,
-            // The pool cards were revealed from the top of the library.
-            zone: Zone::Library,
             chooser: crate::types::ability::Chooser::Controller,
-            up_to: true,
+            action: crate::types::ability::ForEachCategoryAction::ExileFromPool {
+                zone: Zone::Library,
+                up_to: true,
+            },
         },
         duration: None,
         sub_ability: None,
@@ -5781,12 +5782,14 @@ fn try_parse_for_each_category_put_counter(tp: TextPair<'_>) -> Option<ParsedEff
     }
 
     Some(ParsedEffectClause {
-        effect: Effect::ForEachCategoryPutCounter {
+        effect: Effect::ForEachCategory {
             category,
-            target,
-            counter_type,
-            count: QuantityExpr::Fixed { value: 1 },
             chooser: crate::types::ability::Chooser::Controller,
+            action: crate::types::ability::ForEachCategoryAction::PutCounter {
+                target,
+                counter_type,
+                count: QuantityExpr::Fixed { value: 1 },
+            },
         },
         duration: None,
         sub_ability: None,
@@ -5812,9 +5815,12 @@ mod for_each_category_put_counter_tests {
         let clause = try_parse_for_each_category_put_counter(tp).expect("combinator must match");
         assert!(matches!(
             clause.effect,
-            Effect::ForEachCategoryPutCounter {
+            Effect::ForEachCategory {
                 category: IterationCategory::Color,
-                counter_type: CounterType::Plus1Plus1,
+                action: crate::types::ability::ForEachCategoryAction::PutCounter {
+                    counter_type: CounterType::Plus1Plus1,
+                    ..
+                },
                 ..
             }
         ));

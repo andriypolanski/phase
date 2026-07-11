@@ -1363,8 +1363,7 @@ fn stamp_effect_printed_slot(effect: &mut Effect, slot: usize, kind: PrintedItem
         Effect::ProcessRadCounters => {}
         Effect::ChooseFromZone { .. } => {}
         Effect::RememberCard { .. } => {}
-        Effect::ForEachCategoryExile { .. } => {}
-        Effect::ForEachCategoryPutCounter { .. } => {}
+        Effect::ForEachCategory { .. } => {}
         Effect::ChooseObjectsIntoTrackedSet { .. } => {}
         Effect::ChooseAndSacrificeRest { .. } => {}
         Effect::Exploit { .. } => {}
