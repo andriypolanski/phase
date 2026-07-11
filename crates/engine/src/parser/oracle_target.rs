@@ -2983,7 +2983,7 @@ pub fn parse_type_phrase_with_ctx<'a>(
                     | TypeFilter::Battle
             )
         );
-        // CR 205.2a + CR 608.2c: When a preceding `Choose` committed
+        // CR 205.3m + CR 608.2c: When a preceding `Choose` committed
         // `CreatureType`, "cards of that type" still refers to the chosen
         // creature subtype (Grave Sifter), not a card type — even though the
         // head noun is `Card`. Without this override, `IsChosenCardType` reads

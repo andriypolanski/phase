@@ -2661,9 +2661,7 @@ fn detach_after_player_scope_local_chain(
         // inherit the outer iteration — redundant `player_scope` on the child
         // would re-enter the fan-out driver mid-instruction (Grave Sifter:
         // Choose → graveyard ChangeZone must run once per outer iteration).
-        if next_is_co_scoped_anaphoric_consumer
-            || is_player_scope_local_continuation(&node.effect, &next.effect)
-        {
+        if is_player_scope_local_continuation(&node.effect, &next.effect) {
             next.player_scope = None;
         }
         let tail = detach_after_player_scope_local_chain(&mut next, scope, referent_in_scope);
