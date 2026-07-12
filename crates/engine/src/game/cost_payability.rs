@@ -623,6 +623,8 @@ impl AbilityCost {
             AbilityCost::Waterbend { cost } => {
                 super::casting::can_pay_cost_after_auto_tap(state, player, source, cost)
             }
+            // CR 702.49: Ninjutsu requires at least one returnable creature for
+            // the variant. Mana affordability is deferred to payment (per CR 601.2g).
             AbilityCost::NinjutsuFamily { variant, .. } => {
                 !super::keywords::returnable_creatures_for_variant(state, player, variant)
                     .is_empty()
