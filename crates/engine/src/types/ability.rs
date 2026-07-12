@@ -8654,6 +8654,17 @@ pub enum LibraryPosition {
     BeneathTop {
         depth: QuantityExpr,
     },
+    /// Digital-only Alchemy placement (no CR entry — Alchemy is a digital-only
+    /// format outside the Comprehensive Rules): "into the top N cards of [a]
+    /// library at random" (Goblin Morale Sergeant, Jessie Zane, Fangbringer,
+    /// Mine Security, Sheoldred's Assimilator, Sliver Weftwinder). The object is
+    /// inserted at a uniformly-random 0-based index among the top `n` slots, so
+    /// it is drawn within roughly `n` draws — unlike `Bottom`/`Top`, which are
+    /// deterministic. `n` is a `QuantityExpr` to mirror `BeneathTop`'s dynamic
+    /// depth, though every current printing uses a literal count.
+    RandomWithinTop {
+        n: QuantityExpr,
+    },
 }
 
 /// CR 701.20a + CR 608.2c: How the *set* of matching cards found by an
@@ -12213,6 +12224,13 @@ pub enum Effect {
         destination: Zone,
         #[serde(default)]
         tapped: bool,
+        /// Positional placement when `destination == Zone::Library`, mirroring
+        /// `Effect::ChangeZone::library_position`. `None` uses the default
+        /// bottom-of-library placement of `zones::create_object`; `Some` (only
+        /// `RandomWithinTop` today) slots the conjured card at a specific index.
+        /// Digital-only Alchemy has no CR entry for this placement.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        library_position: Option<LibraryPosition>,
     },
     /// Digital-only Alchemy keyword action (no CR entry): "perpetually" applies a
     /// modification to the matched cards that persists for the rest of the game

@@ -33017,6 +33017,7 @@ fn conjure_basic_battlefield() {
             cards,
             destination,
             tapped,
+            ..
         } => {
             assert_eq!(cards.len(), 1);
             assert_eq!(cards[0].named_name(), Some("Regal Force"));
@@ -33036,6 +33037,7 @@ fn conjure_quantity_graveyard() {
             cards,
             destination,
             tapped,
+            ..
         } => {
             assert_eq!(cards.len(), 1);
             assert_eq!(cards[0].named_name(), Some("Reassembling Skeleton"));
@@ -33230,6 +33232,7 @@ fn conjure_battlefield_tapped() {
             cards,
             destination,
             tapped,
+            ..
         } => {
             assert_eq!(cards.len(), 1);
             assert_eq!(cards[0].named_name(), Some("Forest"));
@@ -33250,6 +33253,7 @@ fn conjure_multi_card_hand() {
             cards,
             destination,
             tapped,
+            ..
         } => {
             assert_eq!(cards.len(), 2);
             assert_eq!(cards[0].named_name(), Some("Darksteel Ingot"));
@@ -33271,12 +33275,85 @@ fn conjure_into_library() {
             cards,
             destination,
             tapped,
+            ..
         } => {
             assert_eq!(cards.len(), 1);
             assert_eq!(cards[0].named_name(), Some("Lightning Bolt"));
             assert_eq!(cards[0].count, QuantityExpr::Fixed { value: 4 });
             assert_eq!(destination, Zone::Library);
             assert!(!tapped);
+        }
+        other => panic!("expected Conjure, got: {other:?}"),
+    }
+}
+
+/// Digital-only Alchemy placement: "conjure a duplicate of that creature into
+/// the top five cards of your library at random" (Goblin Morale Sergeant class)
+/// must thread the count through as a `LibraryPosition::RandomWithinTop`, not
+/// discard it and collapse to a deterministic bottom-of-library placement.
+#[test]
+fn conjure_duplicate_into_top_n_at_random_captures_position() {
+    let e = parse_effect(
+        "conjure a duplicate of that creature into the top five cards of your library at random",
+    );
+    match e {
+        Effect::Conjure {
+            cards,
+            destination,
+            library_position,
+            ..
+        } => {
+            assert_eq!(cards.len(), 1);
+            assert_eq!(destination, Zone::Library);
+            assert_eq!(
+                library_position,
+                Some(LibraryPosition::RandomWithinTop {
+                    n: QuantityExpr::Fixed { value: 5 }
+                }),
+                "the top-N count must be preserved as a RandomWithinTop position"
+            );
+        }
+        other => panic!("expected Conjure, got: {other:?}"),
+    }
+}
+
+/// The named-conjure form ("each player's library") routes through the same
+/// positional arm.
+#[test]
+fn conjure_named_into_top_n_each_player_at_random_captures_position() {
+    let e = parse_effect(
+        "conjure a card named Goblin into the top three cards of each player's library at random",
+    );
+    match e {
+        Effect::Conjure {
+            destination,
+            library_position,
+            ..
+        } => {
+            assert_eq!(destination, Zone::Library);
+            assert_eq!(
+                library_position,
+                Some(LibraryPosition::RandomWithinTop {
+                    n: QuantityExpr::Fixed { value: 3 }
+                })
+            );
+        }
+        other => panic!("expected Conjure, got: {other:?}"),
+    }
+}
+
+/// A plain "into your library" conjure has no positional constraint.
+#[test]
+fn conjure_plain_library_has_no_position() {
+    let e = parse_effect("conjure a card named Goblin into your library");
+    match e {
+        Effect::Conjure {
+            destination,
+            library_position,
+            ..
+        } => {
+            assert_eq!(destination, Zone::Library);
+            assert_eq!(library_position, None);
         }
         other => panic!("expected Conjure, got: {other:?}"),
     }
@@ -33290,6 +33367,7 @@ fn conjure_two_battlefield_tapped() {
             cards,
             destination,
             tapped,
+            ..
         } => {
             assert_eq!(cards.len(), 1);
             assert_eq!(cards[0].named_name(), Some("Mishra's Foundry"));
@@ -33311,6 +33389,7 @@ fn conjure_duplicate_anaphoric_into_hand() {
             cards,
             destination,
             tapped,
+            ..
         } => {
             assert_eq!(cards.len(), 1);
             assert!(

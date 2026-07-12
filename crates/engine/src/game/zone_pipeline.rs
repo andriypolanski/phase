@@ -617,6 +617,20 @@ pub(crate) fn move_object(
                         }
                         _ => None,
                     },
+                    // Digital-only Alchemy placement (no CR entry): "into the top N
+                    // cards at random" is produced only by the conjure resolver,
+                    // which creates cards via `create_object` and never routes
+                    // through this pipeline path. Exhaustiveness arm: a literal N
+                    // yields a uniformly-random slot (clamped to the library length
+                    // by `move_to_library_at_index`); a runtime-resolved N cannot be
+                    // evaluated without the originating ability here.
+                    LibraryPosition::RandomWithinTop { n } => match n {
+                        crate::types::ability::QuantityExpr::Fixed { value } => {
+                            let top_n = value.max(1) as usize;
+                            Some(zones::random_top_slot_index(&mut state.rng, top_n, top_n))
+                        }
+                        _ => None,
+                    },
                 };
                 zones::move_to_library_at_index(state, req.object_id, index, events);
                 return ZoneMoveResult::Done;
@@ -1682,6 +1696,18 @@ pub(crate) fn deliver_replaced_zone_change(
                     LibraryPosition::BeneathTop { depth } => match depth {
                         crate::types::ability::QuantityExpr::Fixed { value } => {
                             Some((*value).max(0) as usize)
+                        }
+                        _ => None,
+                    },
+                    // Digital-only Alchemy placement (no CR entry): conjure-only
+                    // (see the placement-consult arm above); never routes here.
+                    // Exhaustiveness arm: a literal N yields a uniformly-random slot
+                    // (clamped by `move_to_library_at_index`); a runtime-resolved N
+                    // needs the originating ability.
+                    LibraryPosition::RandomWithinTop { n } => match n {
+                        crate::types::ability::QuantityExpr::Fixed { value } => {
+                            let top_n = (*value).max(1) as usize;
+                            Some(zones::random_top_slot_index(&mut state.rng, top_n, top_n))
                         }
                         _ => None,
                     },

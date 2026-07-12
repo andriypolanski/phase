@@ -9025,7 +9025,7 @@ fn try_parse_conjure(tp: TextPair) -> Option<Effect> {
     };
 
     // Parse destination zone.
-    let (destination, zone_rest) = parse_conjure_zone(zone_rest)?;
+    let (destination, library_position, zone_rest) = parse_conjure_zone(zone_rest)?;
 
     // Parse optional "tapped" suffix.
     let tapped = tag::<_, _, OracleError<'_>>(" tapped")
@@ -9036,6 +9036,7 @@ fn try_parse_conjure(tp: TextPair) -> Option<Effect> {
         cards,
         destination,
         tapped,
+        library_position,
     })
 }
 
@@ -9091,7 +9092,7 @@ fn try_parse_conjure_duplicate(tp: TextPair) -> Option<Effect> {
 
     // Parse destination zone and optional "tapped" suffix, then require the
     // clause to be fully consumed — trailing text would be silently dropped.
-    let (destination, zone_rest) = parse_conjure_zone(zone_rest)?;
+    let (destination, library_position, zone_rest) = parse_conjure_zone(zone_rest)?;
     let (zone_rest, tapped) = match tag::<_, _, OracleError<'_>>(" tapped").parse(zone_rest) {
         Ok((after, _)) => (after, true),
         Err(_) => (zone_rest, false),
@@ -9107,6 +9108,7 @@ fn try_parse_conjure_duplicate(tp: TextPair) -> Option<Effect> {
         }],
         destination,
         tapped,
+        library_position,
     })
 }
 
@@ -9155,34 +9157,38 @@ fn parse_conjure_card_name(lower: &str) -> Option<(&str, &str)> {
 }
 
 /// Parse the destination zone from conjure text using nom combinators.
-fn parse_conjure_zone(lower: &str) -> Option<(Zone, &str)> {
+///
+/// Returns the destination `Zone`, an optional `LibraryPosition` (populated only
+/// for positional library placements such as "into the top N cards … at random"),
+/// and the unconsumed remainder.
+fn parse_conjure_zone(lower: &str) -> Option<(Zone, Option<LibraryPosition>, &str)> {
     alt((
         value(
-            Zone::Battlefield,
+            (Zone::Battlefield, None),
             tag::<_, _, OracleError<'_>>(" onto the battlefield"),
         ),
-        value(Zone::Hand, tag(" into your hand")),
-        value(Zone::Graveyard, tag(" into your graveyard")),
-        value(Zone::Library, tag(" into your library")),
+        value((Zone::Hand, None), tag(" into your hand")),
+        value((Zone::Graveyard, None), tag(" into your graveyard")),
+        value((Zone::Library, None), tag(" into your library")),
         // Third-person variants: "into their hand/graveyard/library"
-        value(Zone::Hand, tag(" into their hand")),
-        value(Zone::Graveyard, tag(" into their graveyard")),
-        value(Zone::Library, tag(" into their library")),
+        value((Zone::Hand, None), tag(" into their hand")),
+        value((Zone::Graveyard, None), tag(" into their graveyard")),
+        value((Zone::Library, None), tag(" into their library")),
         // Digital-only Alchemy conjures can also land in exile (e.g. a random card
         // conjured from a spellbook into exile with a play-permission rider).
-        value(Zone::Exile, tag(" into exile")),
-        // Digital-only Alchemy conjures can slot a card into a random position among the
-        // top N cards of a library (e.g. "into the top five cards of your library at
-        // random"). The engine models conjure destinations at Zone granularity, so — like
-        // the plain "into your library" arm above, and matching the established
-        // "Some(Zone::Library) covers top-of-library variants" convention — these collapse
-        // to Zone::Library. `parse_number` consumes the count word; "your" and "each
-        // player's" libraries both map here.
-        value(
-            Zone::Library,
+        value((Zone::Exile, None), tag(" into exile")),
+        // Digital-only Alchemy conjures can slot a card into a uniformly-random
+        // position among the top N cards of a library (e.g. "into the top five cards
+        // of your library at random"). The count is threaded through as a
+        // `LibraryPosition::RandomWithinTop` so the conjure resolver places the card at
+        // a random top-N slot instead of collapsing to the deterministic
+        // bottom-of-library that `create_object` would otherwise use. "your" and "each
+        // player's" libraries both map here (the resolver places into the controller's
+        // library).
+        map(
             preceded(
                 tag::<_, _, OracleError<'_>>(" into the top "),
-                preceded(
+                terminated(
                     nom_primitives::parse_number,
                     preceded(
                         tag(" cards of "),
@@ -9193,11 +9199,19 @@ fn parse_conjure_zone(lower: &str) -> Option<(Zone, &str)> {
                     ),
                 ),
             ),
+            |n| {
+                (
+                    Zone::Library,
+                    Some(LibraryPosition::RandomWithinTop {
+                        n: QuantityExpr::Fixed { value: n as i32 },
+                    }),
+                )
+            },
         ),
     ))
     .parse(lower)
     .ok()
-    .map(|(rest, zone)| (zone, rest))
+    .map(|(rest, (zone, position))| (zone, position, rest))
 }
 
 /// CR 611.2: Parse "have [subject] [predicate]" subject redirection.

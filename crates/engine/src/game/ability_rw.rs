@@ -4727,6 +4727,10 @@ fn rw_effect(
             cards: _,
             destination,
             tapped: _,
+            // Library placement (`RandomWithinTop`) writes into the same
+            // hand/library set membership the `destination` arm below already
+            // flags; it introduces no additional read/write axis.
+            library_position: _,
         } => {
             let mut p = RwProfile::empty();
             p.writes_external.set(StateKind::SetMembership);
