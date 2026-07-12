@@ -8949,7 +8949,9 @@ fn try_parse_conjure_from_spellbook(tp: TextPair) -> Option<Effect> {
         .ok()?;
 
     // Destination via the shared conjure-zone parser; " tapped" only after the battlefield.
-    let (destination, zone_rest) = parse_conjure_zone(after_book)?;
+    // `DraftFromSpellbook` models destinations at `Zone` granularity only (no positional
+    // library placement), so the optional `LibraryPosition` is discarded here.
+    let (destination, _library_position, zone_rest) = parse_conjure_zone(after_book)?;
     let (tail, tapped) = if destination == Zone::Battlefield {
         match tag::<_, _, OracleError<'_>>(" tapped").parse(zone_rest) {
             Ok((tail, _)) => (tail, true),

@@ -259,11 +259,7 @@ fn place_conjured_in_library(
         LibraryPosition::RandomWithinTop { n } => {
             let top_n = resolve_quantity_with_targets(state, n, ability).max(1) as usize;
             // `remaining + 1` = slots available once the card is reinserted.
-            Some(zones::random_top_slot_index(
-                &mut state.rng,
-                top_n,
-                remaining + 1,
-            ))
+            Some(zones::random_top_slot_index(&mut state.rng, top_n, remaining + 1))
         }
     };
 
@@ -303,7 +299,7 @@ mod tests {
                 .map(|i| {
                     crate::game::zones::create_object(
                         &mut state,
-                        CardId(100 + i as u32),
+                        CardId(100 + i as u64),
                         PlayerId(0),
                         format!("Filler {i}"),
                         Zone::Library,
