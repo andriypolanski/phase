@@ -259,7 +259,11 @@ fn place_conjured_in_library(
         LibraryPosition::RandomWithinTop { n } => {
             let top_n = resolve_quantity_with_targets(state, n, ability).max(1) as usize;
             // `remaining + 1` = slots available once the card is reinserted.
-            Some(zones::random_top_slot_index(&mut state.rng, top_n, remaining + 1))
+            Some(zones::random_top_slot_index(
+                &mut state.rng,
+                top_n,
+                remaining + 1,
+            ))
         }
     };
 
@@ -318,7 +322,9 @@ mod tests {
                     destination: Zone::Library,
                     tapped: false,
                     library_position: Some(LibraryPosition::RandomWithinTop {
-                        n: QuantityExpr::Fixed { value: TOP_N as i32 },
+                        n: QuantityExpr::Fixed {
+                            value: TOP_N as i32,
+                        },
                     }),
                 },
                 vec![],
