@@ -301,6 +301,15 @@ pub fn resolve(
         LibraryPosition::BeneathTop { depth } => {
             Some(resolve_quantity_with_targets(state, depth, ability).max(0) as usize)
         }
+        // Digital-only Alchemy placement (no CR entry): `RandomWithinTop` is
+        // produced only by the conjure resolver, which places freshly-created
+        // cards directly and never routes through this `PutAtLibraryPosition`
+        // path. Exhaustiveness arm: resolve a uniformly-random top-N slot
+        // (clamped to the library length by `move_to_library_at_index`).
+        LibraryPosition::RandomWithinTop { n } => {
+            let top_n = resolve_quantity_with_targets(state, n, ability).max(1) as usize;
+            Some(zones::random_top_slot_index(&mut state.rng, top_n, top_n))
+        }
     };
     match position {
         LibraryPosition::Top => {
@@ -310,7 +319,8 @@ pub fn resolve(
         }
         LibraryPosition::Bottom
         | LibraryPosition::NthFromTop { .. }
-        | LibraryPosition::BeneathTop { .. } => {
+        | LibraryPosition::BeneathTop { .. }
+        | LibraryPosition::RandomWithinTop { .. } => {
             for object_id in to_place {
                 zones::move_to_library_at_index(state, *object_id, index, events);
             }
