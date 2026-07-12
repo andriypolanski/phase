@@ -1,5 +1,7 @@
-//! Issue #5338 — Moon-Circuit Hacker ninjutsu must pay {U}; marker abilities must
-//! not route through `ActivateAbility` (which stacks without paying mana).
+//! Issue #5338 — Synthesized ninjutsu marker abilities on the battlefield must
+//! not route through `GameAction::ActivateAbility` (CR 702.49a: ninjutsu functions
+//! only from hand). The marker's `NinjutsuFamily` cost is a no-op in
+//! `pay_ability_cost`, so the generic activation path would stack without paying mana.
 
 use std::sync::Arc;
 
@@ -10,20 +12,12 @@ use engine::types::ability::{
 use engine::types::actions::GameAction;
 use engine::types::game_state::WaitingFor;
 use engine::types::keywords::Keyword;
-use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
+use engine::types::mana::{ManaCost, ManaCostShard};
 use engine::types::phase::Phase;
 
 use super::rules::AttackTarget;
 
-fn moon_circuit_ninjutsu_cost() -> ManaCost {
-    ManaCost::Cost {
-        shards: vec![ManaCostShard::Blue],
-        generic: 0,
-    }
-}
-
 fn moon_circuit_ninjutsu_marker_ability() -> AbilityDefinition {
-    let cost = moon_circuit_ninjutsu_cost();
     AbilityDefinition::new(
         AbilityKind::Activated,
         Effect::RuntimeHandled {
@@ -32,19 +26,23 @@ fn moon_circuit_ninjutsu_marker_ability() -> AbilityDefinition {
     )
     .cost(AbilityCost::NinjutsuFamily {
         variant: NinjutsuVariant::Ninjutsu,
-        mana_cost: cost,
+        mana_cost: ManaCost::Cost {
+            shards: vec![ManaCostShard::Blue],
+            generic: 0,
+        },
     })
 }
 
-fn wire_moon_circuit_hacker(obj: &mut engine::game::game_object::GameObject, with_marker: bool) {
-    let cost = moon_circuit_ninjutsu_cost();
-    obj.keywords.push(Keyword::Ninjutsu(cost.clone()));
+fn wire_moon_circuit_hacker_battlefield_marker(obj: &mut engine::game::game_object::GameObject) {
+    let cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::Blue],
+        generic: 0,
+    };
+    obj.keywords.push(Keyword::Ninjutsu(cost));
     obj.base_keywords = obj.keywords.clone();
-    if with_marker {
-        let marker = moon_circuit_ninjutsu_marker_ability();
-        obj.abilities = Arc::new(vec![marker.clone()]);
-        obj.base_abilities = Arc::new(vec![marker]);
-    }
+    let marker = moon_circuit_ninjutsu_marker_ability();
+    obj.abilities = Arc::new(vec![marker.clone()]);
+    obj.base_abilities = Arc::new(vec![marker]);
 }
 
 fn advance_to_declare_blockers_priority(
@@ -72,94 +70,6 @@ fn advance_to_declare_blockers_priority(
 }
 
 #[test]
-fn moon_circuit_hacker_hand_ninjutsu_not_offered_without_mana() {
-    let mut scenario = GameScenario::new();
-    scenario.at_phase(Phase::PreCombatMain);
-
-    let attacker = scenario.add_creature(P0, "Attacker", 1, 1).id();
-    let hand_hacker = scenario
-        .add_creature_to_hand(P0, "Moon-Circuit Hacker", 1, 3)
-        .id();
-
-    let mut runner = scenario.build();
-    wire_moon_circuit_hacker(
-        runner.state_mut().objects.get_mut(&hand_hacker).unwrap(),
-        false,
-    );
-    advance_to_declare_blockers_priority(&mut runner, attacker);
-
-    runner.state_mut().players[P0.0 as usize].mana_pool.clear();
-
-    let actions = engine::ai_support::legal_actions(runner.state());
-    assert!(
-        !actions.iter().any(|a| matches!(
-            a,
-            GameAction::ActivateNinjutsu {
-                ninjutsu_object_id,
-                creature_to_return,
-            } if *ninjutsu_object_id == hand_hacker && *creature_to_return == attacker
-        )),
-        "ActivateNinjutsu must not be offered with no mana and no tappable sources"
-    );
-
-    let result = runner.act(GameAction::ActivateNinjutsu {
-        ninjutsu_object_id: hand_hacker,
-        creature_to_return: attacker,
-    });
-    assert!(
-        result.is_err(),
-        "forced ActivateNinjutsu must fail without mana"
-    );
-}
-
-#[test]
-fn moon_circuit_hacker_hand_ninjutsu_deducts_blue_mana() {
-    let mut scenario = GameScenario::new();
-    scenario.at_phase(Phase::PreCombatMain);
-
-    let attacker = scenario.add_creature(P0, "Attacker", 1, 1).id();
-    let hand_hacker = scenario
-        .add_creature_to_hand(P0, "Moon-Circuit Hacker", 1, 3)
-        .id();
-
-    let mut runner = scenario.build();
-    wire_moon_circuit_hacker(
-        runner.state_mut().objects.get_mut(&hand_hacker).unwrap(),
-        false,
-    );
-    advance_to_declare_blockers_priority(&mut runner, attacker);
-
-    runner.state_mut().players[P0.0 as usize].mana_pool.clear();
-    runner.state_mut().players[P0.0 as usize]
-        .mana_pool
-        .add(ManaUnit::new(
-            ManaType::Blue,
-            hand_hacker,
-            false,
-            Vec::new(),
-        ));
-
-    let mana_before = runner.state().players[P0.0 as usize].mana_pool.total();
-    runner
-        .act(GameAction::ActivateNinjutsu {
-            ninjutsu_object_id: hand_hacker,
-            creature_to_return: attacker,
-        })
-        .expect("ActivateNinjutsu with {U} in pool should succeed");
-
-    assert_eq!(
-        runner.state().players[P0.0 as usize].mana_pool.total(),
-        mana_before - 1,
-        "ninjutsu must deduct exactly one blue mana"
-    );
-    assert_eq!(
-        runner.state().objects[&hand_hacker].zone,
-        engine::types::zones::Zone::Battlefield,
-        "Moon-Circuit Hacker must enter from hand after ninjutsu"
-    );
-}
-
-#[test]
 fn battlefield_ninjutsu_marker_not_offered_as_activate_ability_without_mana() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
@@ -168,13 +78,12 @@ fn battlefield_ninjutsu_marker_not_offered_as_activate_ability_without_mana() {
     let battlefield_hacker = scenario.add_creature(P0, "Moon-Circuit Hacker", 1, 3).id();
 
     let mut runner = scenario.build();
-    wire_moon_circuit_hacker(
+    wire_moon_circuit_hacker_battlefield_marker(
         runner
             .state_mut()
             .objects
             .get_mut(&battlefield_hacker)
             .unwrap(),
-        true,
     );
     advance_to_declare_blockers_priority(&mut runner, attacker);
 

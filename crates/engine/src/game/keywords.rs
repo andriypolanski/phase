@@ -670,15 +670,6 @@ pub fn is_ninjutsu_family_marker_ability(ability: &AbilityDefinition) -> bool {
         .is_some_and(|cost| matches!(cost, AbilityCost::NinjutsuFamily { .. }))
 }
 
-/// CR 601.2f: Effective ninjutsu-family mana cost after static reductions.
-pub(crate) fn effective_ninjutsu_mana_cost(
-    state: &GameState,
-    player: PlayerId,
-    mana_cost: ManaCost,
-) -> ManaCost {
-    apply_ability_cost_reduction(state, player, "ninjutsu", mana_cost)
-}
-
 /// CR 702.49a-c: Resolve Ninjutsu-family activation.
 ///
 /// Validates the activation, returns the specified creature to its owner's hand,
@@ -2624,5 +2615,9 @@ mod tests {
             },
         });
         assert!(is_ninjutsu_family_marker_ability(&marker));
+
+        let ordinary = AbilityDefinition::new(AbilityKind::Activated, Effect::Proliferate)
+            .cost(AbilityCost::Tap);
+        assert!(!is_ninjutsu_family_marker_ability(&ordinary));
     }
 }

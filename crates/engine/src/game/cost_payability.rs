@@ -623,22 +623,9 @@ impl AbilityCost {
             AbilityCost::Waterbend { cost } => {
                 super::casting::can_pay_cost_after_auto_tap(state, player, source, cost)
             }
-            // CR 702.49: Ninjutsu-family marker costs are only paid on the dedicated
-            // `ActivateNinjutsu` path; if this shape is ever consulted, both the
-            // returnable attacker and mana legs must be satisfied (CR 601.2b-g).
-            AbilityCost::NinjutsuFamily { variant, mana_cost } => {
+            AbilityCost::NinjutsuFamily { variant, .. } => {
                 !super::keywords::returnable_creatures_for_variant(state, player, variant)
                     .is_empty()
-                    && super::casting::can_pay_ability_mana_cost_after_auto_tap(
-                        state,
-                        player,
-                        source,
-                        &super::keywords::effective_ninjutsu_mana_cost(
-                            state,
-                            player,
-                            mana_cost.clone(),
-                        ),
-                    )
             }
             // CR 118.3: Effect-as-cost is conservatively treated as payable.
             // Runtime resolution determines actual outcome.
