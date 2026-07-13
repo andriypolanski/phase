@@ -41,7 +41,6 @@ golgari thug	Draw	Optional	none	Mill	-	IndividualDraw
 grave-shell scarab	Draw	Optional	none	Mill	-	IndividualDraw
 greater mossdog	Draw	Optional	none	Mill	-	IndividualDraw
 hullbreacher	Draw	Mandatory	none	Token	-	IndividualDraw
-island sanctuary	Draw	Optional	Prevent	none	-	IndividualDraw
 jace, wielder of mysteries	Draw	Mandatory	none	WinTheGame	-	IndividualDraw
 laboratory maniac	Draw	Mandatory	none	WinTheGame	-	IndividualDraw
 life from the loam	Draw	Optional	none	Mill	-	IndividualDraw

@@ -440,9 +440,7 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
             if let Some(remainder) = strip_optional_draw_skip(&effect_lower, effect) {
                 def = def.mode(ReplacementMode::Optional { decline: None });
                 def = def.quantity_modification(QuantityModification::Prevent);
-                if let Some(rider) = parse_when_you_do_reflexive(remainder) {
-                    def = def.execute(rider);
-                }
+                def = attach_optional_draw_skip_rider(def, remainder)?;
                 apply_draw_player_scope(&lower, &mut def);
                 // CR 504.1 + CR 614.1a + CR 614.11: draw-step timing and "while …"
                 // quantity gates are independent antecedent dimensions — compose
@@ -6539,6 +6537,23 @@ fn strip_optional_draw_skip<'a>(lower_body: &str, original_body: &'a str) -> Opt
     Some(rest.trim_start())
 }
 
+/// CR 603.12 + issue #5655: Attach an optional `"if you do, …"` rider to an
+/// optional draw-skip replacement. Returns `None` when non-empty rider text is
+/// present but cannot be lowered to a typed effect — fail closed rather than
+/// report the card as supported with a silently discarded rider (Island
+/// Sanctuary's conditional attack restriction class).
+fn attach_optional_draw_skip_rider(
+    def: ReplacementDefinition,
+    remainder: &str,
+) -> Option<ReplacementDefinition> {
+    let trimmed = remainder.trim_start_matches(['.', ' ']);
+    if trimmed.is_empty() {
+        return Some(def);
+    }
+    let rider = parse_when_you_do_reflexive(remainder)?;
+    Some(def.execute(rider))
+}
+
 /// CR 614.1a: Assign the replacement's player scope from the antecedent subject
 /// ("an opponent" → Opponent, "a player" / "its controller" → AnyPlayer,
 /// "you" → controller-only/None). Shared by the `Prevent` short-circuit and the
@@ -11041,17 +11056,15 @@ mod tests {
         }
     }
 
-    /// CR 614.1a + CR 614.6 + CR 121.6 + issue #5655: Island Sanctuary — "instead
-    /// you may skip that draw" during the draw step, with an optional accept rider.
+    /// CR 504.1 + CR 614.1a: optional draw-skip during the draw step without a
+    /// reflexive rider parses cleanly (Island Sanctuary's base clause shape).
     #[test]
-    fn island_sanctuary_optional_draw_skip_during_draw_step() {
+    fn optional_draw_skip_during_draw_step_without_rider_parses() {
         let def = parse_replacement_line(
-            "If you would draw a card during your draw step, instead you may skip that draw. \
-             If you do, until your next turn, you can't be attacked except by creatures with \
-             flying and/or islandwalk.",
-            "Island Sanctuary",
+            "If you would draw a card during your draw step, instead you may skip that draw.",
+            "Synthetic Draw Skip",
         )
-        .expect("Island Sanctuary draw replacement should parse");
+        .expect("optional draw skip during draw step should parse");
         assert_eq!(def.event, ReplacementEvent::Draw);
         assert!(matches!(
             def.mode,
@@ -11065,6 +11078,27 @@ mod tests {
             def.condition,
             Some(ReplacementCondition::DuringDrawStep),
             "during your draw step antecedent must gate on DuringDrawStep"
+        );
+        assert!(
+            def.execute.is_none(),
+            "no reflexive rider must not attach an execute effect"
+        );
+    }
+
+    /// CR 614.1a + CR 614.6 + CR 121.6 + issue #5655: Island Sanctuary's full
+    /// Oracle text carries an `"if you do, …"` attack-restriction rider that is
+    /// not yet implemented — fail closed rather than silently discarding it.
+    #[test]
+    fn island_sanctuary_unimplemented_rider_fails_closed() {
+        assert!(
+            parse_replacement_line(
+                "If you would draw a card during your draw step, instead you may skip that draw. \
+                 If you do, until your next turn, you can't be attacked except by creatures with \
+                 flying and/or islandwalk.",
+                "Island Sanctuary",
+            )
+            .is_none(),
+            "unimplemented rider must fail closed, not report partial support"
         );
     }
 
