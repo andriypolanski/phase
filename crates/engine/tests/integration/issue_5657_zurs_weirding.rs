@@ -11,32 +11,27 @@
 //! player so the discriminating assertions exercise affected-player-relative
 //! exclusion and referent binding.
 
-use engine::database::card_db::CardDatabase;
 use engine::game::scenario::{GameScenario, P0, P1};
-use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::actions::{DebugAction, GameAction};
 use engine::types::game_state::WaitingFor;
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
-use engine::types::zones::Zone;
 
-use crate::support::shared_card_db as load_db;
+const ZURS_WEIRDING_ORACLE: &str = "If a player would draw a card, they reveal it instead. Then any other player may pay 2 life. If a player does, put that card into its owner's graveyard. Otherwise, that player draws a card.";
 
 fn scenario_with_zurs_weirding(
-    db: &CardDatabase,
     drawing_player_library_top_to_bottom: &[&str],
 ) -> engine::game::scenario::GameRunner {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
-    scenario.add_real_card(P0, "Zur's Weirding", Zone::Battlefield, db);
-    for name in drawing_player_library_top_to_bottom.iter() {
-        scenario.add_real_card(P1, name, Zone::Library, db);
+    {
+        let mut zurs_weirding =
+            scenario.add_creature_from_oracle(P0, "Zur's Weirding", 0, 1, ZURS_WEIRDING_ORACLE);
+        zurs_weirding.as_enchantment();
     }
-    for _ in 0..5 {
-        scenario.add_real_card(P0, "Plains", Zone::Library, db);
-    }
+    scenario.with_library_top(P1, drawing_player_library_top_to_bottom);
+    scenario.with_library_top(P0, &["P0 Library 1", "P0 Library 2", "P0 Library 3"]);
     let mut runner = scenario.build();
-    engine::game::rehydrate_game_from_card_db(runner.state_mut(), db);
     runner.state_mut().debug_mode = true;
     runner
 }
@@ -110,11 +105,7 @@ fn drive_opponent_may_and_finish(runner: &mut engine::game::scenario::GameRunner
 /// pay 2 life, and bin the revealed card into its owner's graveyard.
 #[test]
 fn zurs_weirding_accept_pays_life_and_bins_revealed_card() {
-    let Some(db) = load_db() else {
-        return;
-    };
-
-    let mut runner = scenario_with_zurs_weirding(db, &["Grizzly Bears", "Forest", "Plains"]);
+    let mut runner = scenario_with_zurs_weirding(&["Grizzly Bears", "Forest", "Plains"]);
     let p0_life_before = player_life(runner.state(), P0);
     let p1_hand_before = hand_card_names(runner.state(), P1).len();
 
@@ -147,11 +138,7 @@ fn zurs_weirding_accept_pays_life_and_bins_revealed_card() {
 /// draws the same revealed card.
 #[test]
 fn zurs_weirding_decline_leaves_drawing_player_with_revealed_card() {
-    let Some(db) = load_db() else {
-        return;
-    };
-
-    let mut runner = scenario_with_zurs_weirding(db, &["Grizzly Bears", "Forest", "Plains"]);
+    let mut runner = scenario_with_zurs_weirding(&["Grizzly Bears", "Forest", "Plains"]);
     let p0_life_before = player_life(runner.state(), P0);
     let p1_hand_before = hand_card_names(runner.state(), P1).len();
 
@@ -182,21 +169,14 @@ fn zurs_weirding_decline_leaves_drawing_player_with_revealed_card() {
 /// CR 608.2d + CR 101.4: The drawing player is excluded from the APNAP fan-out.
 #[test]
 fn zurs_weirding_drawing_player_never_offered_opponent_may() {
-    let Some(db) = load_db() else {
-        return;
-    };
-
-    let mut runner = scenario_with_zurs_weirding(db, &["Grizzly Bears", "Forest"]);
+    let mut runner = scenario_with_zurs_weirding(&["Grizzly Bears", "Forest"]);
     issue_single_draw(&mut runner, P1);
 
     let mut saw_opponent_may_for_p0 = false;
     for _ in 0..80 {
         match runner.state().waiting_for.clone() {
             WaitingFor::OpponentMayChoice { player, .. } => {
-                assert_ne!(
-                    player, P1,
-                    "P1 (drawing player) must never be prompted"
-                );
+                assert_ne!(player, P1, "P1 (drawing player) must never be prompted");
                 if player == P0 {
                     saw_opponent_may_for_p0 = true;
                 }

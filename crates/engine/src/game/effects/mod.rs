@@ -6879,19 +6879,17 @@ fn resolve_chain_body(
                 // draw, changing the card's rules). `None` (exclude no one) is
                 // reserved for AnyPlayer and must NOT be the missing-context
                 // fallback here.
-                OpponentMayScope::AnyOtherPlayer => {
-                    match state.post_replacement_event_target() {
-                        Some(crate::types::ability::TargetRef::Player(p)) => Some(*p),
-                        _ => {
-                            debug_assert!(
-                                false,
-                                "AnyOtherPlayer fan-out reached without a resident \
+                OpponentMayScope::AnyOtherPlayer => match state.post_replacement_event_target() {
+                    Some(crate::types::ability::TargetRef::Player(p)) => Some(*p),
+                    _ => {
+                        debug_assert!(
+                            false,
+                            "AnyOtherPlayer fan-out reached without a resident \
                                  replaced-Draw event target; failing closed"
-                            );
-                            return Ok(());
-                        }
+                        );
+                        return Ok(());
                     }
-                }
+                },
             };
             let description = ability.description.clone();
             // apnap_order returns ALL living players active-player-first
