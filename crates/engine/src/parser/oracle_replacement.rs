@@ -6523,7 +6523,7 @@ fn body_is_draw_skip(lower_body: &str) -> bool {
 /// `None` when the body is not this shape. Distinct from mandatory
 /// `body_is_draw_skip` (Living Conundrum), which has no `"may"` modal.
 fn strip_optional_draw_skip<'a>(lower_body: &str, original_body: &'a str) -> Option<&'a str> {
-    let (_, rest_lower) = nom_on_lower(original_body, lower_body, |input| {
+    let (_, rest) = nom_on_lower(original_body, lower_body, |input| {
         (
             opt(tag::<_, _, OracleError<'_>>("instead ")),
             tag("you may "),
@@ -6532,11 +6532,8 @@ fn strip_optional_draw_skip<'a>(lower_body: &str, original_body: &'a str) -> Opt
             opt(tag(" instead")),
         )
             .parse(input)
-    })
-    .ok()?;
-    let offset = lower_body.len() - rest_lower.len();
-    let rest_orig = original_body[offset..].trim_start();
-    Some(rest_orig)
+    })?;
+    Some(rest.trim_start())
 }
 
 /// CR 614.1a: Assign the replacement's player scope from the antecedent subject
@@ -11004,25 +11001,41 @@ mod tests {
             "Synthetic Draw Gate",
         )
         .expect("combined draw-step + while gate should parse");
-        assert_eq!(
-            def.condition,
-            Some(ReplacementCondition::And {
-                conditions: vec![
-                    ReplacementCondition::DuringDrawStep,
+        let condition = def
+            .condition
+            .as_ref()
+            .expect("during draw step and while gates must compose with And");
+        match condition {
+            ReplacementCondition::And { conditions } => {
+                assert_eq!(conditions.len(), 2);
+                assert!(matches!(
+                    conditions[0],
+                    ReplacementCondition::DuringDrawStep
+                ));
+                match &conditions[1] {
                     ReplacementCondition::OnlyIfQuantity {
-                        lhs: QuantityExpr::Ref {
-                            qty: QuantityRef::LifeTotal {
-                                player: crate::types::ability::PlayerScope::Controller,
-                            },
-                        },
-                        comparator: Comparator::LE,
-                        rhs: QuantityExpr::Fixed { value: 5 },
-                        active_player_req: None,
-                    },
-                ],
-            }),
-            "during draw step and while gates must compose with And"
-        );
+                        lhs,
+                        comparator,
+                        rhs,
+                        active_player_req,
+                    } => {
+                        assert_eq!(
+                            *lhs,
+                            QuantityExpr::Ref {
+                                qty: QuantityRef::LifeTotal {
+                                    player: crate::types::ability::PlayerScope::Controller,
+                                },
+                            }
+                        );
+                        assert_eq!(*comparator, Comparator::LE);
+                        assert_eq!(*rhs, QuantityExpr::Fixed { value: 5 });
+                        assert_eq!(*active_player_req, None);
+                    }
+                    other => panic!("expected OnlyIfQuantity, got {other:?}"),
+                }
+            }
+            other => panic!("expected And, got {other:?}"),
+        }
     }
 
     /// CR 614.1a + CR 614.6 + CR 121.6 + issue #5655: Island Sanctuary — "instead
