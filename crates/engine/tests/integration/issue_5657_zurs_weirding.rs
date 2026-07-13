@@ -69,12 +69,15 @@ fn player_life(state: &engine::types::game_state::GameState, player: PlayerId) -
 }
 
 /// Drive the post-reveal opponent-may prompt and finish resolution.
-fn drive_opponent_may_and_finish(runner: &mut engine::game::scenario::GameRunner, accept: bool) {
-    let mut saw_opponent_may = false;
+fn drive_opponent_may_and_finish(
+    runner: &mut engine::game::scenario::GameRunner,
+    accept: bool,
+) -> usize {
+    let mut opponent_may_count = 0;
     for _ in 0..120 {
         match runner.state().waiting_for.clone() {
             WaitingFor::OpponentMayChoice { player, .. } => {
-                saw_opponent_may = true;
+                opponent_may_count += 1;
                 assert_ne!(
                     player, P1,
                     "the drawing player must never be offered the opponent-may choice; got {player:?}"
@@ -84,8 +87,8 @@ fn drive_opponent_may_and_finish(runner: &mut engine::game::scenario::GameRunner
                     .expect("opponent-may decision must succeed");
             }
             WaitingFor::Priority { .. } if runner.state().stack.is_empty() => {
-                if saw_opponent_may {
-                    return;
+                if opponent_may_count > 0 {
+                    return opponent_may_count;
                 }
             }
             _ => {
@@ -99,6 +102,7 @@ fn drive_opponent_may_and_finish(runner: &mut engine::game::scenario::GameRunner
         }
     }
     runner.advance_until_stack_empty();
+    opponent_may_count
 }
 
 /// CR 614.6 + CR 608.2d: When a non-controller draws, another player may accept,
@@ -143,7 +147,12 @@ fn zurs_weirding_decline_leaves_drawing_player_with_revealed_card() {
     let p1_hand_before = hand_card_names(runner.state(), P1).len();
 
     issue_single_draw(&mut runner, P1);
-    drive_opponent_may_and_finish(&mut runner, false);
+    let opponent_may_count = drive_opponent_may_and_finish(&mut runner, false);
+
+    assert_eq!(
+        opponent_may_count, 1,
+        "the substitute draw must retain the applied replacement and not offer Zur's Weirding again"
+    );
 
     let p1_hand_after = hand_card_names(runner.state(), P1);
     assert_eq!(

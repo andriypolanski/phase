@@ -4990,10 +4990,12 @@ pub(crate) fn controller_for_relative_filter(
 ///
 /// Resolution order:
 /// 1. First `TargetRef::Player` in `ability.targets` (chosen at announcement).
-/// 2. `resolve_event_context_target` on the filter — reads `state` slots like
+/// 2. Captured replaced-draw target for a continuation that paused after its
+///    post-replacement drain closed.
+/// 3. `resolve_event_context_target` on the filter — reads `state` slots like
 ///    `current_trigger_event` (TriggeringSpellController) and
 ///    `post_replacement_event_source` (PostReplacementSourceController).
-/// 3. Fall back to `ability.controller` (preserves prior semantics for context
+/// 4. Fall back to `ability.controller` (preserves prior semantics for context
 ///    refs whose state slots are empty in the current resolution window).
 pub(crate) fn resolve_player_for_context_ref(
     state: &GameState,
@@ -5057,6 +5059,19 @@ pub(crate) fn resolve_player_for_context_ref(
     }
     if matches!(target_filter, TargetFilter::ParentTargetOwner) {
         if let Some(player) = crate::game::ability_utils::parent_target_owner(ability, state) {
+            return player;
+        }
+    }
+    // CR 614.6 + CR 608.2c: A replacement continuation can pause at an
+    // opponent-may choice, after which its resident post-replacement drain is
+    // gone. `ability_with_event_context_targets` snapshots the affected drawing
+    // player into the pending continuation so its eventual "otherwise, that
+    // player draws" link still resolves to the replaced event's player.
+    if matches!(target_filter, TargetFilter::PostReplacementDamageTarget) {
+        if let Some(player) = ability.targets.iter().find_map(|target| match target {
+            TargetRef::Player(player) => Some(*player),
+            TargetRef::Object(_) => None,
+        }) {
             return player;
         }
     }
@@ -5208,6 +5223,17 @@ fn ability_with_event_context_targets(
         return pending;
     }
     if pending.targets.is_empty() {
+        // CR 614.6 + CR 608.2c: unlike an ordinary event-context effect, an
+        // optional replacement continuation can resume only after the resident
+        // post-replacement drain has retired. Capture the replaced event's target
+        // when any branch of the stashed chain needs it, not only when the
+        // optional head itself has that target slot.
+        if ability_refs_post_replacement_event_target(&pending) {
+            if let Some(target) = state.post_replacement_event_target() {
+                pending.targets.push(target.clone());
+                return pending;
+            }
+        }
         if let Some(filter) = pending.effect.target_filter() {
             if filter.is_context_ref() {
                 if let Some(target) = crate::game::targeting::resolve_event_context_target(
@@ -5221,6 +5247,33 @@ fn ability_with_event_context_targets(
         }
     }
     pending
+}
+
+/// True when a stashed continuation needs the replaced event's affected target
+/// after its resident post-replacement drain has been retired.
+fn ability_refs_post_replacement_event_target(ability: &ResolvedAbility) -> bool {
+    effect_parent_ref_slots(&ability.effect)
+        .iter()
+        .any(|filter| filter_refs_post_replacement_event_target(filter))
+        || ability
+            .sub_ability
+            .as_deref()
+            .is_some_and(ability_refs_post_replacement_event_target)
+        || ability
+            .else_ability
+            .as_deref()
+            .is_some_and(ability_refs_post_replacement_event_target)
+}
+
+fn filter_refs_post_replacement_event_target(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::PostReplacementDamageTarget => true,
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => filters
+            .iter()
+            .any(filter_refs_post_replacement_event_target),
+        TargetFilter::Not { filter } => filter_refs_post_replacement_event_target(filter),
+        _ => false,
+    }
 }
 
 /// CR 603.2: When an ability's `targets` are still empty at resolution but its
