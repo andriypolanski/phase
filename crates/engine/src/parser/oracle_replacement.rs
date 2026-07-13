@@ -19029,11 +19029,11 @@ mod snapshot_tests {
             matches!(
                 *else_draw.effect,
                 Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
                     target: TargetFilter::PostReplacementDamageTarget,
-                    ..
                 }
             ),
-            "otherwise draw must target the drawing player, got {:?}",
+            "otherwise draw must draw one card for the drawing player, got {:?}",
             else_draw.effect
         );
     }

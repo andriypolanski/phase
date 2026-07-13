@@ -273,6 +273,8 @@ fn resolve_all_declined_opponent_may(
                     else_resolved.targets = ability.targets.clone();
                 }
                 else_resolved.context = ability.context.clone();
+                else_resolved
+                    .set_replacement_applied_recursive(ability.replacement_applied.clone());
                 effects::resolve_ability_chain(state, &else_resolved, events, 1)
                     .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
             }
