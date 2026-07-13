@@ -9395,7 +9395,10 @@ mod tests {
     /// dug card (not the trigger source) receives the counter.
     #[test]
     fn exile_one_of_them_face_down_counter_rider_appends_put_counter_after_conceal() {
-        let mut defs = vec![AbilityDefinition::new(AbilityKind::Spell, make_dig_effect())];
+        let mut defs = vec![AbilityDefinition::new(
+            AbilityKind::Spell,
+            make_dig_effect(),
+        )];
         let env = env_for(&defs);
         let hatching = crate::types::counter::parse_counter_type("hatching");
         apply_clause_continuation(
@@ -11940,10 +11943,7 @@ mod tests {
             &mut ParseContext::default(),
         );
         assert!(
-            !matches!(
-                result,
-                Some(ContinuationAst::ExileOneOfThemFaceDown { .. })
-            ),
+            !matches!(result, Some(ContinuationAst::ExileOneOfThemFaceDown { .. })),
             "a pure-peek 'you may reveal it' must not be fused into the Gonti exile continuation"
         );
     }
