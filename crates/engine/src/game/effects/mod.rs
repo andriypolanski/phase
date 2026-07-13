@@ -3609,6 +3609,15 @@ fn effect_references_tracked_set(effect: &Effect) -> bool {
         Effect::ChangeSpeed { amount, .. } => quantity_hits_tracked(amount),
         Effect::PutCounter { count, .. } => quantity_hits_tracked(count),
         Effect::PutCounterAll { count, .. } => quantity_hits_tracked(count),
+        // CR 608.2c + CR 701.21a: an `ExileTop` whose count reduces the chain
+        // tracked set is a CONSUMER of that set, so the preceding producer must
+        // publish it. Kylox, Visionary Inventor ("sacrifice any number of other
+        // creatures, then exile the top X cards of your library, where X is
+        // their total power") is exactly this shape: without this arm
+        // `next_sub_needs_tracked_set` returned false, the sacrifice never
+        // published its affected ids, and the `TrackedSetAggregate` reduced an
+        // empty set to 0 — a fully-supported-looking card that exiles nothing.
+        Effect::ExileTop { count, .. } => quantity_hits_tracked(count),
         Effect::Token {
             count,
             power,
@@ -6556,11 +6565,18 @@ fn resolve_chain_body(
             controller,
         );
         let matching_players: Vec<PlayerId> = match scope {
-            PlayerFilter::AllExcept { .. } => {
-                // CR 608.2c + CR 109.4 + CR 608.2h: the `AllExcept` anchor may be an
-                // ability-target reference (ParentObjectTargetController), which the
-                // generic `matches_player_scope` predicate cannot resolve (it carries
-                // no `ResolvedAbility`). Route through the ability-aware
+            PlayerFilter::AllExcept { .. }
+            | PlayerFilter::ParentObjectTargetController
+            | PlayerFilter::ParentObjectTargetOwner => {
+                // CR 608.2c + CR 109.4 + CR 608.2h: these anchors are all
+                // ability-target references — the `AllExcept` exclude anchor and the
+                // direct `ParentObjectTargetController` / `ParentObjectTargetOwner`
+                // scopes (e.g. Declaration in Stone's "That player investigates",
+                // where "that player" = the controller of the exiled target). The
+                // generic `matches_player_scope` predicate cannot resolve them (it
+                // carries no `ResolvedAbility`, so `parent_target_controller`'s
+                // last-known-information lookup over `ability.targets` is
+                // unavailable). Route through the ability-aware
                 // `speed_effects::players_for_filter`, then re-impose APNAP order by
                 // intersecting against the apnap sequence.
                 let set =

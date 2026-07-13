@@ -281,6 +281,30 @@ pub(crate) fn parse_quantity_ref_with_context(
         }
     }
 
+    // CR 608.2c + CR 603.2c: the POSSESSIVE set anaphor — "their total <prop>".
+    // The pronoun IS the set reference (there is no trailing "of <set>" phrase),
+    // so it cannot go through the "the total <prop> of " prefix arm below.
+    //
+    // Like the demonstrative arms, this emits the context-free BATCH reading and
+    // lets the clause layer re-anchor it to the chain-published set when an
+    // earlier clause published one. Both readings are live and byte-identical in
+    // the leaf text — that is why the disambiguation cannot happen here:
+    //   Witch-king, Sky Scourge  "Whenever you attack with one or more Wraiths,
+    //     exile the top X cards …, where X is their total power."  -> the ATTACK
+    //     BATCH (no earlier clause; "their" = the triggering Wraiths).
+    //   Kylox, Visionary Inventor  "… sacrifice any number of other creatures,
+    //     then exile the top X cards …, where X is their total power."  -> the
+    //     CHAIN SET ("their" = the creatures the PRECEDING clause sacrificed).
+    if let Ok((rest, (func, prop))) = parse_possessive_batch_aggregate(trimmed) {
+        if rest.trim().is_empty() {
+            return Some(QuantityRef::TrackedSetAggregate {
+                function: func,
+                property: prop,
+                source: TrackedAnaphorSource::TriggeringBatch,
+            });
+        }
+    }
+
     // Aggregate patterns: "the greatest X among" / "the total power of"
     if let Ok((rest, (func, prop))) = alt((
         value(
@@ -345,35 +369,41 @@ pub(crate) fn parse_quantity_ref_with_context(
         // phrase (bare "creatures" would otherwise parse as a filter).
         //
         // Scoped narrowly because this parser is context-free and cannot see
-        // whether the enclosing ability is a batched *dies* trigger:
-        //   * "those creatures" ONLY (not "those cards"/"those permanents").
-        //     "those cards" is overloaded — it also names a mill set ("you mill
-        //     three cards, then … the total mana value of those cards":
-        //     Combustible Gearhulk, Palantír of Orthanc) or a chosen target set
-        //     (Command the Dreadhorde), where TriggeringBatch resolves to the
-        //     wrong/empty event set.
-        //   * Sum ("the total <prop> OF those creatures") ONLY, never Max/Min
-        //     ("the greatest <prop> AMONG those creatures"). The "greatest …
-        //     among those creatures" idiom is an ATTACK batch (Shriekwood
-        //     Devourer: "whenever you attack with one or more creatures … the
-        //     greatest power among those creatures"), whose multi-attacker
-        //     `AttackersDeclared` fan-out `extract_source_from_event` does not yet
-        //     resolve (it collapses >1 attacker to `None`). Plan §8 defers attack
-        //     batches; mapping it here would silently resolve to 0.
-        // With both gates, the sole card enabled is The Skullspore Nexus (Benthic
-        // Anomaly / Dracoplasm route their "those creatures" through the
-        // copy/"becomes" paths, not this quantity parser) — measured.
-        if matches!(func, AggregateFunction::Sum) {
-            if let Ok((anaphor_rest, _)) =
-                tag::<_, _, OracleError<'_>>("those creatures").parse(rest)
-            {
-                if anaphor_rest.trim().is_empty() {
-                    return Some(QuantityRef::TrackedSetAggregate {
-                        function: func,
-                        property: prop,
-                        source: TrackedAnaphorSource::TriggeringBatch,
-                    });
-                }
+        // whether the enclosing ability is a batched trigger. The anaphor set is
+        // limited to the two BATCH pronouns:
+        //   * "those creatures" — the batch subjects (The Skullspore Nexus's
+        //     dies batch; Shriekwood Devourer's attack batch).
+        //   * "them" — the same referent in the "greatest <prop> AMONG them"
+        //     idiom (Aloy, Savior of Meridian).
+        // and deliberately EXCLUDES "those cards", which is overloaded — it also
+        // names a mill set ("you mill three cards, then … the total mana value of
+        // those cards": Combustible Gearhulk, Palantír of Orthanc) or a chosen
+        // target set (Command the Dreadhorde), where TriggeringBatch resolves to
+        // the wrong/empty event set.
+        //
+        // CR 508.1: the Max/Min ("greatest <prop> AMONG …") forms are now
+        // admitted alongside Sum ("total <prop> OF …"). t78 gated them out
+        // because the "greatest … among those creatures" idiom is an ATTACK
+        // batch whose multi-attacker `AttackersDeclared` fan-out the SINGLETON
+        // `extract_source_from_event` collapsed to `None` — binding it then
+        // would have resolved to 0. The set-valued `extract_sources_from_event`
+        // (game/targeting.rs) now reduces the full attacker batch, so the gate
+        // is lifted and the aggregate computes over every attacker.
+        //
+        // The chain-published-set reading of these same pronouns is NOT decided
+        // here — this combinator is context-free. It emits the batch reading and
+        // the clause layer (`assembly.rs`) re-anchors it to `ChainSet` when an
+        // EARLIER clause in the chain publishes a set. See
+        // `rebind_tracked_aggregate_to_chain_set`.
+        if let Ok((anaphor_rest, _)) =
+            alt((tag::<_, _, OracleError<'_>>("those creatures"), tag("them"))).parse(rest)
+        {
+            if anaphor_rest.trim().is_empty() {
+                return Some(QuantityRef::TrackedSetAggregate {
+                    function: func,
+                    property: prop,
+                    source: TrackedAnaphorSource::TriggeringBatch,
+                });
             }
         }
         let (filter, remainder) = parse_type_phrase_with_ctx(rest, ctx);
@@ -572,6 +602,13 @@ pub(crate) fn parse_quantity_ref_with_context(
         if let Some(qty) =
             parse_destroyed_or_sacrificed_this_way_quantity(&rest.to_ascii_lowercase())
         {
+            return Some(qty);
+        }
+        // CR 608.2c + CR 400.7j + CR 701.8a: "the number of <type> {returned | put
+        // into a graveyard} this way" — the bounce/destroy landing-zone sibling of
+        // the destroyed/sacrificed path above. Barrel Down Sokenzan (returned) and
+        // Volcanic Eruption (put into a graveyard) count the same tracked set.
+        if let Some(qty) = parse_filtered_landing_zone_this_way(&rest.to_ascii_lowercase()) {
             return Some(qty);
         }
         // CR 301.5a + CR 303.4: "the number of <type> attached to <source>" counts
@@ -1046,6 +1083,29 @@ pub(crate) fn parse_cda_quantity_with_context(
     }
 
     None
+}
+
+/// CR 608.2c + CR 208.1 + CR 202.3: the possessive set-anaphor aggregate —
+/// "their total <property>".
+///
+/// Composed on its two axes (the possessive Sum marker × the reduced property)
+/// rather than enumerated as one `tag()` per phrase, so a new property is one
+/// `value()` arm. `Sum` is intrinsic to the surface form: "their total X" is
+/// always a sum — the extremum reading has its own "the greatest X among …"
+/// grammar (`parse_greatest_among_prefix`).
+fn parse_possessive_batch_aggregate(
+    input: &str,
+) -> OracleResult<'_, (AggregateFunction, ObjectProperty)> {
+    preceded(
+        tag("their total "),
+        alt((
+            value(ObjectProperty::Power, tag("power")),
+            value(ObjectProperty::Toughness, tag("toughness")),
+            value(ObjectProperty::ManaValue, tag("mana value")),
+        )),
+    )
+    .map(|property| (AggregateFunction::Sum, property))
+    .parse(input)
 }
 
 /// CR 202.3: aggregate prefix for the cross-zone "greatest <prop> among"
@@ -1822,10 +1882,24 @@ pub(crate) fn parse_event_context_quantity(text: &str) -> Option<QuantityExpr> {
     // delegate to parse_cda_quantity — the single authority for offset/multiply grammar.
     // Limited to composite variants so atomic refs still flow through the
     // TargetPower/TargetLifeTotal exclusion in the fallback below.
-    if let Some(qty @ (QuantityExpr::Offset { .. } | QuantityExpr::Multiply { .. })) =
-        parse_cda_quantity(lower)
-    {
-        return Some(qty);
+    match parse_cda_quantity(lower) {
+        Some(qty @ (QuantityExpr::Offset { .. } | QuantityExpr::Multiply { .. })) => {
+            return Some(qty);
+        }
+        // CR 608.2c + CR 400.7j: a bare "the number of <type> {returned | put into
+        // a graveyard} this way" — no arithmetic wrapper — still resolves against
+        // the tracked set. The fallback below strips the leading "the " and would
+        // break the "the number of" guard, so admit the tracked-set refs here
+        // (Volcanic Eruption's no-multiplier count). Other atomic refs still fall
+        // through to the TargetPower/TargetLifeTotal exclusion.
+        Some(
+            qty @ QuantityExpr::Ref {
+                qty: QuantityRef::FilteredTrackedSetSize { .. } | QuantityRef::TrackedSetSize,
+            },
+        ) => {
+            return Some(qty);
+        }
+        _ => {}
     }
 
     // Fall back to parse_quantity_ref for named quantity patterns
@@ -2190,6 +2264,75 @@ fn parse_destroyed_or_sacrificed_this_way_filter(
         }
     }
     None
+}
+
+/// CR 608.2c + CR 400.7j + CR 701.8a: "the number of <type> {returned | put into
+/// a graveyard} this way" — count from the tracked set populated by the preceding
+/// bounce/destroy in the sub_ability chain. Mirrors
+/// `parse_destroyed_or_sacrificed_this_way_filter` but with a LANDING-ZONE suffix
+/// table (return-to-hand and put-into-graveyard) and `caused_by: None` — the
+/// tracked-set publication for these zone changes is not action-discriminated.
+///
+/// - "returned this way": Barrel Down Sokenzan ("twice the number of Mountains
+///   returned this way", via the "twice " recursion).
+/// - "put into a graveyard this way": Volcanic Eruption ("the number of Mountains
+///   put into a graveyard this way"). CR 701.8a: destroy moves the permanent to
+///   its owner's graveyard; CR 400.7j: the same effect can find those objects.
+///
+/// The type filter must be SPECIFIC and controller-agnostic to qualify (mirrors
+/// `parse_filtered_tracked_set_this_way`'s triviality rule, with an added
+/// controller guard):
+///
+/// - a generic/typeless "card" (`TypeFilter::Card` / empty) is the unfiltered
+///   count — return `None` so it stays unsupported (Builder's Bane's bare-card
+///   phrasings never silently count the whole set);
+/// - a controller-bearing prefix ("artifacts they controlled") expresses a
+///   per-recipient scope that a fixed tracked-set filter cannot represent, so it
+///   is rejected — Builder's Bane stays `Unimplemented` rather than mis-resolving.
+fn parse_filtered_landing_zone_this_way(lower: &str) -> Option<QuantityRef> {
+    // Composed landing-zone tail grammar (one nom production, not a string-table
+    // loop): `<type phrase> [that was|that were]? (returned | put into a
+    // graveyard) this way`. `parse_type_phrase` consumes the noun phrase; the
+    // tail is a shared optional relative clause (`opt(alt(..))`) plus an `alt()`
+    // over the landing-zone verb phrases, terminated by "this way".
+    let (filter, remainder) = crate::parser::oracle_target::parse_type_phrase(lower);
+
+    // Require a specific, controller-agnostic type filter. A typeless or generic
+    // "card" filter is the unfiltered count; a controller-bearing filter is
+    // per-recipient (Builder's Bane) — both stay unsupported.
+    match &filter {
+        TargetFilter::Typed(typed)
+            if typed.controller.is_none()
+                && !typed.type_filters.is_empty()
+                && !typed
+                    .type_filters
+                    .iter()
+                    .all(|t| matches!(t, TypeFilter::Card)) => {}
+        _ => return None,
+    }
+
+    // Parse the composed landing-zone tail off the type phrase's remainder.
+    let rest = remainder.trim_start();
+    let (rest, _) = opt(alt((
+        tag::<_, _, OracleError<'_>>("that was "),
+        tag::<_, _, OracleError<'_>>("that were "),
+    )))
+    .parse(rest)
+    .ok()?;
+    let (rest, _) = alt((
+        tag::<_, _, OracleError<'_>>("returned"),
+        tag::<_, _, OracleError<'_>>("put into a graveyard"),
+    ))
+    .parse(rest)
+    .ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>(" this way").parse(rest).ok()?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+    Some(QuantityRef::FilteredTrackedSetSize {
+        filter: Box::new(filter),
+        caused_by: None,
+    })
 }
 
 fn parse_filtered_revealed_this_way(lower: &str) -> Option<QuantityRef> {
@@ -6983,6 +7126,110 @@ mod tests {
             }
             other => panic!("expected FilteredTrackedSetSize, got {other:?}"),
         }
+    }
+
+    /// CR 608.2c + CR 400.7j: Barrel Down Sokenzan — "twice the number of
+    /// Mountains returned this way" must lower to `Multiply { 2, Ref(
+    /// FilteredTrackedSetSize { Mountain, caused_by: None }) }`. The bounce
+    /// landing-zone sibling of the destroyed/sacrificed path.
+    #[test]
+    fn twice_mountains_returned_this_way_multiplies_filtered_tracked_set() {
+        let result =
+            parse_event_context_quantity("twice the number of Mountains returned this way");
+        let Some(QuantityExpr::Multiply { factor, inner }) = result else {
+            panic!("expected Multiply, got {result:?}");
+        };
+        assert_eq!(factor, 2);
+        match *inner {
+            QuantityExpr::Ref {
+                qty: QuantityRef::FilteredTrackedSetSize { filter, caused_by },
+            } => {
+                assert_eq!(caused_by, None, "returned-this-way is action-agnostic");
+                match *filter {
+                    TargetFilter::Typed(ref tf) => assert_eq!(
+                        tf.type_filters,
+                        vec![TypeFilter::Subtype("Mountain".to_string())],
+                        "filter must be the Mountain subtype"
+                    ),
+                    other => panic!("expected Typed Mountain filter, got {other:?}"),
+                }
+            }
+            other => panic!("expected Ref(FilteredTrackedSetSize), got {other:?}"),
+        }
+    }
+
+    /// CR 608.2c + CR 701.8a + CR 400.7j: Volcanic Eruption — "the number of
+    /// Mountains put into a graveyard this way" (no arithmetic wrapper) must
+    /// lower to a bare `Ref(FilteredTrackedSetSize { Mountain, None })`.
+    #[test]
+    fn mountains_put_into_graveyard_this_way_is_bare_filtered_tracked_set() {
+        let result =
+            parse_event_context_quantity("the number of Mountains put into a graveyard this way");
+        let Some(QuantityExpr::Ref {
+            qty: QuantityRef::FilteredTrackedSetSize { filter, caused_by },
+        }) = result
+        else {
+            panic!("expected Ref(FilteredTrackedSetSize), got {result:?}");
+        };
+        assert_eq!(
+            caused_by, None,
+            "put-into-graveyard-this-way is action-agnostic"
+        );
+        match *filter {
+            TargetFilter::Typed(ref tf) => assert_eq!(
+                tf.type_filters,
+                vec![TypeFilter::Subtype("Mountain".to_string())],
+                "filter must be the Mountain subtype"
+            ),
+            other => panic!("expected Typed Mountain filter, got {other:?}"),
+        }
+    }
+
+    /// NEGATIVE: a generic/typeless "card" must not restrict the tracked set —
+    /// it stays unsupported (not a `FilteredTrackedSetSize`) so Builder's Bane
+    /// and other generic-card phrasings don't silently count the whole set.
+    #[test]
+    fn cards_returned_this_way_is_not_filtered_tracked_set() {
+        let result = parse_event_context_quantity("the number of cards returned this way");
+        assert!(
+            !matches!(
+                result,
+                Some(QuantityExpr::Ref {
+                    qty: QuantityRef::FilteredTrackedSetSize { .. },
+                })
+            ),
+            "generic 'card' must not become FilteredTrackedSetSize, got {result:?}"
+        );
+    }
+
+    /// NEGATIVE (Builder's Bane guard): a controller-bearing prefix that leaves
+    /// a `parse_type_phrase` remainder must fail cleanly, not produce a
+    /// FilteredTrackedSetSize.
+    #[test]
+    fn artifacts_they_controlled_put_into_graveyard_this_way_is_none() {
+        let result = parse_event_context_quantity(
+            "the number of artifacts they controlled that were put into a graveyard this way",
+        );
+        assert!(
+            !matches!(
+                result,
+                Some(QuantityExpr::Ref {
+                    qty: QuantityRef::FilteredTrackedSetSize { .. },
+                })
+            ),
+            "controller-bearing prefix must not become a clean FilteredTrackedSetSize, got {result:?}"
+        );
+    }
+
+    /// NEGATIVE: the landing-zone combinator is bounce/graveyard only — a
+    /// "revealed this way" phrase must not match (that is the reveal path's
+    /// responsibility).
+    #[test]
+    fn parse_filtered_landing_zone_this_way_rejects_revealed() {
+        assert_eq!(
+            parse_filtered_landing_zone_this_way("nonland cards revealed this way"),
+            None,
+        );
     }
 
     /// Subtype-only filters must not collapse to plain `TrackedSetSize`; the
