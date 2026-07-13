@@ -719,7 +719,7 @@ pub(crate) fn parse_modal_header_ast(text: &str) -> Option<ModalHeaderAst> {
     let optional_trigger = tag::<_, _, OracleError<'_>>("you may choose ")
         .parse(header_lower.as_str())
         .is_ok()
-        && tag("you may choose up to ")
+        && tag::<_, _, OracleError<'_>>("you may choose up to ")
             .parse(header_lower.as_str())
             .is_err();
 
@@ -2173,8 +2173,8 @@ mod tests {
     #[test]
     fn parse_modal_header_you_may_choose_up_to_does_not_set_optional_trigger() {
         // "you may choose up to N" lowers min_choices only; the trigger stays mandatory.
-        let header =
-            parse_modal_header_ast("you may choose up to two.").expect("modal header recognized");
+        let header = parse_modal_header_ast("you may choose up to two.")
+            .expect("modal header recognized");
         assert!(!header.optional_trigger);
         assert_eq!(header.min_choices, 0);
         assert_eq!(header.max_choices, 2);
