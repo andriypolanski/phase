@@ -7038,8 +7038,10 @@ fn compose_draw_replacement_conditions(
 ) -> Result<Option<ReplacementCondition>, ()> {
     let mut conditions = Vec::new();
 
-    if has_during_draw_step_antecedent(lower) {
-        conditions.push(ReplacementCondition::DuringDrawStep);
+    if let Some(active_player_req) = parse_during_draw_step_antecedent(lower) {
+        conditions.push(ReplacementCondition::DuringDrawStep {
+            active_player_req: Some(active_player_req),
+        });
     }
 
     match parse_while_antecedent(lower, verb_anchor) {
@@ -7236,26 +7238,30 @@ pub(super) fn has_except_first_draw_in_draw_step_clause(lower: &str) -> bool {
     false
 }
 
-/// CR 504.1 + CR 614.1a: Detect "...during [your/their] draw step..." in a
+/// CR 504.1 + CR 614.1a: Parse "...during [your/their] draw step..." in a
 /// draw-replacement antecedent (Island Sanctuary class). Scans word-by-word so
 /// the phrase can appear between the verb anchor and the consequent comma.
-fn has_during_draw_step_antecedent(lower: &str) -> bool {
-    fn parse_clause(input: &str) -> nom::IResult<&str, (), OracleError<'_>> {
+fn parse_during_draw_step_antecedent(lower: &str) -> Option<ControllerRef> {
+    fn parse_clause(input: &str) -> nom::IResult<&str, ControllerRef, OracleError<'_>> {
         let (input, _) = tag("during ").parse(input)?;
-        let (input, _) = alt((tag("your "), tag("their "))).parse(input)?;
+        let (input, scope) = alt((
+            value(ControllerRef::You, tag("your ")),
+            value(ControllerRef::Opponent, tag("their ")),
+        ))
+        .parse(input)?;
         let (input, _) = tag("draw step").parse(input)?;
-        Ok((input, ()))
+        Ok((input, scope))
     }
     let mut remaining = lower;
     while !remaining.is_empty() {
-        if parse_clause(remaining).is_ok() {
-            return true;
+        if let Ok((_, scope)) = parse_clause(remaining) {
+            return Some(scope);
         }
         remaining = remaining
             .find(' ')
             .map_or("", |i| remaining[i + 1..].trim_start());
     }
-    false
+    None
 }
 
 /// CR 707.10 + CR 614.1a: Parse a "copy an additional time" replacement —
@@ -11028,7 +11034,9 @@ mod tests {
                 assert_eq!(conditions.len(), 2);
                 assert!(matches!(
                     conditions[0],
-                    ReplacementCondition::DuringDrawStep
+                    ReplacementCondition::DuringDrawStep {
+                        active_player_req: Some(ControllerRef::You),
+                    }
                 ));
                 match &conditions[1] {
                     ReplacementCondition::OnlyIfQuantity {
@@ -11076,8 +11084,10 @@ mod tests {
         );
         assert_eq!(
             def.condition,
-            Some(ReplacementCondition::DuringDrawStep),
-            "during your draw step antecedent must gate on DuringDrawStep"
+            Some(ReplacementCondition::DuringDrawStep {
+                active_player_req: Some(ControllerRef::You),
+            }),
+            "during your draw step antecedent must gate on controller's draw step"
         );
         assert!(
             def.execute.is_none(),

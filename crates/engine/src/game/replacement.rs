@@ -4116,6 +4116,31 @@ fn replacement_condition_quantity_ctx(
     }
 }
 
+/// CR 102.1: Whether the replacement source controller's relative turn role
+/// (`You` / `Opponent`) matches the current active player. Undefined scopes fail
+/// closed at replacement-check time (no resolution context).
+fn replacement_active_player_matches(
+    active_player_req: Option<ControllerRef>,
+    state: &GameState,
+    controller: PlayerId,
+) -> bool {
+    match active_player_req {
+        Some(ControllerRef::You) => state.active_player == controller,
+        Some(ControllerRef::Opponent) => state.active_player != controller,
+        Some(ControllerRef::ScopedPlayer) => false,
+        Some(ControllerRef::TargetPlayer | ControllerRef::TargetOpponent) => false,
+        Some(ControllerRef::ParentTargetController) => false,
+        Some(ControllerRef::ParentTargetOwner) => false,
+        Some(ControllerRef::DefendingPlayer) => false,
+        Some(ControllerRef::SourceChosenPlayer) => false,
+        Some(ControllerRef::ChosenPlayer { .. }) => false,
+        Some(ControllerRef::TriggeringPlayer) => false,
+        Some(ControllerRef::EnchantedPlayer) => false,
+        Some(ControllerRef::ActivePlayer) => false,
+        None => true,
+    }
+}
+
 fn evaluate_replacement_condition(
     condition: &ReplacementCondition,
     controller: PlayerId,
@@ -4536,8 +4561,12 @@ fn evaluate_replacement_condition(
         // wording requires.
         ReplacementCondition::DuringUntapStep => state.phase == crate::types::phase::Phase::Untap,
         // CR 504.1 + CR 614.1a: draw-step gate. The turn-based draw (CR 504.1)
-        // and any other draws during the draw step occur while `phase == Draw`.
-        ReplacementCondition::DuringDrawStep => state.phase == crate::types::phase::Phase::Draw,
+        // occurs during the active player's draw step; "during your draw step"
+        // scopes to `active_player == controller`.
+        ReplacementCondition::DuringDrawStep { active_player_req } => {
+            state.phase == crate::types::phase::Phase::Draw
+                && replacement_active_player_matches(*active_player_req, state, controller)
+        }
         // CR 614.1d: "if you control [N or more] [filter]" — replacement applies only
         // while the controller has at least `minimum` permanents matching `filter` on
         // the battlefield. minimum=1 covers the singular "a [type]" form (Worship);
@@ -16229,6 +16258,93 @@ mod tests {
             .pending_replacement
             .as_ref()
             .is_some_and(|pending| pending.is_optional));
+    }
+
+    /// CR 504.1 + CR 614.1a + issue #5655: "during your draw step" gates on the
+    /// source controller's draw step, not merely `phase == Draw`.
+    #[test]
+    fn during_draw_step_your_turn_gate_requires_controller_active_player() {
+        let condition = ReplacementCondition::DuringDrawStep {
+            active_player_req: Some(ControllerRef::You),
+        };
+        let source = ObjectId(10);
+        let draw_event = |player_id: PlayerId| ProposedEvent::Draw {
+            player_id,
+            count: 1,
+            applied: HashSet::new(),
+        };
+
+        let mut state = GameState::new_two_player(42);
+        state.phase = crate::types::phase::Phase::Draw;
+        state.active_player = PlayerId(0);
+        assert!(
+            evaluate_replacement_condition(
+                &condition,
+                PlayerId(0),
+                source,
+                &state,
+                None,
+                &draw_event(PlayerId(0)),
+            ),
+            "controller's draw step must satisfy your-draw-step gate"
+        );
+
+        state.active_player = PlayerId(1);
+        assert!(
+            !evaluate_replacement_condition(
+                &condition,
+                PlayerId(0),
+                source,
+                &state,
+                None,
+                &draw_event(PlayerId(0)),
+            ),
+            "opponent's draw step must not satisfy your-draw-step gate"
+        );
+    }
+
+    /// CR 504.1 + CR 614.1a + issue #5655: optional draw-skip with a your-draw-step
+    /// gate must not prompt when the controller draws during an opponent's draw step.
+    #[test]
+    fn during_draw_step_your_turn_gate_skips_replacement_on_opponents_draw_step() {
+        let source = ObjectId(90);
+        let mut repl = ReplacementDefinition::new(ReplacementEvent::Draw)
+            .draw_scope(crate::types::ability::DrawReplacementScope::IndividualDraw)
+            .quantity_modification(QuantityModification::Prevent)
+            .condition(ReplacementCondition::DuringDrawStep {
+                active_player_req: Some(ControllerRef::You),
+            });
+        repl.mode = ReplacementMode::Optional { decline: None };
+        let mut state = test_state_with_object(source, Zone::Battlefield, vec![repl]);
+        state.phase = crate::types::phase::Phase::Draw;
+        state.active_player = PlayerId(1);
+        state.players[0].library.push_back(ObjectId(200));
+        state.objects.insert(
+            ObjectId(200),
+            GameObject::new(
+                ObjectId(200),
+                CardId(200),
+                PlayerId(0),
+                "Top Card".to_string(),
+                Zone::Library,
+            ),
+        );
+
+        let draw = ProposedEvent::Draw {
+            player_id: PlayerId(0),
+            count: 1,
+            applied: HashSet::new(),
+        };
+        let mut events = Vec::new();
+
+        match replace_event(&mut state, draw, &mut events) {
+            ReplacementResult::Execute(ProposedEvent::Draw { count, .. }) => {
+                assert_eq!(count, 1, "draw must proceed without optional skip prompt");
+            }
+            other => panic!(
+                "your-draw-step gate must bypass replacement on opponent's draw step, got {other:?}"
+            ),
+        }
     }
 
     /// CR 614.6 + CR 614.12a + issue #5655: declining an optional draw-skip
