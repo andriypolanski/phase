@@ -4535,6 +4535,9 @@ fn evaluate_replacement_condition(
         // step exactly as the "during [its controller's / your] untap step"
         // wording requires.
         ReplacementCondition::DuringUntapStep => state.phase == crate::types::phase::Phase::Untap,
+        // CR 504.1 + CR 614.1a: draw-step gate. The turn-based draw (CR 504.1)
+        // and any other draws during the draw step occur while `phase == Draw`.
+        ReplacementCondition::DuringDrawStep => state.phase == crate::types::phase::Phase::Draw,
         // CR 614.1d: "if you control [N or more] [filter]" — replacement applies only
         // while the controller has at least `minimum` permanents matching `filter` on
         // the battlefield. minimum=1 covers the singular "a [type]" form (Worship);
@@ -6442,6 +6445,22 @@ fn apply_single_replacement(
         _ => None,
     };
     let replacement_applied = proposed.applied_set().clone();
+
+    // CR 614.6 + CR 614.12a: Optional `Prevent` replacements (Obstinate Familiar,
+    // Island Sanctuary — "you may skip that draw") suppress the event only on
+    // the accept (Execute) branch. Declining leaves the original event intact
+    // so it proceeds unmodified; `draw_applier` reads `quantity_modification`
+    // from the definition regardless of branch, so short-circuit here.
+    if matches!(branch, ReplacementBranch::Decline) {
+        if let Some(repl_def) = repl_def_ref {
+            if replacement_mode_is_optional(&repl_def.mode)
+                && repl_def.quantity_modification == Some(QuantityModification::Prevent)
+                && replacement_mode_decline(&repl_def.mode).is_none()
+            {
+                return Ok(proposed);
+            }
+        }
+    }
 
     if let Some(handler) = registry.get(&event_key) {
         let event_type = event_key.to_string();
@@ -16211,6 +16230,53 @@ mod tests {
             .pending_replacement
             .as_ref()
             .is_some_and(|pending| pending.is_optional));
+    }
+
+    /// CR 614.6 + CR 614.12a + issue #5655: declining an optional draw-skip
+    /// replacement (Obstinate Familiar) must leave the original draw intact.
+    #[test]
+    fn optional_draw_skip_decline_leaves_original_draw() {
+        let source = ObjectId(90);
+        let mut repl = ReplacementDefinition::new(ReplacementEvent::Draw)
+            .draw_scope(crate::types::ability::DrawReplacementScope::IndividualDraw)
+            .quantity_modification(QuantityModification::Prevent);
+        repl.mode = ReplacementMode::Optional { decline: None };
+        let mut state = test_state_with_object(source, Zone::Battlefield, vec![repl]);
+        state.players[0].library.push_back(ObjectId(200));
+        state.objects.insert(
+            ObjectId(200),
+            GameObject::new(
+                ObjectId(200),
+                CardId(200),
+                PlayerId(0),
+                "Top Card".to_string(),
+                Zone::Library,
+            ),
+        );
+
+        let draw = ProposedEvent::Draw {
+            player_id: PlayerId(0),
+            count: 1,
+            applied: HashSet::new(),
+        };
+        let mut events = Vec::new();
+
+        assert_eq!(
+            replace_event(&mut state, draw, &mut events),
+            ReplacementResult::NeedsChoice(PlayerId(0)),
+            "optional draw skip must prompt"
+        );
+
+        let result = continue_replacement(&mut state, 1, &mut events);
+        assert!(
+            matches!(result, ReplacementResult::Execute(_)),
+            "declining optional skip must resume the original draw, got {result:?}"
+        );
+        if let ReplacementResult::Execute(ProposedEvent::Draw { count, .. }) = result {
+            assert_eq!(count, 1, "declined draw must retain its original count");
+        } else {
+            panic!("expected surviving Draw event after decline");
+        }
     }
 
     #[test]

@@ -430,6 +430,34 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
         let mut def = ReplacementDefinition::new(ReplacementEvent::Draw)
             .draw_scope(draw_scope)
             .description(text.to_string());
+        // CR 614.6 + CR 121.6 + CR 614.1a: "you may skip that draw [instead]"
+        // (Obstinate Familiar) and "instead you may skip that draw" (Island
+        // Sanctuary) are OPTIONAL draw-suppression replacements. Must precede
+        // the mandatory `body_is_draw_skip` arm (Living Conundrum) and the
+        // generic `you may instead {effect}` execute path (Abundance).
+        if let Some(effect) = effect_text.as_deref() {
+            let effect_lower = effect.to_lowercase();
+            if let Some(remainder) = strip_optional_draw_skip(&effect_lower, effect) {
+                def = def.mode(ReplacementMode::Optional { decline: None });
+                def = def.quantity_modification(QuantityModification::Prevent);
+                if let Some(rider) = parse_when_you_do_reflexive(remainder) {
+                    def = def.execute(rider);
+                }
+                apply_draw_player_scope(&lower, &mut def);
+                // CR 504.1 + CR 614.1a: "...during your draw step..." gates the
+                // replacement to the controller's draw step (Island Sanctuary).
+                if nom_primitives::scan_contains(&lower, "during your draw step") {
+                    def = def.condition(ReplacementCondition::DuringDrawStep);
+                } else {
+                    match parse_while_antecedent(&lower, "would draw a card") {
+                        WhileAntecedent::Parsed(condition) => def = def.condition(condition),
+                        WhileAntecedent::Unparsed => return None,
+                        WhileAntecedent::Absent => {}
+                    }
+                }
+                return Some(def);
+            }
+        }
         // CR 614.6 + CR 121.6: "skip that draw instead" fully suppresses the
         // draw (Living Conundrum: "If you would draw a card while your library
         // has no cards in it, skip that draw instead"). The body lowers to a
@@ -6492,6 +6520,28 @@ fn body_is_draw_skip(lower_body: &str) -> bool {
         .is_ok()
 }
 
+/// CR 614.6 + CR 121.6 + CR 614.1a: Strip a leading optional draw-suppression
+/// modal — `"[instead] you may skip that draw [instead]"` — and return the
+/// remainder for an optional `"if you do, …"` rider (Island Sanctuary). Returns
+/// `None` when the body is not this shape. Distinct from mandatory
+/// `body_is_draw_skip` (Living Conundrum), which has no `"may"` modal.
+fn strip_optional_draw_skip<'a>(lower_body: &str, original_body: &'a str) -> Option<&'a str> {
+    let (_, rest_lower) = nom_on_lower(original_body, lower_body, |input| {
+        (
+            opt(tag::<_, _, OracleError<'_>>("instead ")),
+            tag("you may "),
+            alt((tag("skips "), tag("skip "))),
+            alt((tag("that draw"), tag("the draw"))),
+            opt(tag(" instead")),
+        )
+            .parse(input)
+    })
+    .ok()?;
+    let offset = lower_body.len() - rest_lower.len();
+    let rest_orig = original_body[offset..].trim_start();
+    Some(rest_orig)
+}
+
 /// CR 614.1a: Assign the replacement's player scope from the antecedent subject
 /// ("an opponent" → Opponent, "a player" / "its controller" → AnyPlayer,
 /// "you" → controller-only/None). Shared by the `Prevent` short-circuit and the
@@ -10869,6 +10919,77 @@ mod tests {
             Some(QuantityModification::Prevent)
         );
         assert_eq!(you_def.valid_player, None);
+    }
+
+    /// CR 614.1a + CR 614.6 + CR 121.6 + issue #5655: Obstinate Familiar — "you
+    /// may skip that draw instead" must compose Optional mode with structured
+    /// `Prevent`, NOT fall through to `Effect::Unimplemented`.
+    #[test]
+    fn optional_draw_skip_lowers_to_optional_prevent_not_unimplemented() {
+        let def = parse_replacement_line(
+            "If you would draw a card, you may skip that draw instead.",
+            "Obstinate Familiar",
+        )
+        .expect("Obstinate Familiar draw replacement should parse");
+        assert_eq!(def.event, ReplacementEvent::Draw);
+        assert!(
+            matches!(def.mode, ReplacementMode::Optional { decline: None }),
+            "optional skip must lift to Optional {{ decline: None }}; got {:?}",
+            def.mode
+        );
+        assert_eq!(
+            def.quantity_modification,
+            Some(QuantityModification::Prevent),
+            "optional skip accept branch must carry Prevent"
+        );
+        assert!(
+            def.execute.is_none(),
+            "pure optional skip must not carry an execute effect"
+        );
+    }
+
+    /// CR 614.1a + CR 614.6 + CR 121.6 + issue #5655: Island Sanctuary — "instead
+    /// you may skip that draw" during the draw step, with an optional accept rider.
+    #[test]
+    fn island_sanctuary_optional_draw_skip_during_draw_step() {
+        let def = parse_replacement_line(
+            "If you would draw a card during your draw step, instead you may skip that draw. \
+             If you do, until your next turn, you can't be attacked except by creatures with \
+             flying and/or islandwalk.",
+            "Island Sanctuary",
+        )
+        .expect("Island Sanctuary draw replacement should parse");
+        assert_eq!(def.event, ReplacementEvent::Draw);
+        assert!(matches!(def.mode, ReplacementMode::Optional { decline: None }));
+        assert_eq!(
+            def.quantity_modification,
+            Some(QuantityModification::Prevent)
+        );
+        assert_eq!(
+            def.condition,
+            Some(ReplacementCondition::DuringDrawStep),
+            "during your draw step antecedent must gate on DuringDrawStep"
+        );
+    }
+
+    /// CR 614.6 + CR 121.6: mandatory "skip that draw" must NOT be misclassified
+    /// as optional when there is no "may" modal (Living Conundrum class).
+    #[test]
+    fn mandatory_draw_skip_stays_non_optional() {
+        let def = parse_replacement_line(
+            "If you would draw a card while your library has no cards in it, skip that draw instead.",
+            "Living Conundrum",
+        )
+        .expect("Living Conundrum draw replacement should parse");
+        assert_eq!(
+            def.quantity_modification,
+            Some(QuantityModification::Prevent)
+        );
+        assert!(
+            matches!(def.mode, ReplacementMode::Mandatory),
+            "mandatory skip must not lift to Optional; got {:?}",
+            def.mode
+        );
     }
 
     #[test]
