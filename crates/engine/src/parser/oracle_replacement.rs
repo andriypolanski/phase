@@ -6524,14 +6524,17 @@ fn body_is_draw_skip(lower_body: &str) -> bool {
 /// `body_is_draw_skip` (Living Conundrum), which has no `"may"` modal.
 fn strip_optional_draw_skip<'a>(lower_body: &str, original_body: &'a str) -> Option<&'a str> {
     let (_, rest) = nom_on_lower(original_body, lower_body, |input| {
-        (
-            opt(tag::<_, _, OracleError<'_>>("instead ")),
-            tag("you may "),
-            alt((tag("skips "), tag("skip "))),
-            alt((tag("that draw"), tag("the draw"))),
-            opt(tag(" instead")),
+        value(
+            (),
+            (
+                opt(tag::<_, _, OracleError<'_>>("instead ")),
+                tag("you may "),
+                alt((tag("skips "), tag("skip "))),
+                alt((tag("that draw"), tag("the draw"))),
+                opt(tag(" instead")),
+            ),
         )
-            .parse(input)
+        .parse(input)
     })?;
     Some(rest.trim_start())
 }
@@ -11050,7 +11053,10 @@ mod tests {
         )
         .expect("Island Sanctuary draw replacement should parse");
         assert_eq!(def.event, ReplacementEvent::Draw);
-        assert!(matches!(def.mode, ReplacementMode::Optional { decline: None }));
+        assert!(matches!(
+            def.mode,
+            ReplacementMode::Optional { decline: None }
+        ));
         assert_eq!(
             def.quantity_modification,
             Some(QuantityModification::Prevent)
