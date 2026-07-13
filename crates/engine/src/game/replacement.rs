@@ -4565,7 +4565,7 @@ fn evaluate_replacement_condition(
         // scopes to `active_player == controller`.
         ReplacementCondition::DuringDrawStep { active_player_req } => {
             state.phase == crate::types::phase::Phase::Draw
-                && replacement_active_player_matches(*active_player_req, state, controller)
+                && replacement_active_player_matches(active_player_req.clone(), state, controller)
         }
         // CR 614.1d: "if you control [N or more] [filter]" — replacement applies only
         // while the controller has at least `minimum` permanents matching `filter` on
