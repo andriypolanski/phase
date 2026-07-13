@@ -97,7 +97,7 @@ fn drive_shadrix(
     for _ in 0..80 {
         match runner.state().waiting_for.clone() {
             WaitingFor::OrderTriggers { .. } => {
-                engine::game::triggers::drain_order_triggers_with_identity(&mut runner.state);
+                engine::game::triggers::drain_order_triggers_with_identity(runner.state_mut());
             }
             WaitingFor::Priority { .. } => {
                 if runner.state().stack.is_empty() {
@@ -201,11 +201,9 @@ fn shadrix_begin_combat_accepting_requires_exactly_two_modes() {
                 return;
             }
             WaitingFor::OrderTriggers { .. } => {
-                engine::game::triggers::drain_order_triggers_with_identity(&mut runner.state);
+                engine::game::triggers::drain_order_triggers_with_identity(runner.state_mut());
             }
-            other => panic!(
-                "expected AbilityModeChoice after accepting Shadrix, got {other:?}"
-            ),
+            other => panic!("expected AbilityModeChoice after accepting Shadrix, got {other:?}"),
         }
     }
     panic!("never reached AbilityModeChoice while accepting Shadrix");

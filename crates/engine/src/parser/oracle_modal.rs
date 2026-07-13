@@ -2157,10 +2157,11 @@ mod tests {
     fn parse_modal_header_you_may_choose_fixed_count_sets_optional_trigger() {
         // CR 608.2c: Shadrix Silverquill — "you may choose two" declines the
         // entire triggered ability; when accepted, exactly two modes are chosen.
-        let header = parse_modal_header_ast(
-            "you may choose two. Each mode must target a different player.",
-        )
-        .expect("modal header recognized");
+        let header =
+            parse_modal_header_ast(
+                "you may choose two. Each mode must target a different player.",
+            )
+            .expect("modal header recognized");
         assert!(header.optional_trigger);
         assert_eq!(header.min_choices, 2);
         assert_eq!(header.max_choices, 2);
@@ -2173,8 +2174,8 @@ mod tests {
     #[test]
     fn parse_modal_header_you_may_choose_up_to_does_not_set_optional_trigger() {
         // "you may choose up to N" lowers min_choices only; the trigger stays mandatory.
-        let header = parse_modal_header_ast("you may choose up to two.")
-            .expect("modal header recognized");
+        let header =
+            parse_modal_header_ast("you may choose up to two.").expect("modal header recognized");
         assert!(!header.optional_trigger);
         assert_eq!(header.min_choices, 0);
         assert_eq!(header.max_choices, 2);
