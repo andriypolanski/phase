@@ -1817,6 +1817,12 @@ pub(crate) struct ModalHeaderAst {
     /// CR 700.2 + CR 107.3m: Dynamic max ("choose up to X —") — `Some` carries
     /// the cost {X} reference resolved live at runtime; `None` for fixed caps.
     pub(crate) dynamic_max_choices: Option<crate::types::ability::QuantityExpr>,
+    /// CR 608.2c: Triggered modal headers of the form "you may choose N"
+    /// (Shadrix Silverquill) make the entire triggered ability optional — the
+    /// controller may decline to choose any modes. Distinct from "you may choose
+    /// up to N", which only lowers `min_choices` to 0 while the trigger remains
+    /// mandatory.
+    pub(crate) optional_trigger: bool,
 }
 
 // --- ActivatedConstraintAst (moved from oracle.rs) ---

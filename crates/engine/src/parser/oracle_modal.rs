@@ -153,6 +153,7 @@ pub(crate) fn parse_oracle_block(lines: &[&str], start: usize) -> Option<(Oracle
             chooser: PlayerFilter::Controller,
             selection: TargetSelectionMode::Chosen,
             dynamic_max_choices: None,
+            optional_trigger: false,
         };
         return Some((OracleBlockAst::Modal { header, modes }, next));
     }
@@ -172,6 +173,7 @@ pub(crate) fn parse_oracle_block(lines: &[&str], start: usize) -> Option<(Oracle
             chooser: PlayerFilter::Controller,
             selection: TargetSelectionMode::Chosen,
             dynamic_max_choices: None,
+            optional_trigger: false,
         };
         return Some((OracleBlockAst::Modal { header, modes }, next));
     }
@@ -483,6 +485,7 @@ fn parse_tiered_shared_effect_block(
         chooser: PlayerFilter::Controller,
         selection: TargetSelectionMode::Chosen,
         dynamic_max_choices: None,
+        optional_trigger: false,
     };
     Some((OracleBlockAst::Modal { header, modes }, next))
 }
@@ -711,6 +714,15 @@ pub(crate) fn parse_modal_header_ast(text: &str) -> Option<ModalHeaderAst> {
         TargetSelectionMode::Chosen
     };
 
+    // CR 608.2c: "you may choose N" makes the triggered ability optional; "you
+    // may choose up to N" only lowers min_choices (handled by count parsing).
+    let optional_trigger = tag::<_, _, OracleError<'_>>("you may choose ")
+        .parse(header_lower.as_str())
+        .is_ok()
+        && tag("you may choose up to ")
+            .parse(header_lower.as_str())
+            .is_err();
+
     Some(ModalHeaderAst {
         raw: text.to_string(),
         min_choices,
@@ -720,6 +732,7 @@ pub(crate) fn parse_modal_header_ast(text: &str) -> Option<ModalHeaderAst> {
         chooser,
         selection,
         dynamic_max_choices,
+        optional_trigger,
     })
 }
 
@@ -1027,6 +1040,12 @@ pub(crate) fn lower_oracle_block(
                 relative_player_scope,
                 host_self_reference,
             );
+            if header.optional_trigger {
+                // CR 608.2c: Resolution-time optionality lives on the execute
+                // ability (`build_triggered_ability` clones it); the trigger
+                // definition flag is stamped for coverage and card-data export.
+                modal_ability.optional = true;
+            }
 
             let execute = match optional_cost {
                 // CR 603.12 + CR 700.2b: The modal is gated behind a reflexive
@@ -1055,6 +1074,9 @@ pub(crate) fn lower_oracle_block(
 
             for trigger in &mut triggers {
                 trigger.execute = Some(execute.clone());
+                if header.optional_trigger {
+                    trigger.optional = true;
+                }
             }
             result.triggers.extend(triggers);
         }
@@ -2129,6 +2151,33 @@ mod tests {
 
     fn fixed(min: usize, max: usize) -> ModalCountSpec {
         ModalCountSpec::Fixed { min, max }
+    }
+
+    #[test]
+    fn parse_modal_header_you_may_choose_fixed_count_sets_optional_trigger() {
+        // CR 608.2c: Shadrix Silverquill — "you may choose two" declines the
+        // entire triggered ability; when accepted, exactly two modes are chosen.
+        let header = parse_modal_header_ast(
+            "you may choose two. Each mode must target a different player.",
+        )
+        .expect("modal header recognized");
+        assert!(header.optional_trigger);
+        assert_eq!(header.min_choices, 2);
+        assert_eq!(header.max_choices, 2);
+        assert_eq!(
+            header.constraints,
+            vec![ModalSelectionConstraint::DifferentTargetPlayers]
+        );
+    }
+
+    #[test]
+    fn parse_modal_header_you_may_choose_up_to_does_not_set_optional_trigger() {
+        // "you may choose up to N" lowers min_choices only; the trigger stays mandatory.
+        let header =
+            parse_modal_header_ast("you may choose up to two.").expect("modal header recognized");
+        assert!(!header.optional_trigger);
+        assert_eq!(header.min_choices, 0);
+        assert_eq!(header.max_choices, 2);
     }
 
     #[test]
