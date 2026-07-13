@@ -6864,16 +6864,32 @@ fn resolve_chain_body(
             // CR 608.2d + CR 101.4: which single player (if any) is excluded from
             // the APNAP fan-out. AnyOpponent excludes the controller; AnyPlayer
             // excludes no one; AnyOtherPlayer excludes the affected player of the
-            // resolving replaced event (Zur's Weirding — the player who would
-            // have drawn), which the resident post-replacement drain carries as
-            // its event target and need NOT be the controller.
+            // resolving replaced event (see the per-arm note below).
             let excluded: Option<PlayerId> = match scope {
                 OpponentMayScope::AnyOpponent => Some(ability.controller),
                 OpponentMayScope::AnyPlayer => None,
+                // CR 608.2d: "any other player" excludes the affected player of the
+                // resolving replaced event (Zur's Weirding — the drawing player),
+                // which the resident post-replacement drain carries as its event
+                // target. That provenance is REQUIRED: the scope only ever
+                // originates from the Draw-replacement execute, so reaching here
+                // without a resident Draw drain is a binding error. Fail closed —
+                // prompt no one rather than silently offering the "may" to every
+                // player (which would let the drawing player pay to bin their own
+                // draw, changing the card's rules). `None` (exclude no one) is
+                // reserved for AnyPlayer and must NOT be the missing-context
+                // fallback here.
                 OpponentMayScope::AnyOtherPlayer => {
                     match state.post_replacement_event_target() {
                         Some(crate::types::ability::TargetRef::Player(p)) => Some(*p),
-                        _ => None,
+                        _ => {
+                            debug_assert!(
+                                false,
+                                "AnyOtherPlayer fan-out reached without a resident \
+                                 replaced-Draw event target; failing closed"
+                            );
+                            return Ok(());
+                        }
                     }
                 }
             };
