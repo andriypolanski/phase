@@ -9206,7 +9206,9 @@ fn rewrite_reveal_top_player_to_post_replacement_target(def: &mut AbilityDefinit
         // CR 701.20a: a subject-bound "they reveal it" can lower to
         // `Reveal { ParentTarget }` before chain lowering; in a draw replacement
         // the anaphor is the would-be-drawn library top, not a parent target slot.
-        Effect::Reveal { target } if matches!(target, TargetFilter::ParentTarget) => {
+        Effect::Reveal {
+            target: TargetFilter::ParentTarget,
+        } => {
             *def.effect = Effect::RevealTop {
                 player: TargetFilter::PostReplacementDamageTarget,
                 count: 1,
