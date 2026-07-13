@@ -444,16 +444,13 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
                     def = def.execute(rider);
                 }
                 apply_draw_player_scope(&lower, &mut def);
-                // CR 504.1 + CR 614.1a: "...during your draw step..." gates the
-                // replacement to the controller's draw step (Island Sanctuary).
-                if nom_primitives::scan_contains(&lower, "during your draw step") {
-                    def = def.condition(ReplacementCondition::DuringDrawStep);
-                } else {
-                    match parse_while_antecedent(&lower, "would draw a card") {
-                        WhileAntecedent::Parsed(condition) => def = def.condition(condition),
-                        WhileAntecedent::Unparsed => return None,
-                        WhileAntecedent::Absent => {}
-                    }
+                // CR 504.1 + CR 614.1a + CR 614.11: draw-step timing and "while …"
+                // quantity gates are independent antecedent dimensions — compose
+                // both rather than mutually excluding them.
+                match compose_draw_replacement_conditions(&lower, "would draw a card") {
+                    Ok(Some(condition)) => def = def.condition(condition),
+                    Ok(None) => {}
+                    Err(()) => return None,
                 }
                 return Some(def);
             }
@@ -7016,6 +7013,33 @@ fn parse_scry_replacement_count(input: &str) -> nom::IResult<&str, QuantityExpr,
     .parse(input)
 }
 
+/// CR 504.1 + CR 614.1a + CR 614.11: Compose independent draw-replacement
+/// gates from the antecedent — "during [your/their] draw step" timing and
+/// "while …" quantity guards are separate dimensions and must not be mutually
+/// exclusive.
+fn compose_draw_replacement_conditions(
+    lower: &str,
+    verb_anchor: &str,
+) -> Result<Option<ReplacementCondition>, ()> {
+    let mut conditions = Vec::new();
+
+    if has_during_draw_step_antecedent(lower) {
+        conditions.push(ReplacementCondition::DuringDrawStep);
+    }
+
+    match parse_while_antecedent(lower, verb_anchor) {
+        WhileAntecedent::Parsed(condition) => conditions.push(condition),
+        WhileAntecedent::Unparsed => return Err(()),
+        WhileAntecedent::Absent => {}
+    }
+
+    Ok(match conditions.len() {
+        0 => None,
+        1 => Some(conditions.into_iter().next().expect("len checked")),
+        _ => Some(ReplacementCondition::And { conditions }),
+    })
+}
+
 /// Outcome of inspecting the `"...would <verb> while <condition>,"` antecedent
 /// of a replacement line. The three states are deliberately distinct: a guard
 /// that is *present but unparseable* must never be silently collapsed into
@@ -7185,6 +7209,28 @@ pub(super) fn has_except_first_draw_in_draw_step_clause(lower: &str) -> bool {
         Ok((input, ()))
     }
     // Scan word-by-word so the clause can appear anywhere in the line.
+    let mut remaining = lower;
+    while !remaining.is_empty() {
+        if parse_clause(remaining).is_ok() {
+            return true;
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    false
+}
+
+/// CR 504.1 + CR 614.1a: Detect "...during [your/their] draw step..." in a
+/// draw-replacement antecedent (Island Sanctuary class). Scans word-by-word so
+/// the phrase can appear between the verb anchor and the consequent comma.
+fn has_during_draw_step_antecedent(lower: &str) -> bool {
+    fn parse_clause(input: &str) -> nom::IResult<&str, (), OracleError<'_>> {
+        let (input, _) = tag("during ").parse(input)?;
+        let (input, _) = alt((tag("your "), tag("their "))).parse(input)?;
+        let (input, _) = tag("draw step").parse(input)?;
+        Ok((input, ()))
+    }
     let mut remaining = lower;
     while !remaining.is_empty() {
         if parse_clause(remaining).is_ok() {
@@ -10945,6 +10991,37 @@ mod tests {
         assert!(
             def.execute.is_none(),
             "pure optional skip must not carry an execute effect"
+        );
+    }
+
+    /// CR 504.1 + CR 614.1a + CR 614.11: draw-step timing and "while …" gates
+    /// compose via `ReplacementCondition::And` rather than mutually excluding.
+    #[test]
+    fn optional_draw_skip_composes_during_draw_step_and_while_gates() {
+        let def = parse_replacement_line(
+            "If you would draw a card during your draw step while you have 5 or less life, \
+             instead you may skip that draw.",
+            "Synthetic Draw Gate",
+        )
+        .expect("combined draw-step + while gate should parse");
+        assert_eq!(
+            def.condition,
+            Some(ReplacementCondition::And {
+                conditions: vec![
+                    ReplacementCondition::DuringDrawStep,
+                    ReplacementCondition::OnlyIfQuantity {
+                        lhs: QuantityExpr::Ref {
+                            qty: QuantityRef::LifeTotal {
+                                player: crate::types::ability::PlayerScope::Controller,
+                            },
+                        },
+                        comparator: Comparator::LE,
+                        rhs: QuantityExpr::Fixed { value: 5 },
+                        active_player_req: None,
+                    },
+                ],
+            }),
+            "during draw step and while gates must compose with And"
         );
     }
 

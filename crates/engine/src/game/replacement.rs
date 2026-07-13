@@ -6455,7 +6455,6 @@ fn apply_single_replacement(
         if let Some(repl_def) = repl_def_ref {
             if replacement_mode_is_optional(&repl_def.mode)
                 && repl_def.quantity_modification == Some(QuantityModification::Prevent)
-                && replacement_mode_decline(&repl_def.mode).is_none()
             {
                 return Ok(proposed);
             }
@@ -16271,6 +16270,62 @@ mod tests {
         assert!(
             matches!(result, ReplacementResult::Execute(_)),
             "declining optional skip must resume the original draw, got {result:?}"
+        );
+        if let ReplacementResult::Execute(ProposedEvent::Draw { count, .. }) = result {
+            assert_eq!(count, 1, "declined draw must retain its original count");
+        } else {
+            panic!("expected surviving Draw event after decline");
+        }
+    }
+
+    /// CR 614.6 + CR 614.12a + issue #5655: declining an optional draw-skip with
+    /// an accept-branch execute rider (Island Sanctuary class) must still leave the
+    /// original draw intact.
+    #[test]
+    fn optional_draw_skip_with_execute_decline_leaves_original_draw() {
+        let source = ObjectId(90);
+        let execute = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::Controller,
+            },
+        );
+        let mut repl = ReplacementDefinition::new(ReplacementEvent::Draw)
+            .draw_scope(crate::types::ability::DrawReplacementScope::IndividualDraw)
+            .quantity_modification(QuantityModification::Prevent)
+            .execute(execute);
+        repl.mode = ReplacementMode::Optional { decline: None };
+        let mut state = test_state_with_object(source, Zone::Battlefield, vec![repl]);
+        state.players[0].library.push_back(ObjectId(200));
+        state.objects.insert(
+            ObjectId(200),
+            GameObject::new(
+                ObjectId(200),
+                CardId(200),
+                PlayerId(0),
+                "Top Card".to_string(),
+                Zone::Library,
+            ),
+        );
+
+        let draw = ProposedEvent::Draw {
+            player_id: PlayerId(0),
+            count: 1,
+            applied: HashSet::new(),
+        };
+        let mut events = Vec::new();
+
+        assert_eq!(
+            replace_event(&mut state, draw, &mut events),
+            ReplacementResult::NeedsChoice(PlayerId(0)),
+            "optional draw skip with execute rider must prompt"
+        );
+
+        let result = continue_replacement(&mut state, 1, &mut events);
+        assert!(
+            matches!(result, ReplacementResult::Execute(_)),
+            "declining optional skip with execute rider must resume the original draw, got {result:?}"
         );
         if let ReplacementResult::Execute(ProposedEvent::Draw { count, .. }) = result {
             assert_eq!(count, 1, "declined draw must retain its original count");
