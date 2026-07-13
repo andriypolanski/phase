@@ -5222,18 +5222,21 @@ fn ability_with_event_context_targets(
         }
         return pending;
     }
-    if pending.targets.is_empty() {
-        // CR 614.6 + CR 608.2c: unlike an ordinary event-context effect, an
-        // optional replacement continuation can resume only after the resident
-        // post-replacement drain has retired. Capture the replaced event's target
-        // when any branch of the stashed chain needs it, not only when the
-        // optional head itself has that target slot.
-        if ability_refs_post_replacement_event_target(&pending) {
-            if let Some(target) = state.post_replacement_event_target() {
+    // CR 614.6 + CR 608.2c: unlike an ordinary event-context effect, an
+    // optional replacement continuation can resume only after the resident
+    // post-replacement drain has retired. Preserve the replaced event's target
+    // whenever any branch needs it. The head can already carry an object target
+    // for the revealed card, so this must append the affected player rather than
+    // treating a nonempty target list as complete.
+    if ability_refs_post_replacement_event_target(&pending) {
+        if let Some(target) = state.post_replacement_event_target() {
+            if !pending.targets.contains(target) {
                 pending.targets.push(target.clone());
-                return pending;
             }
+            return pending;
         }
+    }
+    if pending.targets.is_empty() {
         if let Some(filter) = pending.effect.target_filter() {
             if filter.is_context_ref() {
                 if let Some(target) = crate::game::targeting::resolve_event_context_target(
