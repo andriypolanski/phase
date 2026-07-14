@@ -115,6 +115,10 @@ fn drive_shadrix(
                     .expect("Shadrix optional begin-combat trigger must offer decline");
             }
             WaitingFor::AbilityModeChoice { .. } => {
+                assert!(
+                    accept_optional,
+                    "declining Shadrix must not reach AbilityModeChoice"
+                );
                 runner
                     .act(GameAction::SelectModes {
                         indices: modes.to_vec(),
