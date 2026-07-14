@@ -7199,12 +7199,11 @@ pub(super) fn begin_pending_trigger_target_selection(
             // exactly `min_choices` modes; declining removes the mid-construction
             // stack entry without choosing zero modes (count stays fixed).
             if ability_optional {
-                let may_trigger_key =
-                    may_trigger_origin.map(|origin| MayTriggerAutoChoiceKey {
-                        player,
-                        source_id,
-                        origin,
-                    });
+                let may_trigger_key = may_trigger_origin.map(|origin| MayTriggerAutoChoiceKey {
+                    player,
+                    source_id,
+                    origin,
+                });
                 if let Some(ref key) = may_trigger_key {
                     if let Some(choice) = state.may_trigger_auto_choice(key) {
                         match choice {
