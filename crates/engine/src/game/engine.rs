@@ -7094,17 +7094,23 @@ pub(super) fn begin_pending_trigger_target_selection(
             let source_id = trigger.source_id;
             let mode_abilities = trigger.mode_abilities.clone();
             let trigger_event = trigger.trigger_event.clone();
+            // Clone optional-gate fields before any `&mut state` borrow so the
+            // `pending_trigger` imm borrow from `trigger` does not overlap.
+            let ability_optional = trigger.ability.optional;
+            let may_trigger_origin = trigger.may_trigger_origin;
+            let trigger_description = trigger.description.clone();
             let trigger_events = if state.pending_trigger_event_batch.is_empty() {
                 trigger_event.iter().cloned().collect::<Vec<_>>()
             } else {
                 state.pending_trigger_event_batch.clone()
             };
             let subject_match_count = trigger.subject_match_count;
+            let modal = modal.clone();
             let modal = modal_choice_for_player(
                 state,
                 player,
                 source_id,
-                modal,
+                &modal,
                 &crate::types::ability::SpellContext::default(),
             );
             let mut unavailable_modes = compute_unavailable_modes(state, source_id, &modal);
@@ -7192,16 +7198,13 @@ pub(super) fn begin_pending_trigger_target_selection(
             // CR 603.3d). Offer the decline first so accepting still requires
             // exactly `min_choices` modes; declining removes the mid-construction
             // stack entry without choosing zero modes (count stays fixed).
-            if trigger.ability.optional {
-                let description = trigger.description.clone();
+            if ability_optional {
                 let may_trigger_key =
-                    trigger
-                        .may_trigger_origin
-                        .map(|origin| MayTriggerAutoChoiceKey {
-                            player,
-                            source_id,
-                            origin,
-                        });
+                    may_trigger_origin.map(|origin| MayTriggerAutoChoiceKey {
+                        player,
+                        source_id,
+                        origin,
+                    });
                 if let Some(ref key) = may_trigger_key {
                     if let Some(choice) = state.may_trigger_auto_choice(key) {
                         match choice {
@@ -7228,7 +7231,7 @@ pub(super) fn begin_pending_trigger_target_selection(
                 return Ok(Some(WaitingFor::OptionalEffectChoice {
                     player,
                     source_id,
-                    description,
+                    description: trigger_description,
                     may_trigger_key,
                 }));
             }

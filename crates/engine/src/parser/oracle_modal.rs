@@ -2158,10 +2158,8 @@ mod tests {
         // CR 608.2c: Shadrix Silverquill — "you may choose two" declines the
         // entire triggered ability; when accepted, exactly two modes are chosen.
         let header =
-            parse_modal_header_ast(
-                "you may choose two. Each mode must target a different player.",
-            )
-            .expect("modal header recognized");
+            parse_modal_header_ast("you may choose two. Each mode must target a different player.")
+                .expect("modal header recognized");
         assert!(header.optional_trigger);
         assert_eq!(header.min_choices, 2);
         assert_eq!(header.max_choices, 2);

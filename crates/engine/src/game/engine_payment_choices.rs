@@ -42,7 +42,7 @@ pub(super) fn handle_optional_effect_choice(
         // CR 101.4 + CR 701.23i: This optional decision belongs to the
         // simultaneous scoped-library-search protocol. It owns the next APNAP
         // prompt / final delivery and must not be mistaken for a normal
-        // `pending_optional_effect` continuation.
+            // `pending_optional_effect` continuation.
     } else {
         set_active_priority(state);
         if state.pending_repeated_optional_payment.is_some() {
@@ -74,7 +74,10 @@ pub(super) fn handle_optional_effect_choice(
             state.current_trigger_match_count = previous_trigger_match_count;
             result.map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
         } else if state.pending_trigger.as_ref().is_some_and(|t| {
-            t.ability.optional && t.modal.as_ref().is_some_and(|_| !t.mode_abilities.is_empty())
+            t.ability.optional
+                && t.modal
+                    .as_ref()
+                    .is_some_and(|_| !t.mode_abilities.is_empty())
         }) {
             // CR 608.2c + CR 700.2b: Optional triggered modal ("you may choose N") —
             // the decline/accept gate runs before mode selection while the stack
