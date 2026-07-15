@@ -42,7 +42,7 @@ pub(super) fn handle_optional_effect_choice(
         // CR 101.4 + CR 701.23i: This optional decision belongs to the
         // simultaneous scoped-library-search protocol. It owns the next APNAP
         // prompt / final delivery and must not be mistaken for a normal
-            // `pending_optional_effect` continuation.
+        // `pending_optional_effect` continuation.
     } else {
         set_active_priority(state);
         if state.pending_repeated_optional_payment.is_some() {
@@ -84,7 +84,8 @@ pub(super) fn handle_optional_effect_choice(
             // entry is still mid-construction.
             if accept {
                 super::engine::clear_pending_trigger_optional(state);
-                if let Some(waiting) = super::engine::begin_pending_trigger_target_selection(state)? {
+                if let Some(waiting) = super::engine::begin_pending_trigger_target_selection(state)?
+                {
                     state.waiting_for = waiting;
                 } else {
                     state.waiting_for = WaitingFor::Priority {

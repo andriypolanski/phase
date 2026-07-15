@@ -1822,7 +1822,16 @@ pub(crate) struct ModalHeaderAst {
     /// controller may decline to choose any modes. Distinct from "you may choose
     /// up to N", which only lowers `min_choices` to 0 while the trigger remains
     /// mandatory.
-    pub(crate) optional_trigger: bool,
+    pub(crate) optionality: ModalOptionality,
+}
+
+/// CR 608.2c: Whether a modal header makes its enclosing triggered ability
+/// optional. This remains distinct from a modal's `min_choices`, which models
+/// how many modes a mandatory ability may select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum ModalOptionality {
+    Mandatory,
+    MayDecline,
 }
 
 // --- ActivatedConstraintAst (moved from oracle.rs) ---
