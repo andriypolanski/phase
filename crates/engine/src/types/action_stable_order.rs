@@ -39,6 +39,25 @@ fn cmp_payload(a: &GameAction, b: &GameAction) -> Ordering {
             };
             Ordering::Equal
         }
+        GameAction::ChooseMeldPair {
+            source_id: a0,
+            partner_id: a1,
+        } => {
+            let GameAction::ChooseMeldPair {
+                source_id: b0,
+                partner_id: b1,
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::ChooseEntryAttackTarget { target: a0 } => {
+            let GameAction::ChooseEntryAttackTarget { target: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
         GameAction::PlayLand {
             object_id: a0,
             card_id: a1,
@@ -148,6 +167,12 @@ fn cmp_payload(a: &GameAction, b: &GameAction) -> Ordering {
         }
         GameAction::ChooseClashOpponent { opponent: a0 } => {
             let GameAction::ChooseClashOpponent { opponent: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChoosePileOpponent { opponent: a0 } => {
+            let GameAction::ChoosePileOpponent { opponent: b0 } = b else {
                 unreachable!("cmp_payload: same-variant invariant");
             };
             cmp_val(a0, b0)
@@ -339,13 +364,18 @@ fn cmp_payload(a: &GameAction, b: &GameAction) -> Ordering {
             };
             cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
         }
-        GameAction::TurnFaceUp { object_id: a0 } => {
-            let GameAction::TurnFaceUp { object_id: b0 } = b else {
+        GameAction::TurnFaceUp {
+            object_id: a0,
+            x: a1,
+        } => {
+            let GameAction::TurnFaceUp {
+                object_id: b0,
+                x: b1,
+            } = b
+            else {
                 unreachable!("cmp_payload: same-variant invariant");
             };
-            {
-                cmp_val(a0, b0)
-            }
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
         }
         GameAction::SubmitSideboard {
             main: a0,
@@ -825,6 +855,18 @@ fn cmp_payload(a: &GameAction, b: &GameAction) -> Ordering {
                 cmp_val(a0, b0)
             }
         }
+        GameAction::SetMayTriggerAutoChoice { op: a0 } => {
+            let GameAction::SetMayTriggerAutoChoice { op: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::SetTriggerOrderTemplate { op: a0 } => {
+            let GameAction::SetTriggerOrderTemplate { op: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
         GameAction::AssignCombatDamage {
             mode: a0,
             assignments: a1,
@@ -897,6 +939,12 @@ fn cmp_payload(a: &GameAction, b: &GameAction) -> Ordering {
         }
         GameAction::ChooseKeptCreatures { kept: a0 } => {
             let GameAction::ChooseKeptCreatures { kept: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::ChooseKeptPermanents { kept: a0 } => {
+            let GameAction::ChooseKeptPermanents { kept: b0 } = b else {
                 unreachable!("cmp_payload: same-variant invariant");
             };
             cmp_val(a0, b0)
@@ -981,6 +1029,44 @@ fn cmp_payload(a: &GameAction, b: &GameAction) -> Ordering {
             {
                 cmp_val(a0, b0)
             }
+        }
+        GameAction::DeclareShortcut {
+            count: a0,
+            template: a1,
+        } => {
+            let GameAction::DeclareShortcut {
+                count: b0,
+                template: b1,
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
+        }
+        GameAction::RespondToShortcut { response: a0 } => {
+            let GameAction::RespondToShortcut { response: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::DeclineShortcut => {
+            let GameAction::DeclineShortcut = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            Ordering::Equal
+        }
+        GameAction::PrecastCopyShortcut {
+            epoch: a0,
+            response: a1,
+        } => {
+            let GameAction::PrecastCopyShortcut {
+                epoch: b0,
+                response: b1,
+            } = b
+            else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0).then_with(|| cmp_val(a1, b1))
         }
     }
 }
@@ -1417,8 +1503,8 @@ fn cmp_debug_action_payload(a: &DebugAction, b: &DebugAction) -> Ordering {
 
 /// Cold-path order over `Option<LibraryPosition>`. `LibraryPosition` cannot
 /// derive `Ord` because `BeneathTop { depth }` carries a non-`Ord`
-/// `QuantityExpr`; two `BeneathTop` values therefore tie-break as `Equal`
-/// (sufficient for this cold debug path).
+/// `QuantityExpr`; same-variant `BeneathTop` and `RandomWithinTop` values
+/// therefore tie-break as `Equal` (sufficient for this cold debug path).
 fn cmp_opt_library_position(a: &Option<LibraryPosition>, b: &Option<LibraryPosition>) -> Ordering {
     match (a, b) {
         (None, None) => Ordering::Equal,
@@ -1435,13 +1521,14 @@ fn cmp_library_position(a: &LibraryPosition, b: &LibraryPosition) -> Ordering {
             LibraryPosition::Bottom => 1,
             LibraryPosition::NthFromTop { .. } => 2,
             LibraryPosition::BeneathTop { .. } => 3,
+            LibraryPosition::RandomWithinTop { .. } => 4,
         }
     }
     rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
         (LibraryPosition::NthFromTop { n: a0 }, LibraryPosition::NthFromTop { n: b0 }) => {
             cmp_val(a0, b0)
         }
-        // `BeneathTop` carries a non-`Ord` `QuantityExpr`; equal-rank fallback.
+        // These variants carry a non-`Ord` `QuantityExpr`; equal-rank fallback.
         _ => Ordering::Equal,
     })
 }
@@ -1457,6 +1544,7 @@ fn cmp_debug_token_request(a: &DebugTokenRequest, b: &DebugTokenRequest) -> Orde
             DebugTokenRequest::Custom { .. } => 1,
         }
     }
+
     rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
         (
             DebugTokenRequest::Preset {
@@ -1495,4 +1583,115 @@ fn cmp_debug_token_request(a: &DebugTokenRequest, b: &DebugTokenRequest) -> Orde
         // Unreachable: reached only after `rank` compared `Equal`.
         _ => Ordering::Equal,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::decision_template::{
+        DecisionGroupKey, DecisionKind, DecisionTemplate, IterationCount, ReplayMode,
+    };
+    use crate::game::combat::AttackTarget;
+    use crate::types::actions::{MayTriggerAutoChoiceOp, PrecastCopyShortcutResponse};
+    use crate::types::game_state::{MayTriggerAutoChoiceKey, MayTriggerOrigin};
+    use crate::types::identifiers::ObjectId;
+    use crate::types::player::PlayerId;
+
+    fn assert_distinct_order(a: GameAction, b: GameAction) {
+        assert_ne!(a.cmp_stable(&b), Ordering::Equal);
+        assert_eq!(a.cmp_stable(&b), b.cmp_stable(&a).reverse());
+    }
+
+    #[test]
+    fn newer_action_variants_compare_their_payloads() {
+        assert_distinct_order(
+            GameAction::ChooseMeldPair {
+                source_id: ObjectId(1),
+                partner_id: ObjectId(2),
+            },
+            GameAction::ChooseMeldPair {
+                source_id: ObjectId(1),
+                partner_id: ObjectId(3),
+            },
+        );
+        assert_distinct_order(
+            GameAction::ChooseEntryAttackTarget {
+                target: AttackTarget::Player(PlayerId(0)),
+            },
+            GameAction::ChooseEntryAttackTarget {
+                target: AttackTarget::Player(PlayerId(1)),
+            },
+        );
+        assert_distinct_order(
+            GameAction::ChoosePileOpponent {
+                opponent: PlayerId(0),
+            },
+            GameAction::ChoosePileOpponent {
+                opponent: PlayerId(1),
+            },
+        );
+        assert_distinct_order(
+            GameAction::SetMayTriggerAutoChoice {
+                op: MayTriggerAutoChoiceOp::Remove {
+                    key: MayTriggerAutoChoiceKey {
+                        player: PlayerId(0),
+                        source_id: ObjectId(1),
+                        origin: MayTriggerOrigin::Printed { trigger_index: 0 },
+                    },
+                },
+            },
+            GameAction::SetMayTriggerAutoChoice {
+                op: MayTriggerAutoChoiceOp::Remove {
+                    key: MayTriggerAutoChoiceKey {
+                        player: PlayerId(0),
+                        source_id: ObjectId(2),
+                        origin: MayTriggerOrigin::Printed { trigger_index: 0 },
+                    },
+                },
+            },
+        );
+        assert_distinct_order(
+            GameAction::ChooseKeptPermanents {
+                kept: vec![ObjectId(1)],
+            },
+            GameAction::ChooseKeptPermanents {
+                kept: vec![ObjectId(2)],
+            },
+        );
+        assert_distinct_order(
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(1),
+                template: None,
+            },
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(1),
+                template: Some(DecisionTemplate {
+                    owner: PlayerId(0),
+                    decisions: vec![],
+                    replay: ReplayMode::Static,
+                    key: DecisionGroupKey::from_sources(&[], DecisionKind::LoopChoice),
+                }),
+            },
+        );
+        assert_distinct_order(
+            GameAction::RespondToShortcut {
+                response: crate::analysis::loop_check::ShortcutResponse::Accept,
+            },
+            GameAction::RespondToShortcut {
+                response: crate::analysis::loop_check::ShortcutResponse::Shorten {
+                    at_iteration: 1,
+                },
+            },
+        );
+        assert_distinct_order(
+            GameAction::PrecastCopyShortcut {
+                epoch: 1,
+                response: PrecastCopyShortcutResponse::Accept,
+            },
+            GameAction::PrecastCopyShortcut {
+                epoch: 2,
+                response: PrecastCopyShortcutResponse::Accept,
+            },
+        );
+    }
 }

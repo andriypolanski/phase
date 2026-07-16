@@ -736,14 +736,14 @@ pub enum AutoMayChoice {
     Decline,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MayTriggerOrigin {
     Printed { trigger_index: usize },
     Keyword { keyword: KeywordKind },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MayTriggerAutoChoiceKey {
     pub player: PlayerId,
     pub source_id: ObjectId,

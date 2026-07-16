@@ -21,7 +21,7 @@ use crate::game::game_object::AttachTarget;
 /// shortcut. This intentionally does not reuse the legacy loop-shortcut
 /// vocabulary: the route is an engine-proved finite reducer transcript, not a
 /// general loop certificate.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum PrecastCopyShortcutResponse {
     Propose { route_id: u64 },
@@ -902,7 +902,7 @@ pub enum PriorityYieldOp {
 /// acting player's stored "don't ask again" auto-choices for optional ("may")
 /// triggers. `Remove` echoes a stored key verbatim; `ClearAll` drops every stored
 /// auto-choice belonging to the acting player.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum MayTriggerAutoChoiceOp {
     Remove { key: MayTriggerAutoChoiceKey },
@@ -913,7 +913,7 @@ pub enum MayTriggerAutoChoiceOp {
 /// trigger-ordering preferences. A live `OrderTriggers` response is the sole
 /// authority that records a preference; clients may only forget all of their
 /// saved preferences.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum TriggerOrderTemplateOp {
     ClearAll,
