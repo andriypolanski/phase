@@ -2129,15 +2129,21 @@ pub(super) fn handle_resolution_choice(
                     ));
                 }
                 PayableResource::Life => {
-                    // CR 119.4: pay N life via the life-loss-as-cost authority
-                    // (replacement pipeline + CantLoseLife) — NOT inline life
-                    // subtraction.
-                    match crate::game::life_costs::pay_life_as_cost(state, player, amount, events) {
-                        crate::game::life_costs::PayLifeCostResult::Paid { .. } => {}
-                        _ => {
-                            return Err(EngineError::InvalidAction(format!(
-                                "Player {player:?} cannot pay {amount} life"
-                            )))
+                    if state.pending_life_auction_participants.is_some() {
+                        // Opening bid is announced, not paid — skip life payment.
+                    } else {
+                        // CR 119.4: pay N life via the life-loss-as-cost authority
+                        // (replacement pipeline + CantLoseLife) — NOT inline life
+                        // subtraction.
+                        match crate::game::life_costs::pay_life_as_cost(
+                            state, player, amount, events,
+                        ) {
+                            crate::game::life_costs::PayLifeCostResult::Paid { .. } => {}
+                            _ => {
+                                return Err(EngineError::InvalidAction(format!(
+                                    "Player {player:?} cannot pay {amount} life"
+                                )))
+                            }
                         }
                     }
                 }
@@ -2450,17 +2456,6 @@ pub(super) fn handle_resolution_choice(
             if amount <= high_bid {
                 return Err(EngineError::InvalidAction(format!(
                     "Life auction bid {amount} must exceed current high bid {high_bid}"
-                )));
-            }
-            let max_life = state
-                .players
-                .iter()
-                .find(|p| p.id == player)
-                .map(|p| p.life.max(0) as u32)
-                .unwrap_or(0);
-            if amount > max_life {
-                return Err(EngineError::InvalidAction(format!(
-                    "Life auction bid {amount} exceeds available life {max_life}"
                 )));
             }
             effects::life_auction::record_bid(

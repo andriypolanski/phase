@@ -734,7 +734,7 @@ pub enum GameAction {
         selections: Vec<CounterRemoveChoice>,
     },
     /// Submit a life bid for `WaitingFor::LifeAuctionBid`. Must strictly exceed
-    /// the current high bid and be payable from the bidder's life total.
+    /// the current high bid; announced bids may exceed the bidder's life total.
     SubmitLifeAuctionBid {
         amount: u32,
     },

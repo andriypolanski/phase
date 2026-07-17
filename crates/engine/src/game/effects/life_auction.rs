@@ -56,7 +56,9 @@ pub fn resolve(
             player: controller,
             resource: PayableResource::Life,
             min: 0,
-            max: max_biddable_life(state, controller),
+            // Opening bid is an announced amount, not a life payment — bids may
+            // exceed the controller's current life total (Pain's Reward ruling).
+            max: u32::MAX,
             accumulated: 0,
             source_id: ability.source_id,
             pending_mana_ability: None,
@@ -191,7 +193,11 @@ pub fn finalize_auction(
         // resolution (mirrors vote ballot ledger at depth 1).
         resolve_ability_chain(state, &cont.chain, events, 1)?;
     }
-    state.waiting_for = WaitingFor::Priority { player: controller };
+    // Preserve any resolution choice the payoff chain parked; only fall back to
+    // priority when the auction prompt itself is still active.
+    if matches!(state.waiting_for, WaitingFor::LifeAuctionBid { .. }) {
+        state.waiting_for = WaitingFor::Priority { player: controller };
+    }
     Ok(())
 }
 
@@ -298,13 +304,38 @@ fn apnap_order_from(state: &GameState, start: PlayerId) -> Vec<PlayerId> {
         .collect()
 }
 
-fn max_biddable_life(state: &GameState, player: PlayerId) -> u32 {
-    state
-        .players
-        .iter()
-        .find(|p| p.id == player)
-        .map(|p| p.life.max(0) as u32)
-        .unwrap_or(0)
+/// Sample bid amounts for AI search without enumerating every integer in range.
+pub fn sample_life_auction_bid_amounts(high_bid: u32, player_life: i32) -> Vec<u32> {
+    let min = high_bid.saturating_add(1);
+    let life = player_life.max(0) as u32;
+    let mut amounts = vec![min];
+    for candidate in [
+        min.saturating_add(1),
+        life,
+        life.saturating_add(1),
+        life.saturating_add(5),
+        min.saturating_add(10),
+        high_bid.saturating_add(20),
+    ] {
+        if candidate >= min && !amounts.contains(&candidate) {
+            amounts.push(candidate);
+        }
+    }
+    amounts.sort_unstable();
+    amounts
+}
+
+/// Sample opening-bid amounts for Pain's Reward-style auctions.
+pub fn sample_life_auction_opening_bid_amounts(player_life: i32) -> Vec<u32> {
+    let life = player_life.max(0) as u32;
+    let mut amounts = vec![0, 1, 5, 10];
+    for candidate in [life, life.saturating_add(1), life.saturating_add(5)] {
+        if !amounts.contains(&candidate) {
+            amounts.push(candidate);
+        }
+    }
+    amounts.sort_unstable();
+    amounts
 }
 
 #[cfg(test)]

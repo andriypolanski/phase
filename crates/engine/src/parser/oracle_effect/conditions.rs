@@ -1502,6 +1502,25 @@ pub(super) fn strip_coin_flip_conditional(text: &str) -> (Option<AbilityConditio
     }
 }
 
+/// CR 608.2c: Strip a resolution-scoped "if you win the bidding," gate that
+/// precedes a chained auction payoff (Mages' Contest). Returns the original text
+/// unchanged when no auction-winner gate is present.
+pub(crate) fn strip_auction_winner_conditional(text: &str) -> (Option<AbilityCondition>, String) {
+    let lower = text.to_lowercase();
+    match nom_on_lower(text, &lower, |i| {
+        let (i, _) = tag::<_, _, OracleError<'_>>("if you win the bidding, ").parse(i)?;
+        Ok((
+            i,
+            AbilityCondition::AuctionWinnerIs {
+                player: ControllerRef::You,
+            },
+        ))
+    }) {
+        Some((condition, remainder)) => (Some(condition), remainder.to_string()),
+        None => (None, text.to_string()),
+    }
+}
+
 pub(super) fn strip_card_type_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     if let Some((condition, remainder)) = parse_if_revealed_card_type_conditional(text) {
         return (Some(condition), remainder);

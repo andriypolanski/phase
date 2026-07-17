@@ -2926,18 +2926,21 @@ pub fn candidate_actions_broad_with_probe(
         WaitingFor::LifeAuctionBid {
             player, high_bid, ..
         } => {
+            let player_life = state
+                .players
+                .iter()
+                .find(|p| p.id == *player)
+                .map(|p| p.life)
+                .unwrap_or(0);
             let mut actions = vec![candidate(
                 GameAction::PassLifeAuction,
                 TacticalClass::Selection,
                 Some(*player),
             )];
-            let max_life = state
-                .players
-                .iter()
-                .find(|p| p.id == *player)
-                .map(|p| p.life.max(0) as u32)
-                .unwrap_or(0);
-            for amount in (high_bid.saturating_add(1))..=max_life {
+            for amount in crate::game::effects::life_auction::sample_life_auction_bid_amounts(
+                *high_bid,
+                player_life,
+            ) {
                 actions.push(candidate(
                     GameAction::SubmitLifeAuctionBid { amount },
                     TacticalClass::Selection,
@@ -2945,6 +2948,27 @@ pub fn candidate_actions_broad_with_probe(
                 ));
             }
             actions
+        }
+        WaitingFor::PayAmountChoice {
+            player, min, max, ..
+        } if state.pending_life_auction_participants.is_some() => {
+            let player_life = state
+                .players
+                .iter()
+                .find(|p| p.id == *player)
+                .map(|p| p.life)
+                .unwrap_or(0);
+            crate::game::effects::life_auction::sample_life_auction_opening_bid_amounts(player_life)
+                .into_iter()
+                .filter(|amount| *amount >= *min && *amount <= *max)
+                .map(|amount| {
+                    candidate(
+                        GameAction::SubmitPayAmount { amount },
+                        TacticalClass::Selection,
+                        Some(*player),
+                    )
+                })
+                .collect()
         }
         WaitingFor::PayAmountChoice {
             player, min, max, ..

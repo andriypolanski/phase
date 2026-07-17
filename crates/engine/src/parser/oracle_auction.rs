@@ -5,20 +5,22 @@
 //! with chained payoff sub-abilities.
 
 use nom::branch::alt;
+use nom::bytes::complete::tag;
 use nom::bytes::complete::tag_no_case;
 use nom::combinator::{map, opt, value};
-use nom::sequence::preceded;
+use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
+use crate::parser::oracle_effect::conditions::strip_auction_winner_conditional;
+use crate::parser::oracle_effect::parse_effect_chain_with_context;
+use crate::parser::oracle_ir::context::ParseContext;
+use crate::parser::oracle_nom::bridge::nom_on_lower;
 use crate::parser::oracle_nom::error::OracleError;
 use crate::parser::oracle_nom::primitives::parse_number;
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, ControllerRef, Effect, LifeAuctionParticipants,
     LifeAuctionStartingBid, QuantityExpr, QuantityRef, TargetFilter,
 };
-
-use super::oracle_effect::parse_effect_chain_with_context;
-use super::oracle_ir::context::ParseContext;
 
 /// Detect and parse a full open-bid life auction block.
 pub(crate) fn parse_life_auction_block(text: &str, kind: AbilityKind) -> Option<AbilityDefinition> {
@@ -107,55 +109,99 @@ fn parse_auction_payoff(text: &str, kind: AbilityKind) -> Option<AbilityDefiniti
     if text.is_empty() {
         return None;
     }
-    let parsed = parse_effect_chain_with_context(text, kind, &mut ParseContext::default());
-    if matches!(*parsed.effect, Effect::Unimplemented { .. }) {
-        return rewrite_payoff_chain(text, kind);
-    }
-    Some(normalize_payoff(parsed))
+    parse_auction_payoff_nom(text, kind).or_else(|| {
+        let parsed = parse_effect_chain_with_context(text, kind, &mut ParseContext::default());
+        if matches!(*parsed.effect, Effect::Unimplemented { .. }) {
+            None
+        } else {
+            Some(normalize_payoff(parsed))
+        }
+    })
 }
 
-fn rewrite_payoff_chain(text: &str, kind: AbilityKind) -> Option<AbilityDefinition> {
+fn parse_auction_payoff_nom(text: &str, kind: AbilityKind) -> Option<AbilityDefinition> {
     let lower = text.to_ascii_lowercase();
-    if lower.starts_with("the high bidder loses life equal to the high bid and draws") {
-        let draw = parse_effect_chain_with_context(text, kind, &mut ParseContext::default());
-        return Some(build_lose_life_then(draw));
+    let (rest, mut chain) = parse_high_bidder_lose_life_head(text, &lower, kind)?;
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return Some(chain);
     }
-    if lower.starts_with("the high bidder loses life equal to the high bid and gains control") {
-        let tail = AbilityDefinition::new(
-            kind,
-            Effect::GiveControl {
-                target: TargetFilter::ParentTarget,
-                recipient: TargetFilter::WinningBidder,
-            },
-        );
-        return Some(build_lose_life_then(tail));
+
+    let rest = rest.strip_prefix('.').map(str::trim_start).unwrap_or(rest);
+    if rest.is_empty() {
+        return Some(chain);
     }
-    if lower.starts_with("the high bidder loses life equal to the high bid.") {
-        let mut lose = AbilityDefinition::new(
-            kind,
-            Effect::LoseLife {
-                amount: QuantityExpr::Ref {
-                    qty: QuantityRef::WinningBidAmount,
-                },
-                target: Some(TargetFilter::WinningBidder),
-            },
-        );
-        let rest = text
-            .strip_prefix("The high bidder loses life equal to the high bid.")
-            .or_else(|| text.strip_prefix("the high bidder loses life equal to the high bid."))
-            .map(str::trim_start);
-        if let Some(rest) = rest.filter(|s| !s.is_empty()) {
-            let cond = parse_effect_chain_with_context(rest, kind, &mut ParseContext::default());
-            lose = lose.sub_ability(cond);
+
+    let (condition, body) = strip_auction_winner_conditional(rest);
+    if let Some(condition) = condition {
+        let tail = parse_effect_chain_with_context(&body, kind, &mut ParseContext::default());
+        if matches!(*tail.effect, Effect::Unimplemented { .. }) {
+            return None;
         }
-        return Some(lose);
+        chain = chain.sub_ability(normalize_payoff(tail).condition(condition));
+        return Some(chain);
     }
+
     None
 }
 
-fn build_lose_life_then(tail: AbilityDefinition) -> AbilityDefinition {
+fn parse_high_bidder_lose_life_head(
+    text: &str,
+    lower: &str,
+    kind: AbilityKind,
+) -> Option<(String, AbilityDefinition)> {
+    nom_on_lower(text, lower, |input| {
+        let (rest, _) = tag("the high bidder loses life equal to the high bid").parse(input)?;
+        let (rest, suffix) =
+            opt(|input| parse_auction_payoff_conjunction(input, kind)).parse(rest)?;
+        let (rest, _) = opt(tag(".")).parse(rest)?;
+        let mut chain = build_lose_life_winning_bidder(kind);
+        if let Some(suffix) = suffix {
+            chain = chain.sub_ability(suffix);
+        }
+        Ok((rest, chain))
+    })
+    .map(|(chain, rest)| (rest.to_string(), chain))
+}
+
+fn parse_auction_payoff_conjunction(
+    input: &str,
+    kind: AbilityKind,
+) -> nom::IResult<&str, AbilityDefinition> {
+    preceded(
+        tag(" and "),
+        alt((
+            map(
+                preceded(tag("draws "), terminated(parse_number, tag(" cards"))),
+                move |count| {
+                    AbilityDefinition::new(
+                        kind,
+                        Effect::Draw {
+                            count: QuantityExpr::Fixed {
+                                value: count as i32,
+                            },
+                            target: TargetFilter::WinningBidder,
+                        },
+                    )
+                },
+            ),
+            map(tag("gains control of the creature"), move |_| {
+                AbilityDefinition::new(
+                    kind,
+                    Effect::GiveControl {
+                        target: TargetFilter::ParentTarget,
+                        recipient: TargetFilter::WinningBidder,
+                    },
+                )
+            }),
+        )),
+    )
+    .parse(input)
+}
+
+fn build_lose_life_winning_bidder(kind: AbilityKind) -> AbilityDefinition {
     AbilityDefinition::new(
-        tail.kind,
+        kind,
         Effect::LoseLife {
             amount: QuantityExpr::Ref {
                 qty: QuantityRef::WinningBidAmount,
@@ -163,7 +209,6 @@ fn build_lose_life_then(tail: AbilityDefinition) -> AbilityDefinition {
             target: Some(TargetFilter::WinningBidder),
         },
     )
-    .sub_ability(tail)
 }
 
 fn normalize_payoff(mut def: AbilityDefinition) -> AbilityDefinition {
@@ -188,6 +233,7 @@ fn rewrite_lose_life_in_chain(def: &mut AbilityDefinition) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ability::AbilityCondition;
 
     const ILLICIT: &str = "Each player may bid life for control of target creature. You start the bidding with a bid of 0. In turn order, each player may top the high bid. The bidding ends if the high bid stands. The high bidder loses life equal to the high bid and gains control of the creature.";
     const PAINS: &str = "Each player may bid life. You start the bidding with a bid of any number. In turn order, each player may top the high bid. The bidding ends if the high bid stands. The high bidder loses life equal to the high bid and draws four cards.";
@@ -204,7 +250,16 @@ mod tests {
                 ..
             }
         ));
-        assert!(def.sub_ability.is_some());
+        let sub = def.sub_ability.expect("payoff");
+        assert!(matches!(*sub.effect, Effect::LoseLife { .. }));
+        let give = sub.sub_ability.expect("give control");
+        assert!(matches!(
+            *give.effect,
+            Effect::GiveControl {
+                target: TargetFilter::ParentTarget,
+                recipient: TargetFilter::WinningBidder,
+            }
+        ));
     }
 
     #[test]
@@ -215,6 +270,16 @@ mod tests {
             Effect::LifeAuction {
                 starting_bid: LifeAuctionStartingBid::ControllerChooses,
                 ..
+            }
+        ));
+        let sub = def.sub_ability.expect("payoff");
+        assert!(matches!(*sub.effect, Effect::LoseLife { .. }));
+        let draw = sub.sub_ability.expect("draw");
+        assert!(matches!(
+            *draw.effect,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 4 },
+                target: TargetFilter::WinningBidder,
             }
         ));
     }
@@ -230,5 +295,15 @@ mod tests {
                 ..
             }
         ));
+        let sub = def.sub_ability.expect("payoff");
+        assert!(matches!(*sub.effect, Effect::LoseLife { .. }));
+        let counter = sub.sub_ability.expect("conditional counter");
+        assert!(matches!(
+            counter.condition,
+            Some(AbilityCondition::AuctionWinnerIs {
+                player: ControllerRef::You
+            })
+        ));
+        assert!(matches!(*counter.effect, Effect::Counter { .. }));
     }
 }

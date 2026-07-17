@@ -89,3 +89,28 @@ fn two_player_auction_passes_at_zero_and_winner_gains_control() {
     );
     assert_eq!(state.players[0].life, 20, "zero bid costs no life");
 }
+
+#[test]
+fn over_life_bid_is_legal_and_paid_after_auction() {
+    let mut state = GameState::new_two_player(0);
+    let controller = PlayerId(0);
+    let opponent = PlayerId(1);
+    state.players[1].life = 5;
+
+    let ability = illicit_auction_ability(controller, ObjectId(900), ObjectId(1));
+    let mut events = Vec::new();
+    resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+    apply(
+        &mut state,
+        opponent,
+        GameAction::SubmitLifeAuctionBid { amount: 10 },
+    )
+    .expect("over-life bid must be legal");
+    apply(&mut state, controller, GameAction::PassLifeAuction).expect("controller passes");
+
+    assert_eq!(
+        state.players[1].life, -5,
+        "winner pays the announced bid after the auction"
+    );
+}

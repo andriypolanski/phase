@@ -1,41 +1,30 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ChoiceOverlay, ConfirmButton } from "./ChoiceOverlay.tsx";
 import { useGameDispatch } from "../../hooks/useGameDispatch.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
-import type { GameAction, WaitingFor } from "../../adapter/types.ts";
+import type { WaitingFor } from "../../adapter/types.ts";
 import { gameButtonClass } from "../ui/buttonStyles.ts";
 
 type LifeAuctionBid = Extract<WaitingFor, { type: "LifeAuctionBid" }>;
 
-function bidAmountsFromLegalActions(actions: GameAction[]): number[] {
-  return actions
-    .filter((action): action is Extract<GameAction, { type: "SubmitLifeAuctionBid" }> => {
-      return action.type === "SubmitLifeAuctionBid";
-    })
-    .map((action) => action.data.amount)
-    .sort((a, b) => a - b);
-}
-
 /**
  * Card-defined open-bid life auction. The engine exposes the standing high bid,
- * high bidder, and legal pass/raise actions; this modal only renders and dispatches.
+ * high bidder, and pass/raise actions; bids are announced amounts and may exceed
+ * the bidder's current life total.
  */
 export function LifeAuctionBidModal({ data }: { data: LifeAuctionBid["data"] }) {
   const { t } = useTranslation("game");
   const dispatch = useGameDispatch();
   const legalActions = useGameStore((s) => s.legalActions);
-  const bidAmounts = useMemo(() => bidAmountsFromLegalActions(legalActions), [legalActions]);
-  const minBid = bidAmounts[0] ?? data.high_bid + 1;
-  const maxBid = bidAmounts[bidAmounts.length - 1] ?? minBid;
+  const minBid = data.high_bid + 1;
   const canPass = legalActions.some((action) => action.type === "PassLifeAuction");
-  const canRaise = bidAmounts.length > 0;
   const [amount, setAmount] = useState(minBid);
 
   useEffect(() => {
     setAmount(minBid);
-  }, [minBid, maxBid, data.high_bid, data.player]);
+  }, [minBid, data.high_bid, data.player]);
 
   const handlePass = useCallback(() => {
     if (!canPass) return;
@@ -43,11 +32,12 @@ export function LifeAuctionBidModal({ data }: { data: LifeAuctionBid["data"] }) 
   }, [canPass, dispatch]);
 
   const handleBid = useCallback(() => {
-    if (!canRaise || !bidAmounts.includes(amount)) return;
+    if (amount <= data.high_bid) return;
     dispatch({ type: "SubmitLifeAuctionBid", data: { amount } });
-  }, [amount, bidAmounts, canRaise, dispatch]);
+  }, [amount, data.high_bid, dispatch]);
 
   const highBidderLabel = t("lifeAuction.highBidder", { number: data.high_bidder + 1 });
+  const bidValid = amount > data.high_bid;
 
   return (
     <ChoiceOverlay
@@ -65,37 +55,29 @@ export function LifeAuctionBidModal({ data }: { data: LifeAuctionBid["data"] }) 
               {t("lifeAuction.pass")}
             </button>
           ) : null}
-          {canRaise ? (
-            <ConfirmButton
-              onClick={handleBid}
-              disabled={!bidAmounts.includes(amount)}
-              label={t("lifeAuction.bid", { amount })}
-            />
-          ) : null}
+          <ConfirmButton
+            onClick={handleBid}
+            disabled={!bidValid}
+            label={t("lifeAuction.bid", { amount })}
+          />
         </div>
       }
     >
-      {canRaise ? (
-        <div className="mx-auto mb-2 w-full max-w-md px-2">
-          <label className="flex items-center gap-3 text-sm text-gray-200">
-            <span className="shrink-0 font-mono text-base text-cyan-300">
-              {t("lifeAuction.bidLabel", { amount })}
-            </span>
-            <input
-              type="range"
-              min={minBid}
-              max={maxBid}
-              value={amount}
-              onChange={(event) => setAmount(Number(event.target.value))}
-              className="h-2 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-cyan-500"
-              aria-label={t("lifeAuction.bidLabel", { amount })}
-            />
-            <span className="shrink-0 text-xs text-gray-500">
-              {t("lifeAuction.maxBid", { max: maxBid })}
-            </span>
-          </label>
-        </div>
-      ) : null}
+      <div className="mx-auto mb-2 w-full max-w-md px-2">
+        <label className="flex flex-col gap-2 text-sm text-gray-200">
+          <span className="font-mono text-base text-cyan-300">
+            {t("lifeAuction.bidLabel", { amount })}
+          </span>
+          <input
+            type="number"
+            min={minBid}
+            value={amount}
+            onChange={(event) => setAmount(Number(event.target.value))}
+            className="w-full rounded-md border border-gray-600 bg-gray-900 px-3 py-2 font-mono text-cyan-200"
+            aria-label={t("lifeAuction.bidLabel", { amount })}
+          />
+        </label>
+      </div>
     </ChoiceOverlay>
   );
 }
