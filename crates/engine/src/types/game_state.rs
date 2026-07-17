@@ -6430,6 +6430,9 @@ pub enum WaitingFor {
         participants: Vec<PlayerId>,
         round_index: usize,
         high_bid: u32,
+        /// Minimum legal raise, when one exists (`high_bid.checked_add(1)`).
+        /// `None` at `u32::MAX` — pass is the only legal action.
+        next_legal_bid: Option<u32>,
         high_bidder: PlayerId,
         passes_since_raise: u32,
         controller: PlayerId,
@@ -15209,6 +15212,7 @@ mod tests {
             participants: vec![PlayerId(0), PlayerId(1)],
             round_index: 1,
             high_bid: 0,
+            next_legal_bid: Some(1),
             high_bidder: PlayerId(0),
             passes_since_raise: 0,
             controller: PlayerId(0),

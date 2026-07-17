@@ -1631,6 +1631,7 @@ export type WaitingFor =
       participants: PlayerId[];
       round_index: number;
       high_bid: number;
+      next_legal_bid: number | null;
       high_bidder: PlayerId;
       passes_since_raise: number;
       controller: PlayerId;

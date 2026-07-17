@@ -386,12 +386,12 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
         (WaitingFor::PayAmountChoice { min, max, .. }, GameAction::SubmitPayAmount { amount }) => {
             *amount < *min || *amount > *max
         }
-        // Life auction bids are announced amounts — only the standing high bid
-        // bounds legality, not the bidder's current life total.
+        // Life auction bids are announced amounts — legality follows
+        // `next_legal_bid` (None at u32::MAX standing bids).
         (
-            WaitingFor::LifeAuctionBid { high_bid, .. },
+            WaitingFor::LifeAuctionBid { next_legal_bid, .. },
             GameAction::SubmitLifeAuctionBid { amount },
-        ) => *amount <= *high_bid,
+        ) => next_legal_bid.is_none_or(|min| *amount < min),
         // CR 103.5: SelectCards is invalid if (a) no pending entry exists for
         // any player whose hand contains all the selected cards, or (b) the
         // count doesn't match the pending entry's owed bottom count. Because

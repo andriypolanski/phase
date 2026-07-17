@@ -212,6 +212,65 @@ fn pains_reward_opening_bid_above_i32_max_is_preserved() {
 }
 
 #[test]
+fn u32_max_high_bid_legal_actions_are_pass_only() {
+    use engine::ai_support::legal_actions;
+
+    let mut state = GameState::new_two_player(0);
+    let controller = PlayerId(0);
+    let source = ObjectId(900);
+
+    let def = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::LifeAuction {
+            participants: LifeAuctionParticipants::AllPlayers,
+            starting_bid: LifeAuctionStartingBid::ControllerChooses,
+            starting_with: ControllerRef::You,
+        },
+    )
+    .sub_ability(AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::LoseLife {
+            amount: QuantityExpr::Ref {
+                qty: QuantityRef::WinningBidAmount,
+            },
+            target: Some(TargetFilter::WinningBidder),
+        },
+    ));
+    let ability = build_resolved_from_def(&def, source, controller);
+    let mut events = Vec::new();
+    resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+    apply(
+        &mut state,
+        controller,
+        GameAction::SubmitPayAmount { amount: u32::MAX },
+    )
+    .expect("u32::MAX opening bid must be accepted");
+
+    let WaitingFor::LifeAuctionBid {
+        player,
+        high_bid,
+        next_legal_bid,
+        ..
+    } = state.waiting_for
+    else {
+        panic!(
+            "expected LifeAuctionBid after maximum opening bid, got {:?}",
+            state.waiting_for
+        );
+    };
+    assert_eq!(high_bid, u32::MAX);
+    assert_eq!(next_legal_bid, None);
+
+    let actions = legal_actions(&state);
+    assert_eq!(
+        actions,
+        vec![GameAction::PassLifeAuction],
+        "player {player:?} must only be able to pass at u32::MAX"
+    );
+}
+
+#[test]
 fn auction_payoff_preserves_nested_scry_choice() {
     let mut state = GameState::new_two_player(0);
     let controller = PlayerId(0);

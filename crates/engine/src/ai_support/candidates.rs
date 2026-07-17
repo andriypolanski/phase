@@ -2924,28 +2924,32 @@ pub fn candidate_actions_broad_with_probe(
         // AI search layer picks among these; for a damage-scaling effect like
         // Galvanic Discharge the evaluator prefers the maximum (most damage).
         WaitingFor::LifeAuctionBid {
-            player, high_bid, ..
+            player,
+            next_legal_bid,
+            ..
         } => {
-            let player_life = state
-                .players
-                .iter()
-                .find(|p| p.id == *player)
-                .map(|p| p.life)
-                .unwrap_or(0);
             let mut actions = vec![candidate(
                 GameAction::PassLifeAuction,
                 TacticalClass::Selection,
                 Some(*player),
             )];
-            for amount in crate::game::effects::life_auction::sample_life_auction_bid_amounts(
-                *high_bid,
-                player_life,
-            ) {
-                actions.push(candidate(
-                    GameAction::SubmitLifeAuctionBid { amount },
-                    TacticalClass::Selection,
-                    Some(*player),
-                ));
+            if let Some(next_legal_bid) = next_legal_bid {
+                let player_life = state
+                    .players
+                    .iter()
+                    .find(|p| p.id == *player)
+                    .map(|p| p.life)
+                    .unwrap_or(0);
+                for amount in crate::game::effects::life_auction::sample_life_auction_bid_amounts(
+                    Some(*next_legal_bid),
+                    player_life,
+                ) {
+                    actions.push(candidate(
+                        GameAction::SubmitLifeAuctionBid { amount },
+                        TacticalClass::Selection,
+                        Some(*player),
+                    ));
+                }
             }
             actions
         }

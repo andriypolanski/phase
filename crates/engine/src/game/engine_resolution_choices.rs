@@ -2444,6 +2444,7 @@ pub(super) fn handle_resolution_choice(
                 participants,
                 round_index,
                 high_bid,
+                next_legal_bid,
                 high_bidder,
                 passes_since_raise,
                 controller,
@@ -2451,7 +2452,7 @@ pub(super) fn handle_resolution_choice(
             },
             GameAction::SubmitLifeAuctionBid { amount },
         ) => {
-            if amount <= high_bid {
+            if next_legal_bid.is_none_or(|min| amount < min) {
                 return Err(EngineError::InvalidAction(format!(
                     "Life auction bid {amount} must exceed current high bid {high_bid}"
                 )));

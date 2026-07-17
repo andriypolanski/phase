@@ -222,6 +222,11 @@ pub struct LifeAuctionRoundState {
     pub source_id: ObjectId,
 }
 
+/// Minimum legal raise after `high_bid`, when one exists.
+pub fn next_life_auction_bid(high_bid: u32) -> Option<u32> {
+    high_bid.checked_add(1)
+}
+
 fn park_bid_prompt(state: &mut GameState, round: LifeAuctionRoundState) {
     let LifeAuctionRoundState {
         participants,
@@ -238,6 +243,7 @@ fn park_bid_prompt(state: &mut GameState, round: LifeAuctionRoundState) {
         participants,
         round_index,
         high_bid,
+        next_legal_bid: next_life_auction_bid(high_bid),
         high_bidder,
         passes_since_raise,
         controller,
@@ -316,17 +322,20 @@ fn apnap_order_from(state: &GameState, start: PlayerId) -> Vec<PlayerId> {
 }
 
 /// Sample bid amounts for AI search without enumerating every integer in range.
-pub fn sample_life_auction_bid_amounts(high_bid: u32, player_life: i32) -> Vec<u32> {
-    let min = high_bid.saturating_add(1);
+/// Returns empty when `next_legal_bid` is `None` (standing bid is `u32::MAX`).
+pub fn sample_life_auction_bid_amounts(next_legal_bid: Option<u32>, player_life: i32) -> Vec<u32> {
+    let Some(min) = next_legal_bid else {
+        return Vec::new();
+    };
     let life = player_life.max(0) as u32;
     let mut amounts = vec![min];
     for candidate in [
-        min.saturating_add(1),
+        min.checked_add(1).unwrap_or(min),
         life,
         life.saturating_add(1),
         life.saturating_add(5),
         min.saturating_add(10),
-        high_bid.saturating_add(20),
+        min.saturating_add(20),
     ] {
         if candidate >= min && !amounts.contains(&candidate) {
             amounts.push(candidate);
@@ -353,6 +362,13 @@ pub fn sample_life_auction_opening_bid_amounts(player_life: i32) -> Vec<u32> {
 mod tests {
     use super::*;
     use crate::types::ability::{Effect, LifeAuctionParticipants, LifeAuctionStartingBid};
+
+    #[test]
+    fn next_life_auction_bid_none_at_u32_max() {
+        assert_eq!(next_life_auction_bid(u32::MAX), None);
+        assert_eq!(next_life_auction_bid(0), Some(1));
+        assert!(sample_life_auction_bid_amounts(None, 20).is_empty());
+    }
 
     #[test]
     fn two_player_auction_passes_at_opening_bid() {

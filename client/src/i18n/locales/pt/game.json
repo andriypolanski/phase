@@ -2050,7 +2050,8 @@
     "pass": "Pass",
     "bid": "Bid {{amount}} life",
     "bidLabel": "Bid {{amount}}",
-    "maxBid": "Max {{max}}"
+    "maxBid": "Max {{max}}",
+    "maxBidReached": "The high bid cannot be topped — pass or let it stand."
   },
   "advance": {
     "resolve": "Resolver",
