@@ -1,14 +1,8 @@
 //! CR 701.31 / CR 901.8: Resolver for `Effect::Planeswalk`.
 //!
-//! CR 901.8 / CR 901.9c: when a player rolls the Planeswalker symbol on the
-//! planar die, the planeswalking ability triggers and is put on the stack
-//! (see `planechase::roll_planar_die`). On resolution, its controller — the
-//! roller, CR 901.8 — planeswalks (CR 701.31).
-//!
 //! Every `Effect::Planeswalk` resolution routes through
-//! `planechase::planeswalk_through_replacements` so "if you would planeswalk"
-//! replacements (Susan Foreman) apply regardless of source. Encounter / SBA /
-//! leave-game planeswalks (CR 701.31c) call `planechase::planeswalk` directly.
+//! `planechase::resolve_planeswalk_via_replacements`. Phenomenon encounter and
+//! SBA planeswalks use the same authority with [`PlaneswalkCause::RulesProcess`].
 
 use crate::game::planechase::{self, PlaneswalkCause};
 use crate::types::ability::{EffectError, ResolvedAbility};
@@ -27,19 +21,12 @@ pub fn resolve(
     } else {
         PlaneswalkCause::Instruction
     };
-    match planechase::planeswalk_through_replacements(
+    let _ = planechase::resolve_planeswalk_via_replacements(
         state,
         ability.controller,
         cause,
         ability.replacement_applied.clone(),
         events,
-    ) {
-        crate::game::replacement::ReplacementResult::Execute(_) => Ok(()),
-        crate::game::replacement::ReplacementResult::Prevented => Ok(()),
-        crate::game::replacement::ReplacementResult::NeedsChoice(player) => {
-            state.waiting_for =
-                crate::game::replacement::replacement_choice_waiting_for(player, state);
-            Ok(())
-        }
-    }
+    );
+    Ok(())
 }

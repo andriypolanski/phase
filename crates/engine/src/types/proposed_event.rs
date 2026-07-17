@@ -353,18 +353,22 @@ pub struct CopyTokenSpec {
     pub controller: PlayerId,
 }
 
-/// CR 701.31 + CR 901.9c: Which rules path is proposing a planeswalk event.
-/// Ability-instructed planeswalks (Susan Foreman, card text) differ from the
-/// planar-die planeswalking ability so scoped replacements ("as a result of
-/// rolling the planar die") can match only their Oracle cause.
+/// CR 701.31 + CR 901.9c + CR 701.31c: Which rules path is proposing a
+/// planeswalk event. Scoped replacements (Fixed Point in Time) match only
+/// [`PlanarDie`]; generic "if you would planeswalk" replacements (Susan Foreman)
+/// match every cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PlaneswalkCause {
     /// CR 901.8 / CR 901.9c: Planeswalker symbol on the planar die.
     PlanarDie,
     /// CR 701.31: Planeswalk from a spell or ability instruction (including
     /// chained "then planeswalk" riders).
-    #[default]
     Instruction,
+    /// CR 701.31c / CR 312.5 / CR 704.6f: Phenomenon encounter, phenomenon
+    /// state-based planeswalk, and other rules-process planeswalks that are not
+    /// the planar-die ability and not an ability resolving on the stack.
+    #[default]
+    RulesProcess,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -655,10 +659,11 @@ pub enum ProposedEvent {
         #[serde(default, deserialize_with = "deserialize_applied_keys_step_end_mana")]
         applied: HashSet<AppliedReplacementKey>,
     },
-    /// CR 701.31 + CR 614.1a: A player is about to planeswalk. Routed through
-    /// the replacement pipeline from `Effect::Planeswalk` resolution. Encounter,
-    /// phenomenon SBA, and other turn-based planeswalks (CR 701.31c) call
-    /// `planechase::planeswalk` directly and never propose this event.
+    /// CR 701.31 + CR 614.1a: A player is about to planeswalk. All CR 701.31c
+    /// causes except the starting-plane reveal route through
+    /// `planechase::resolve_planeswalk_via_replacements`. Encounter / SBA /
+    /// leave-game paths use [`PlaneswalkCause::RulesProcess`]; ability
+    /// resolutions use [`PlaneswalkCause::Instruction`] or [`PlaneswalkCause::PlanarDie`].
     Planeswalk {
         player_id: PlayerId,
         /// Distinguishes planar-die planeswalks (CR 901.9c) from ability-
