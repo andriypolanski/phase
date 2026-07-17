@@ -5,8 +5,9 @@ use engine::game::mana_abilities::activate_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::parser::oracle_cost::parse_oracle_cost;
 use engine::types::ability::{
-    AbilityCost, AbilityDefinition, AbilityKind, CardSelectionMode, CastingPermission, ChoiceType,
-    DigSource, DiscardSelfScope, Effect, ManaContribution, ManaProduction, ModalChoice,
+    AbilityCost, AbilityDefinition, AbilityKind, CardSelectionMode, CastingPermission,
+    CategoryChooserScope, ChoiceType, Chooser, DigSource, DiscardSelfScope, Effect, EffectKind,
+    ForEachCategoryAction, IterationCategory, ManaContribution, ManaProduction, ModalChoice,
     QuantityExpr, QuantityRef, ReplacementDefinition, ReplacementMode, ResolvedAbility,
     SacrificeCost, SpellCastingOption, TargetFilter, TargetRef, TargetSelectionMode,
     TriggerDefinition, TypeFilter, TypedFilter,
@@ -1146,6 +1147,350 @@ fn collect_evidence_and_unless_bounce_costs_complete_synchronously_without_repla
     assert_eq!(bounce_runner.state().objects[&bounced].zone, Zone::Hand);
     assert_eq!(bounce_runner.state().players[P0.0 as usize].life, 20);
     assert!(bounce_runner.state().pending_cost_move_resume.is_none());
+}
+
+/// CR 702.21a + CR 701.21 + CR 616.1: A ward payment selecting multiple
+/// permanents must leave its unsacrificed suffix parked while each selected
+/// sacrifice waits on a competing graveyard replacement choice.
+#[test]
+fn ward_multi_sacrifice_payment_reparks_each_replacement_before_effect_resolved() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Ward Multi-Sacrifice Effect Source", 1, 1)
+        .id();
+    let first = scenario
+        .add_creature(P0, "First Ward Multi-Sacrifice Redirect", 1, 1)
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Exile))
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Hand))
+        .id();
+    let second = scenario
+        .add_creature(P0, "Second Ward Multi-Sacrifice Redirect", 1, 1)
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Exile))
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Hand))
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().waiting_for = WaitingFor::WardSacrificeChoice {
+        player: P0,
+        permanents: vec![first, second],
+        pending_effect: Box::new(ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::Controller,
+            },
+            vec![],
+            source,
+            P0,
+        )),
+        remaining: 1,
+        min_total_power: Some(2),
+    };
+
+    let initial = runner
+        .act(GameAction::SelectCards {
+            cards: vec![first, second],
+        })
+        .expect("the first selected ward sacrifice reaches its replacement choice");
+    assert!(matches!(
+        initial.waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert_eq!(runner.state().objects[&first].zone, Zone::Battlefield);
+    assert_eq!(runner.state().objects[&second].zone, Zone::Battlefield);
+    assert!(
+        !initial.events.iter().any(|event| matches!(
+            event,
+            GameEvent::EffectResolved { source_id, .. } if *source_id == source
+        )),
+        "the ward tail must not resolve before the first replacement choice"
+    );
+
+    let after_first = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("the first replacement resumes only the second selected ward sacrifice");
+    assert!(matches!(
+        after_first.waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert_ne!(runner.state().objects[&first].zone, Zone::Battlefield);
+    assert_eq!(runner.state().objects[&second].zone, Zone::Battlefield);
+    assert!(
+        !after_first.events.iter().any(|event| matches!(
+            event,
+            GameEvent::EffectResolved { source_id, .. } if *source_id == source
+        )),
+        "the tail remains parked when the resumed suffix pauses again"
+    );
+
+    let completed = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("the second replacement completes the parked ward suffix");
+    assert!(matches!(completed.waiting_for, WaitingFor::Priority { .. }));
+    assert_ne!(runner.state().objects[&second].zone, Zone::Battlefield);
+    assert!(runner.state().pending_cost_move_resume.is_none());
+
+    let events = initial
+        .events
+        .iter()
+        .chain(after_first.events.iter())
+        .chain(completed.events.iter());
+    for object_id in [first, second] {
+        assert_eq!(
+            events
+                .clone()
+                .filter(|event| matches!(
+                    event,
+                    GameEvent::PermanentSacrificed { object_id: sacrificed, .. }
+                        if *sacrificed == object_id
+                ))
+                .count(),
+            1,
+            "each selected permanent is sacrificed exactly once"
+        );
+    }
+    assert_eq!(
+        events
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved { source_id, .. } if *source_id == source
+            ))
+            .count(),
+        1,
+        "the ward payment tail resolves exactly once after every selected sacrifice settles"
+    );
+}
+
+/// CR 702.21a + CR 701.21 + CR 616.1: A sequential ward payment must not
+/// surface its next sacrifice prompt until the current replacement choice has
+/// settled.
+#[test]
+fn ward_sequential_sacrifice_payment_reprompts_only_after_replacement_resolves() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Ward Sequential Effect Source", 1, 1)
+        .id();
+    let first = scenario
+        .add_creature(P0, "First Ward Sequential Redirect", 1, 1)
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Exile))
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Hand))
+        .id();
+    let second = scenario
+        .add_creature(P0, "Second Ward Sequential Sacrifice", 1, 1)
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().waiting_for = WaitingFor::WardSacrificeChoice {
+        player: P0,
+        permanents: vec![first, second],
+        pending_effect: Box::new(ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::Controller,
+            },
+            vec![],
+            source,
+            P0,
+        )),
+        remaining: 2,
+        min_total_power: None,
+    };
+
+    let initial = runner
+        .act(GameAction::SelectCards { cards: vec![first] })
+        .expect("the first sequential ward sacrifice reaches its replacement choice");
+    assert!(matches!(
+        initial.waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert!(
+        !initial.events.iter().any(|event| matches!(
+            event,
+            GameEvent::EffectResolved { source_id, .. } if *source_id == source
+        )),
+        "neither the next ward prompt nor the tail may overwrite the replacement pause"
+    );
+
+    let reprompt = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("the completed first sacrifice reconstructs the next ward choice");
+    let WaitingFor::WardSacrificeChoice {
+        player,
+        permanents,
+        remaining,
+        ..
+    } = &reprompt.waiting_for
+    else {
+        panic!(
+            "the sequential ward suffix must prompt only after replacement resolution, got {:?}",
+            reprompt.waiting_for
+        );
+    };
+    assert_eq!(*player, P0);
+    assert_eq!(*remaining, 1);
+    assert_eq!(permanents, &vec![second]);
+    assert!(
+        !reprompt.events.iter().any(|event| matches!(
+            event,
+            GameEvent::EffectResolved { source_id, .. } if *source_id == source
+        )),
+        "the tail waits for the final sequential sacrifice"
+    );
+
+    let completed = runner
+        .act(GameAction::SelectCards {
+            cards: vec![second],
+        })
+        .expect("the final ward sacrifice resolves synchronously");
+    assert!(matches!(completed.waiting_for, WaitingFor::Priority { .. }));
+    assert!(runner.state().pending_cost_move_resume.is_none());
+    let events = initial
+        .events
+        .iter()
+        .chain(reprompt.events.iter())
+        .chain(completed.events.iter());
+    for object_id in [first, second] {
+        assert_eq!(
+            events
+                .clone()
+                .filter(|event| matches!(
+                    event,
+                    GameEvent::PermanentSacrificed { object_id: sacrificed, .. }
+                        if *sacrificed == object_id
+                ))
+                .count(),
+            1,
+            "each sequential ward sacrifice occurs exactly once"
+        );
+    }
+    assert_eq!(
+        events
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved { source_id, .. } if *source_id == source
+            ))
+            .count(),
+        1,
+        "the final sequential sacrifice reaches the ward tail exactly once"
+    );
+}
+
+/// CR 702.21a + CR 701.21: Ward sacrifice payments without a replacement
+/// choice retain the existing synchronous aggregate and sequential behavior.
+#[test]
+fn ward_sacrifice_payment_completes_synchronously_without_replacements() {
+    let mut aggregate_scenario = GameScenario::new();
+    aggregate_scenario.at_phase(Phase::PreCombatMain);
+    let aggregate_source = aggregate_scenario
+        .add_creature(P0, "Synchronous Aggregate Ward Source", 1, 1)
+        .id();
+    let aggregate_first = aggregate_scenario
+        .add_creature(P0, "Synchronous Aggregate Ward First", 1, 1)
+        .id();
+    let aggregate_second = aggregate_scenario
+        .add_creature(P0, "Synchronous Aggregate Ward Second", 1, 1)
+        .id();
+    let mut aggregate_runner = aggregate_scenario.build();
+    aggregate_runner.state_mut().waiting_for = WaitingFor::WardSacrificeChoice {
+        player: P0,
+        permanents: vec![aggregate_first, aggregate_second],
+        pending_effect: Box::new(ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::Controller,
+            },
+            vec![],
+            aggregate_source,
+            P0,
+        )),
+        remaining: 1,
+        min_total_power: Some(2),
+    };
+    let aggregate = aggregate_runner
+        .act(GameAction::SelectCards {
+            cards: vec![aggregate_first, aggregate_second],
+        })
+        .expect("aggregate ward payment completes synchronously");
+    assert!(matches!(aggregate.waiting_for, WaitingFor::Priority { .. }));
+    assert_eq!(
+        aggregate
+            .events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved { source_id, .. } if *source_id == aggregate_source
+            ))
+            .count(),
+        1
+    );
+
+    let mut sequential_scenario = GameScenario::new();
+    sequential_scenario.at_phase(Phase::PreCombatMain);
+    let sequential_source = sequential_scenario
+        .add_creature(P0, "Synchronous Sequential Ward Source", 1, 1)
+        .id();
+    let sequential_first = sequential_scenario
+        .add_creature(P0, "Synchronous Sequential Ward First", 1, 1)
+        .id();
+    let sequential_second = sequential_scenario
+        .add_creature(P0, "Synchronous Sequential Ward Second", 1, 1)
+        .id();
+    let mut sequential_runner = sequential_scenario.build();
+    sequential_runner.state_mut().waiting_for = WaitingFor::WardSacrificeChoice {
+        player: P0,
+        permanents: vec![sequential_first, sequential_second],
+        pending_effect: Box::new(ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::Controller,
+            },
+            vec![],
+            sequential_source,
+            P0,
+        )),
+        remaining: 2,
+        min_total_power: None,
+    };
+    let first = sequential_runner
+        .act(GameAction::SelectCards {
+            cards: vec![sequential_first],
+        })
+        .expect("first sequential ward payment completes synchronously");
+    assert!(matches!(
+        first.waiting_for,
+        WaitingFor::WardSacrificeChoice {
+            remaining: 1,
+            ref permanents,
+            ..
+        } if permanents == &vec![sequential_second]
+    ));
+    assert!(
+        !first.events.iter().any(|event| matches!(
+            event,
+            GameEvent::EffectResolved { source_id, .. } if *source_id == sequential_source
+        )),
+        "the sequential branch keeps the final ward tail behind its second prompt"
+    );
+    let final_payment = sequential_runner
+        .act(GameAction::SelectCards {
+            cards: vec![sequential_second],
+        })
+        .expect("second sequential ward payment completes the tail");
+    assert!(matches!(
+        final_payment.waiting_for,
+        WaitingFor::Priority { .. }
+    ));
+    assert_eq!(
+        first
+            .events
+            .iter()
+            .chain(final_payment.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved { source_id, .. } if *source_id == sequential_source
+            ))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -8086,4 +8431,753 @@ fn r2_effect_zone_moves_stay_synchronous_without_redirects() {
     assert_eq!(dig_runner.state().objects[&kept].zone, Zone::Hand);
     assert_eq!(dig_runner.state().objects[&rest].zone, Zone::Graveyard);
     assert_eq!(dig_runner.state().players[P0.0 as usize].life, 21);
+}
+
+fn per_color_exile_ability(
+    source_id: engine::types::identifiers::ObjectId,
+    pool: Vec<engine::types::identifiers::ObjectId>,
+) -> ResolvedAbility {
+    ResolvedAbility::new(
+        Effect::ForEachCategory {
+            category: IterationCategory::Color,
+            chooser: Chooser::Controller,
+            action: ForEachCategoryAction::ExileFromPool {
+                zone: Zone::Library,
+                up_to: true,
+            },
+        },
+        pool.into_iter().map(TargetRef::Object).collect(),
+        source_id,
+        P0,
+    )
+}
+
+/// W-R3 (red first): a per-category exile's tracked-set extension and next
+/// member prompt must wait for its replacement-aware exile delivery.
+#[test]
+fn per_category_exile_redirect_pauses_before_next_member() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Per-Category Exile Redirect Source", 1, 1)
+        .id();
+    let white = scenario.add_card_to_library_top(P0, "Per-Category White Card");
+    let blue = scenario.add_card_to_library_top(P0, "Per-Category Blue Card");
+    for (name, destination) in [
+        ("Per-Category Exile To Graveyard", Zone::Graveyard),
+        ("Per-Category Exile To Hand", Zone::Hand),
+    ] {
+        scenario
+            .add_creature(P0, name, 0, 0)
+            .as_enchantment()
+            .with_replacement_definition(redirect_moved_to(Zone::Exile, destination));
+    }
+
+    let mut runner = scenario.build();
+    runner.state_mut().objects.get_mut(&white).unwrap().color = vec![ManaColor::White];
+    runner.state_mut().objects.get_mut(&blue).unwrap().color = vec![ManaColor::Blue];
+    let ability = per_color_exile_ability(source, vec![white, blue]);
+    let mut initial_events = Vec::new();
+    resolve_ability_chain(runner.state_mut(), &ability, &mut initial_events, 0)
+        .expect("the first color member reaches its choice");
+
+    let paused = runner
+        .act(GameAction::SelectCards { cards: vec![white] })
+        .expect("the selected exile reaches a replacement choice");
+    assert!(matches!(
+        paused.waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert_eq!(runner.state().objects[&white].zone, Zone::Library);
+    let tracked = runner
+        .state()
+        .tracked_object_sets
+        .get(
+            &runner
+                .state()
+                .chain_tracked_set_id
+                .expect("per-category resolution starts a tracked set"),
+        )
+        .expect("per-category tracked set exists");
+    assert!(
+        tracked.is_empty(),
+        "the batch tail has not published the exile"
+    );
+
+    let resumed = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("the redirected exile resumes the iteration tail");
+    assert!(matches!(
+        resumed.waiting_for,
+        WaitingFor::ChooseFromZoneChoice { ref cards, .. } if cards == &vec![blue]
+    ));
+    assert_eq!(runner.state().objects[&white].zone, Zone::Graveyard);
+    let tracked = runner
+        .state()
+        .tracked_object_sets
+        .get(
+            &runner
+                .state()
+                .chain_tracked_set_id
+                .expect("the settled exile publishes to the tracked set"),
+        )
+        .expect("the tracked set exists after the batch settles");
+    assert_eq!(tracked, &vec![white]);
+
+    let completed = runner
+        .act(GameAction::SelectCards { cards: vec![] })
+        .expect("declining the final category member completes the iteration");
+    assert!(matches!(
+        completed.waiting_for,
+        WaitingFor::Priority { player } if player == P0
+    ));
+    assert_eq!(runner.state().objects[&blue].zone, Zone::Library);
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(paused.events.iter())
+            .chain(resumed.events.iter())
+            .chain(completed.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: engine::types::ability::EffectKind::ChooseFromZone,
+                    source_id,
+                    ..
+                } if *source_id == source
+            ))
+            .count(),
+        1,
+        "the per-category iteration tail resolves exactly once"
+    );
+}
+
+/// W-R3-REG: without a redirect, per-category exiles settle inline and advance
+/// to the next category member before finishing the iteration.
+#[test]
+fn per_category_exile_stays_synchronous_without_redirects() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Synchronous Per-Category Exile Source", 1, 1)
+        .id();
+    let white = scenario.add_card_to_library_top(P0, "Synchronous Per-Category White");
+    let blue = scenario.add_card_to_library_top(P0, "Synchronous Per-Category Blue");
+    let mut runner = scenario.build();
+    runner.state_mut().objects.get_mut(&white).unwrap().color = vec![ManaColor::White];
+    runner.state_mut().objects.get_mut(&blue).unwrap().color = vec![ManaColor::Blue];
+    let ability = per_color_exile_ability(source, vec![white, blue]);
+    let mut initial_events = Vec::new();
+    resolve_ability_chain(runner.state_mut(), &ability, &mut initial_events, 0)
+        .expect("the first color member reaches its choice");
+
+    let first = runner
+        .act(GameAction::SelectCards { cards: vec![white] })
+        .expect("the white exile settles inline");
+    assert!(matches!(
+        first.waiting_for,
+        WaitingFor::ChooseFromZoneChoice { ref cards, .. } if cards == &vec![blue]
+    ));
+    assert_eq!(runner.state().objects[&white].zone, Zone::Exile);
+
+    let completed = runner
+        .act(GameAction::SelectCards { cards: vec![blue] })
+        .expect("the blue exile completes the iteration");
+    assert!(matches!(
+        completed.waiting_for,
+        WaitingFor::Priority { player } if player == P0
+    ));
+    assert_eq!(runner.state().objects[&blue].zone, Zone::Exile);
+    let tracked = runner
+        .state()
+        .tracked_object_sets
+        .get(
+            &runner
+                .state()
+                .chain_tracked_set_id
+                .expect("per-category exiles publish one shared tracked set"),
+        )
+        .expect("the shared tracked set exists");
+    assert_eq!(tracked, &vec![white, blue]);
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(first.events.iter())
+            .chain(completed.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: engine::types::ability::EffectKind::ChooseFromZone,
+                    source_id,
+                    ..
+                } if *source_id == source
+            ))
+            .count(),
+        1,
+        "the synchronous per-category iteration resolves exactly once"
+    );
+}
+
+/// W-R4 (red first): selected drawn cards must settle their replacement-aware
+/// Library delivery before the remaining cards' life payment or resolution event.
+#[test]
+fn drawn_this_turn_topdeck_redirect_pauses_before_payment() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Drawn-This-Turn Redirect Source", 1, 1)
+        .id();
+    let topdecked = scenario.add_card_to_hand(P0, "Drawn-This-Turn Topdecked");
+    let kept = scenario.add_card_to_hand(P0, "Drawn-This-Turn Kept");
+    for (name, destination) in [
+        ("Drawn-This-Turn Library To Graveyard", Zone::Graveyard),
+        ("Drawn-This-Turn Library To Exile", Zone::Exile),
+    ] {
+        scenario
+            .add_creature(P0, name, 0, 0)
+            .as_enchantment()
+            .with_replacement_definition(redirect_moved_to(Zone::Library, destination));
+    }
+
+    let mut runner = scenario.build();
+    engine::game::effects::drawn_this_turn_choice::record_drawn_card(
+        runner.state_mut(),
+        P0,
+        topdecked,
+    );
+    engine::game::effects::drawn_this_turn_choice::record_drawn_card(runner.state_mut(), P0, kept);
+    let ability = ResolvedAbility::new(
+        Effect::ChooseDrawnThisTurnPayOrTopdeck {
+            count: QuantityExpr::Fixed { value: 2 },
+            life_payment: QuantityExpr::Fixed { value: 4 },
+            player: TargetFilter::Controller,
+        },
+        vec![],
+        source,
+        P0,
+    );
+    let mut initial_events = Vec::new();
+    resolve_ability_chain(runner.state_mut(), &ability, &mut initial_events, 0)
+        .expect("drawn-this-turn effect reaches its selection");
+
+    let paused = runner
+        .act(GameAction::SelectCards {
+            cards: vec![topdecked],
+        })
+        .expect("the Library delivery reaches its replacement choice");
+    assert!(matches!(
+        paused.waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert_eq!(runner.state().objects[&topdecked].zone, Zone::Hand);
+    assert_eq!(runner.state().players[P0.0 as usize].life, 20);
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(paused.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: engine::types::ability::EffectKind::ChooseDrawnThisTurnPayOrTopdeck,
+                    source_id,
+                    ..
+                } if *source_id == source
+            ))
+            .count(),
+        0,
+        "the resolution event waits behind the replacement choice"
+    );
+
+    let completed = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("the redirected Library delivery runs the payment tail");
+    assert!(matches!(
+        completed.waiting_for,
+        WaitingFor::Priority { player } if player == P0
+    ));
+    assert_eq!(runner.state().objects[&topdecked].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&kept].zone, Zone::Hand);
+    assert_eq!(runner.state().players[P0.0 as usize].life, 16);
+    assert_eq!(runner.state().last_effect_count, Some(1));
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(paused.events.iter())
+            .chain(completed.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: engine::types::ability::EffectKind::ChooseDrawnThisTurnPayOrTopdeck,
+                    source_id,
+                    ..
+                } if *source_id == source
+            ))
+            .count(),
+        1,
+        "the payment tail emits one resolution event after the replacement settles"
+    );
+}
+
+/// W-R4-REG: reverse request construction preserves the selected order when
+/// each ordered Library placement inserts at the top.
+#[test]
+fn drawn_this_turn_topdeck_preserves_selected_library_order() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Synchronous Drawn-This-Turn Source", 1, 1)
+        .id();
+    let prior_top = scenario.add_card_to_library_top(P0, "Drawn-This-Turn Prior Top");
+    let first = scenario.add_card_to_hand(P0, "Drawn-This-Turn First");
+    let second = scenario.add_card_to_hand(P0, "Drawn-This-Turn Second");
+    let kept = scenario.add_card_to_hand(P0, "Drawn-This-Turn Kept");
+    let mut runner = scenario.build();
+    for object_id in [first, second, kept] {
+        engine::game::effects::drawn_this_turn_choice::record_drawn_card(
+            runner.state_mut(),
+            P0,
+            object_id,
+        );
+    }
+    let ability = ResolvedAbility::new(
+        Effect::ChooseDrawnThisTurnPayOrTopdeck {
+            count: QuantityExpr::Fixed { value: 3 },
+            life_payment: QuantityExpr::Fixed { value: 4 },
+            player: TargetFilter::Controller,
+        },
+        vec![],
+        source,
+        P0,
+    );
+    let mut initial_events = Vec::new();
+    resolve_ability_chain(runner.state_mut(), &ability, &mut initial_events, 0)
+        .expect("drawn-this-turn effect reaches its selection");
+
+    let completed = runner
+        .act(GameAction::SelectCards {
+            cards: vec![first, second],
+        })
+        .expect("the unredirected Library placements settle inline");
+    assert!(matches!(
+        completed.waiting_for,
+        WaitingFor::Priority { player } if player == P0
+    ));
+    assert_eq!(
+        runner.state().players[P0.0 as usize]
+            .library
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![first, second, prior_top],
+        "first-selected remains topmost after reverse index-zero placements"
+    );
+    assert_eq!(runner.state().players[P0.0 as usize].life, 16);
+    assert_eq!(runner.state().last_effect_count, Some(2));
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(completed.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: engine::types::ability::EffectKind::ChooseDrawnThisTurnPayOrTopdeck,
+                    source_id,
+                    ..
+                } if *source_id == source
+            ))
+            .count(),
+        1,
+        "the synchronous payment tail emits one resolution event"
+    );
+}
+
+/// W-163-A (red first): a directly targeted sacrifice that pauses on the first
+/// replacement choice retains both the selected suffix and its terminal event.
+#[test]
+fn targeted_sacrifice_reparks_replacement_before_terminal_effect_resolved() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Targeted Sacrifice Resume Source", 1, 1)
+        .as_enchantment()
+        .id();
+    let first = scenario
+        .add_creature(P0, "Targeted Sacrifice First Redirect", 1, 1)
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Exile))
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Hand))
+        .id();
+    let second = scenario
+        .add_creature(P0, "Targeted Sacrifice Second Redirect", 1, 1)
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Exile))
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Hand))
+        .id();
+    let ability = ResolvedAbility::new(
+        Effect::Sacrifice {
+            target: TargetFilter::Any,
+            count: QuantityExpr::Fixed { value: 2 },
+            min_count: 0,
+        },
+        vec![TargetRef::Object(first), TargetRef::Object(second)],
+        source,
+        P0,
+    );
+    let mut runner = scenario.build();
+    let mut initial_events = Vec::new();
+
+    resolve_ability_chain(runner.state_mut(), &ability, &mut initial_events, 0)
+        .expect("the first selected sacrifice reaches its replacement choice");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert!(
+        !initial_events.iter().any(|event| matches!(
+            event,
+            GameEvent::EffectResolved {
+                kind: EffectKind::Sacrifice,
+                source_id,
+                ..
+            } if *source_id == source
+        )),
+        "the terminal event must wait for the parked selected suffix"
+    );
+
+    let first_resumed = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("the first replacement delivers and re-parks the second sacrifice");
+    assert!(matches!(
+        first_resumed.waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert_eq!(runner.state().objects[&first].zone, Zone::Exile);
+    assert_eq!(runner.state().objects[&second].zone, Zone::Battlefield);
+    assert!(
+        !initial_events
+            .iter()
+            .chain(first_resumed.events.iter())
+            .any(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: EffectKind::Sacrifice,
+                    source_id,
+                    ..
+                } if *source_id == source
+            )),
+        "the tail must remain parked across a second replacement choice"
+    );
+
+    let completed = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("the remaining selected sacrifice and terminal tail resolve");
+    assert!(matches!(completed.waiting_for, WaitingFor::Priority { .. }));
+    assert_eq!(runner.state().objects[&second].zone, Zone::Exile);
+    assert_eq!(runner.state().last_effect_count, Some(2));
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(first_resumed.events.iter())
+            .chain(completed.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: EffectKind::Sacrifice,
+                    source_id,
+                    ..
+                } if *source_id == source
+            ))
+            .count(),
+        1,
+        "the directly targeted sacrifice finishes exactly once after both replacements"
+    );
+}
+
+/// W-163-B: the mandatory-all sacrifice fast path remains synchronous when no
+/// replacement decision is needed.
+#[test]
+fn mandatory_all_sacrifice_completes_synchronously() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Mandatory-All Sacrifice Source", 1, 1)
+        .as_enchantment()
+        .id();
+    let first = scenario
+        .add_creature(P0, "Mandatory-All Sacrifice First", 1, 1)
+        .id();
+    let second = scenario
+        .add_creature(P0, "Mandatory-All Sacrifice Second", 1, 1)
+        .id();
+    let ability = ResolvedAbility::new(
+        Effect::Sacrifice {
+            target: TargetFilter::Typed(TypedFilter::creature()),
+            count: QuantityExpr::Fixed { value: 2 },
+            min_count: 0,
+        },
+        vec![],
+        source,
+        P0,
+    );
+    let mut runner = scenario.build();
+    let mut events = Vec::new();
+
+    resolve_ability_chain(runner.state_mut(), &ability, &mut events, 0)
+        .expect("mandatory-all sacrifice resolves inline");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::Priority { .. }
+    ));
+    assert_eq!(runner.state().objects[&first].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&second].zone, Zone::Graveyard);
+    assert_eq!(runner.state().last_effect_count, Some(2));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: EffectKind::Sacrifice,
+                    source_id,
+                    ..
+                } if *source_id == source
+            ))
+            .count(),
+        1
+    );
+}
+
+/// W-163-C: a sacrifice selected through `EffectZoneChoice` keeps its tracked
+/// set and chained tail behind the replacement boundary.
+#[test]
+fn effect_zone_sacrifice_replacement_preserves_tracked_set_and_tail() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Effect-Zone Sacrifice Source", 1, 1)
+        .as_enchantment()
+        .id();
+    let redirected = scenario
+        .add_creature(P0, "Effect-Zone Sacrifice Redirect", 1, 1)
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Exile))
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Hand))
+        .id();
+    scenario.add_creature(P0, "Effect-Zone Sacrifice Unchosen", 1, 1);
+    let ability = ResolvedAbility::new(
+        Effect::Sacrifice {
+            target: TargetFilter::Typed(TypedFilter::creature()),
+            count: QuantityExpr::Fixed { value: 1 },
+            min_count: 0,
+        },
+        vec![],
+        source,
+        P0,
+    )
+    .sub_ability(ResolvedAbility::new(
+        Effect::GainLife {
+            amount: QuantityExpr::Fixed { value: 1 },
+            player: TargetFilter::Controller,
+        },
+        vec![],
+        source,
+        P0,
+    ));
+    let mut runner = scenario.build();
+    let mut initial_events = Vec::new();
+
+    resolve_ability_chain(runner.state_mut(), &ability, &mut initial_events, 0)
+        .expect("sacrifice prompts for one creature");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::EffectZoneChoice {
+            effect_kind: EffectKind::Sacrifice,
+            ..
+        }
+    ));
+
+    let paused = runner
+        .act(GameAction::SelectCards {
+            cards: vec![redirected],
+        })
+        .expect("selected sacrifice reaches its replacement choice");
+    assert!(matches!(
+        paused.waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert!(runner.state().chain_tracked_set_id.is_none());
+    assert_eq!(runner.state().players[P0.0 as usize].life, 20);
+
+    let completed = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("replacement delivery resumes the tracked-set publish and rider");
+    assert!(matches!(completed.waiting_for, WaitingFor::Priority { .. }));
+    let tracked = runner
+        .state()
+        .tracked_object_sets
+        .get(
+            &runner
+                .state()
+                .chain_tracked_set_id
+                .expect("selected sacrifice publishes a fresh tracked set after delivery"),
+        )
+        .expect("the published selected-sacrifice set exists");
+    assert_eq!(tracked, &vec![redirected]);
+    assert_eq!(runner.state().players[P0.0 as usize].life, 21);
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(paused.events.iter())
+            .chain(completed.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: EffectKind::Sacrifice,
+                    source_id,
+                    ..
+                } if *source_id == source
+            ))
+            .count(),
+        1,
+        "the selected sacrifice emits one terminal event after its replacement settles"
+    );
+}
+
+/// W-163-D: Exploit emits its per-creature event and terminal event only after
+/// the replacement-delivered sacrifice has actually completed.
+#[test]
+fn exploit_replacement_preserves_creature_exploited_follow_up() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let exploiter = scenario
+        .add_creature(P0, "Exploit Replacement Source", 1, 1)
+        .id();
+    let victim = scenario
+        .add_creature(P0, "Exploit Replacement Victim", 1, 1)
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Exile))
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Hand))
+        .id();
+    let ability = ResolvedAbility::new(
+        Effect::Exploit {
+            target: TargetFilter::Any,
+        },
+        vec![TargetRef::Object(victim)],
+        exploiter,
+        P0,
+    );
+    let mut runner = scenario.build();
+    let mut initial_events = Vec::new();
+
+    resolve_ability_chain(runner.state_mut(), &ability, &mut initial_events, 0)
+        .expect("exploit reaches the replacement choice");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert!(!initial_events
+        .iter()
+        .any(|event| matches!(event, GameEvent::CreatureExploited { .. })));
+
+    let completed = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("replacement delivery completes exploit");
+    assert!(matches!(completed.waiting_for, WaitingFor::Priority { .. }));
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(completed.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::CreatureExploited {
+                    exploiter: event_exploiter,
+                    sacrificed,
+                } if *event_exploiter == exploiter && *sacrificed == victim
+            ))
+            .count(),
+        1,
+        "the exploit follow-up is emitted once after delivery"
+    );
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(completed.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: EffectKind::Exploit,
+                    source_id,
+                    ..
+                } if *source_id == exploiter
+            ))
+            .count(),
+        1
+    );
+}
+
+/// W-163-E: the terminal sweep of choose-and-sacrifice-rest keeps its complete
+/// unchosen set and terminal event across a replacement choice.
+#[test]
+fn choose_and_sacrifice_rest_replacement_preserves_terminal_sweep() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_creature(P0, "Choose-and-Sacrifice-Rest Source", 1, 1)
+        .as_enchantment()
+        .id();
+    let victim = scenario
+        .add_creature(P0, "Choose-and-Sacrifice-Rest Victim", 1, 1)
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Exile))
+        .with_replacement_definition(redirect_self_moved_to(Zone::Graveyard, Zone::Hand))
+        .id();
+    let ability = ResolvedAbility::new(
+        Effect::ChooseAndSacrificeRest {
+            categories: vec![],
+            chooser_scope: CategoryChooserScope::EachPlayerSelf,
+            choose_filter: TargetFilter::Typed(TypedFilter::creature()),
+            sacrifice_filter: TargetFilter::Typed(TypedFilter::creature()),
+            total_power_cap: None,
+            keeper_constraint: None,
+        },
+        vec![],
+        source,
+        P0,
+    );
+    let mut runner = scenario.build();
+    let mut initial_events = Vec::new();
+
+    resolve_ability_chain(runner.state_mut(), &ability, &mut initial_events, 0)
+        .expect("terminal unchosen sweep reaches its replacement choice");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert!(
+        !initial_events.iter().any(|event| matches!(
+            event,
+            GameEvent::EffectResolved {
+                kind: EffectKind::ChooseAndSacrificeRest,
+                source_id,
+                ..
+            } if *source_id == source
+        )),
+        "the terminal event must wait for the unchosen sacrifice delivery"
+    );
+
+    let completed = runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("replacement delivery finishes the unchosen sweep");
+    assert!(matches!(completed.waiting_for, WaitingFor::Priority { .. }));
+    assert_eq!(runner.state().objects[&victim].zone, Zone::Exile);
+    assert_eq!(
+        initial_events
+            .iter()
+            .chain(completed.events.iter())
+            .filter(|event| matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: EffectKind::ChooseAndSacrificeRest,
+                    source_id,
+                    ..
+                } if *source_id == source
+            ))
+            .count(),
+        1
+    );
 }
