@@ -36,7 +36,10 @@ use crate::types::game_state::{GameState, StackEntryKind, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaCost;
 use crate::types::player::PlayerId;
+use crate::types::proposed_event::AppliedReplacementKey;
 use crate::types::zones::Zone;
+
+pub use crate::types::proposed_event::PlaneswalkCause;
 
 /// CR 901.9d / CR 706.7: The face the planar die landed on. The planar die is
 /// symbolic (CR 901.3a: one Planeswalker face, one chaos face, four blank
@@ -494,10 +497,45 @@ pub fn planar_ability_sentinel_id(player: PlayerId) -> ObjectId {
 /// namespace blocks.
 const PLANAR_ABILITY_SENTINEL_BLOCK: u64 = 0x1_0000_0000;
 
+/// CR 701.31 + CR 614.1a: Route a planeswalk through the replacement pipeline.
+/// On `Execute`, performs the zone rotation. On `Prevented`, drains any stashed
+/// substitute exactly once (Fixed Point chaos ensues, Susan Foreman arrange chain).
+pub fn planeswalk_through_replacements(
+    state: &mut GameState,
+    player_id: PlayerId,
+    cause: PlaneswalkCause,
+    applied: HashSet<AppliedReplacementKey>,
+    events: &mut Vec<GameEvent>,
+) -> crate::game::replacement::ReplacementResult {
+    use crate::game::replacement::{self, ReplacementResult};
+    use crate::types::proposed_event::ProposedEvent;
+
+    let proposed = ProposedEvent::planeswalk_with_applied(player_id, cause, applied);
+    match replacement::replace_event(state, proposed, events) {
+        ReplacementResult::Execute(ProposedEvent::Planeswalk { player_id, .. }) => {
+            planeswalk(state, player_id, events);
+            ReplacementResult::Execute(ProposedEvent::planeswalk_with_applied(
+                player_id,
+                cause,
+                HashSet::new(),
+            ))
+        }
+        ReplacementResult::Execute(other) => ReplacementResult::Execute(other),
+        ReplacementResult::Prevented => {
+            if state.has_post_replacement_drain() {
+                let _ = crate::game::engine_replacement::apply_pending_post_replacement_effect(
+                    state, None, None, None, events,
+                );
+            }
+            ReplacementResult::Prevented
+        }
+        ReplacementResult::NeedsChoice(player) => ReplacementResult::NeedsChoice(player),
+    }
+}
+
 /// CR 901.8 / CR 901.9c: true when `id` is a synthetic planeswalking-ability
-/// sentinel (`PLANAR_ABILITY_SENTINEL_BASE + player.0`). Identifies planeswalks
-/// caused by rolling the planar die's Planeswalker symbol — the only planeswalk
-/// cause routed through the replacement pipeline (Fixed Point in Time).
+/// sentinel (`PLANAR_ABILITY_SENTINEL_BASE + player.0`). Used to tag planar-die
+/// `Effect::Planeswalk` resolutions with [`PlaneswalkCause::PlanarDie`].
 pub fn is_planar_ability_source(id: ObjectId) -> bool {
     id.0 >= PLANAR_ABILITY_SENTINEL_BASE
         && id.0 < PLANAR_ABILITY_SENTINEL_BASE + PLANAR_ABILITY_SENTINEL_BLOCK

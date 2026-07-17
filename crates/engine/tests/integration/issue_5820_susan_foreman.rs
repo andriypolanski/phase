@@ -151,3 +151,109 @@ fn susan_foreman_planeswalk_arranges_planar_deck_then_rotates() {
         "the bottomed card remains in the planar deck"
     );
 }
+
+#[test]
+fn susan_foreman_replaces_card_instruction_planeswalk() {
+    let mut state = GameState::new_two_player(43);
+    state.active_player = P0;
+    let (active_id, deck_top, deck_second) = setup_planechase_two_deep(&mut state);
+
+    let susan = create_object(
+        &mut state,
+        CardId(100),
+        P0,
+        "Susan Foreman".to_string(),
+        Zone::Battlefield,
+    );
+    install_susan_replacement(&mut state, susan);
+
+    let card_source = create_object(
+        &mut state,
+        CardId(101),
+        P0,
+        "Planeswalk Spell".to_string(),
+        Zone::Battlefield,
+    );
+    assert!(!is_planar_ability_source(card_source));
+    let ability = ResolvedAbility::new(Effect::Planeswalk, vec![], card_source, P0);
+    let mut events = Vec::new();
+    engine::game::effects::resolve_ability_chain(&mut state, &ability, &mut events, 0)
+        .expect("card-instruction planeswalk resolves");
+
+    let WaitingFor::ArrangePlanarDeckTopChoice { cards, .. } = state.waiting_for.clone() else {
+        panic!(
+            "Susan must replace any would-planeswalk, got {:?}",
+            state.waiting_for
+        );
+    };
+    assert_eq!(cards, vec![deck_top, deck_second]);
+    assert_eq!(
+        active_plane(&state),
+        Some(active_id),
+        "planeswalk must not happen before arrange completes"
+    );
+}
+
+#[test]
+fn susan_chained_planeswalk_does_not_reapply_susan_but_planeswalks() {
+    let mut state = GameState::new_two_player(44);
+    state.active_player = P0;
+    let (_active, deck_top, deck_second) = setup_planechase_two_deep(&mut state);
+
+    let susan = create_object(
+        &mut state,
+        CardId(100),
+        P0,
+        "Susan Foreman".to_string(),
+        Zone::Battlefield,
+    );
+    install_susan_replacement(&mut state, susan);
+
+    let sentinel = planar_ability_sentinel_id(P0);
+    let ability = ResolvedAbility::new(Effect::Planeswalk, vec![], sentinel, P0);
+    let mut events = Vec::new();
+    engine::game::effects::resolve_ability_chain(&mut state, &ability, &mut events, 0)
+        .expect("planar-die planeswalk starts Susan replacement");
+
+    let WaitingFor::ArrangePlanarDeckTopChoice { .. } = state.waiting_for.clone() else {
+        panic!("expected arrange pause, got {:?}", state.waiting_for);
+    };
+    assert!(
+        state.pending_continuation.is_some(),
+        "chained Planeswalk must be stashed"
+    );
+    assert!(
+        !state
+            .pending_continuation
+            .as_ref()
+            .unwrap()
+            .chain
+            .replacement_applied
+            .is_empty(),
+        "Susan's applied key must seed the chained planeswalk"
+    );
+
+    let mut runner = GameRunner::from_state(state);
+    runner
+        .act(GameAction::SelectCards {
+            cards: vec![deck_second],
+        })
+        .expect("arrange completes and chained planeswalk executes");
+
+    assert_eq!(
+        active_plane(runner.state()),
+        Some(deck_second),
+        "chained planeswalk must rotate after arrange"
+    );
+    assert!(
+        runner.state().planar_deck.contains(&deck_top),
+        "bottomed card remains in deck"
+    );
+    assert!(
+        !matches!(
+            runner.state().waiting_for,
+            WaitingFor::ArrangePlanarDeckTopChoice { .. }
+        ),
+        "Susan must not re-fire on her own chained planeswalk"
+    );
+}
