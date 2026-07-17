@@ -7,6 +7,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::bytes::complete::tag_no_case;
+use nom::character::complete::multispace0;
 use nom::combinator::{map, opt, value};
 use nom::sequence::{preceded, terminated};
 use nom::Parser;
@@ -27,7 +28,7 @@ pub(crate) fn parse_life_auction_block(text: &str, kind: AbilityKind) -> Option<
     let (rest, participants) = parse_participants_opener(text)?;
     let (rest, starting_bid) = parse_starting_bid_line(rest)?;
     let (rest, ()) = parse_auction_procedure(rest)?;
-    let payoff = parse_auction_payoff(rest.trim_start(), kind)?;
+    let payoff = parse_auction_payoff(rest, kind)?;
     Some(
         AbilityDefinition::new(
             kind,
@@ -72,7 +73,7 @@ fn parse_participants_opener(i: &str) -> Option<(&str, LifeAuctionParticipants)>
 }
 
 fn parse_starting_bid_line(i: &str) -> Option<(&str, LifeAuctionStartingBid)> {
-    preceded(
+    (
         tag_no_case::<_, _, OracleError<'_>>("you start the bidding with a bid of "),
         alt((
             value(
@@ -81,16 +82,11 @@ fn parse_starting_bid_line(i: &str) -> Option<(&str, LifeAuctionStartingBid)> {
             ),
             map(parse_number, LifeAuctionStartingBid::Fixed),
         )),
+        opt(preceded(tag_no_case("."), tag_no_case(" "))),
     )
-    .parse(i)
-    .ok()
-    .map(|(rest, bid)| {
-        let rest = rest
-            .strip_prefix('.')
-            .map(|r| r.trim_start())
-            .unwrap_or(rest);
-        (rest, bid)
-    })
+        .parse(i)
+        .ok()
+        .map(|(rest, (_, bid, _))| (rest, bid))
 }
 
 fn parse_auction_procedure(i: &str) -> Option<(&str, ())> {
@@ -106,6 +102,7 @@ fn parse_auction_procedure(i: &str) -> Option<(&str, ())> {
 }
 
 fn parse_auction_payoff(text: &str, kind: AbilityKind) -> Option<AbilityDefinition> {
+    let (text, _) = multispace0::<_, OracleError<'_>>(text).ok()?;
     if text.is_empty() {
         return None;
     }
@@ -122,12 +119,17 @@ fn parse_auction_payoff(text: &str, kind: AbilityKind) -> Option<AbilityDefiniti
 fn parse_auction_payoff_nom(text: &str, kind: AbilityKind) -> Option<AbilityDefinition> {
     let lower = text.to_ascii_lowercase();
     let (rest, mut chain) = parse_high_bidder_lose_life_head(text, &lower, kind)?;
-    let rest = rest.trim_start();
+    let (rest, _) = multispace0::<_, OracleError<'_>>(rest.as_str()).ok()?;
     if rest.is_empty() {
         return Some(chain);
     }
 
-    let rest = rest.strip_prefix('.').map(str::trim_start).unwrap_or(rest);
+    let (rest, _) = opt(preceded(
+        tag_no_case::<_, _, OracleError<'_>>("."),
+        tag_no_case(" "),
+    ))
+    .parse(rest)
+    .ok()?;
     if rest.is_empty() {
         return Some(chain);
     }
