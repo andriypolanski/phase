@@ -190,6 +190,7 @@ pub fn resolve(
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
             source_id: ability.source_id,
+            subject: None,
         });
         return Ok(());
     }
@@ -337,6 +338,7 @@ fn drain_copy_token_resolution(
     events.push(GameEvent::EffectResolved {
         kind: pending.effect_kind,
         source_id: pending.source_id,
+        subject: None,
     });
 }
 
@@ -550,6 +552,8 @@ pub(crate) fn apply_copy_token_after_replacement_with_created_ids(
                     spec_resume: None,
                     enter_tapped,
                     enter_with_counters: Vec::new(),
+                    kind: crate::types::game_state::LiminalEntryKind::Token,
+                    replacement_applied: std::collections::HashSet::new(),
                 },
             );
 
@@ -571,11 +575,12 @@ pub(crate) fn apply_copy_token_after_replacement_with_created_ids(
                                 events,
                             )
                         {
-                            state.pending_liminal_entry_resume = Some(PendingLiminalEntryResume {
-                                source_id: token_id,
-                                player: waiting_for.acting_player().unwrap_or(controller),
-                                event: event.clone(),
-                            });
+                            state.pending_liminal_entry_resume =
+                                Some(PendingLiminalEntryResume::Token {
+                                    source_id: token_id,
+                                    player: waiting_for.acting_player().unwrap_or(controller),
+                                    event: event.clone(),
+                                });
                             state.waiting_for = waiting_for;
                             state.last_created_token_ids = created_ids.clone();
                             return CopyTokenApplyStatus {
@@ -3920,6 +3925,7 @@ mod tests {
                     GameEvent::EffectResolved {
                         kind: EffectKind::CopyTokenOf,
                         source_id: ObjectId(100),
+                        ..
                     }
                 ))
                 .count(),

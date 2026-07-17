@@ -1,13 +1,13 @@
 #[cfg(test)]
 use crate::types::ability::TapStateChange;
 use crate::types::ability::{
-    AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, CardTypeSetSource,
-    CastManaSpentMetric, CombatRelationSubject, ControllerRef, CounterMoveSelection, DamageSource,
-    Effect, EffectScope, FilterProp, GameRestriction, ModalChoice, ModalSelectionCondition,
-    ModalSelectionConstraint, MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope,
-    QuantityExpr, QuantityRef, ResolvedAbility, RestrictionPlayerScope, SpellContext,
-    SubAbilityLink, TargetChoiceTiming, TargetFilter, TargetRef, TriggerDefinition, TypeFilter,
-    TypedFilter,
+    AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost,
+    CardTypeSetSource, CastManaSpentMetric, CombatRelationSubject, ControllerRef,
+    CounterMoveSelection, DamageSource, Effect, EffectScope, FilterProp, GameRestriction,
+    ModalChoice, ModalSelectionCondition, ModalSelectionConstraint, MultiTargetSpec, ObjectScope,
+    PlayerFilter, PlayerScope, QuantityExpr, QuantityRef, ResolvedAbility, RestrictionPlayerScope,
+    SpellContext, SubAbilityLink, TargetChoiceTiming, TargetFilter, TargetRef, TriggerDefinition,
+    TypeFilter, TypedFilter,
 };
 #[cfg(test)]
 use crate::types::counter::CounterType;
@@ -45,6 +45,46 @@ pub fn build_resolved_from_def(
     controller: PlayerId,
 ) -> ResolvedAbility {
     build_resolved_from_def_with_targets(def, source_id, controller, Vec::new())
+}
+
+/// CR 601.2b + CR 602.2b: publish an announce-time-locked X onto an ability being
+/// announced. **Single computation authority** for the announce-locked X channel.
+///
+/// A "where X is <count> as you cast this spell" / "… as you activate this ability"
+/// clause defines X by the object's own text and pins the measurement to the
+/// announcement step. CR 602.2b makes an activated ability's announcement identical to a
+/// spell's (rules 601.2b–i), so ONE computation serves both surfaces — and a loyalty
+/// ability, being an activated ability, rides the same path.
+///
+/// The value is published through `chosen_x`, the object's single X channel (CR 107.3i:
+/// "all instances of X on an object have the same value"). Every
+/// `QuantityRef::Variable("X")` on the ability already reads it, so the announced target
+/// count (CR 601.2c), the divided-damage pool (CR 601.2d), and any resolution-time amount
+/// (CR 608.2) all observe the SAME number — which is exactly what the printed qualifier
+/// demands and what CR 107.3c would otherwise let drift ("the value of X may change while
+/// that spell or ability is on the stack").
+///
+/// MUST be called BEFORE target selection: CR 601.2b precedes CR 601.2c, and
+/// `resolve_multi_target_bounds` fails closed ("Target count requires a resolved quantity
+/// before target selection") rather than silently counting an unresolved X as 0.
+///
+/// Idempotent via the `chosen_x.is_some()` gate, so a re-announced/resumed cast cannot
+/// re-measure the count against a board that has since changed.
+pub(crate) fn publish_announced_x(
+    state: &GameState,
+    resolved: &mut ResolvedAbility,
+    controller: PlayerId,
+    source_id: ObjectId,
+) {
+    if resolved.chosen_x.is_some() {
+        return;
+    }
+    let Some(expr) = resolved.announced_x.clone() else {
+        return;
+    };
+    let value = super::quantity::resolve_quantity(state, &expr, controller, source_id);
+    // CR 107.3: X is never negative.
+    resolved.set_chosen_x_recursive(u32::try_from(value.max(0)).unwrap_or(0));
 }
 
 /// CR 113.1a + CR 608.2c: Build a resolved ability from its definition while
@@ -90,6 +130,11 @@ pub fn build_resolved_from_def_with_targets(
     // `repeat_until` dispatch in `resolve_ability_chain` can re-follow the chain.
     resolved.repeat_until = def.repeat_until.clone();
     resolved.min_x_value = def.min_x_value;
+    // CR 601.2b + CR 602.2b: carry the announce-time-locked definition of X through
+    // to the resolved ability, where the announcement step evaluates it once into
+    // `chosen_x`. Without this copy the parsed definition never reaches the pending
+    // cast/activation and every `Variable("X")` on the ability resolves to 0.
+    resolved.announced_x = def.announced_x.clone();
     resolved.cant_be_copied = def.cant_be_copied;
     resolved.description = def.description.clone();
     resolved.forward_result = def.forward_result;
@@ -199,6 +244,22 @@ pub(crate) fn apply_instead_swap(
 /// sub_ability chain always resolves in printed order. Duplicate indices are
 /// preserved (CR 700.2d: "You may choose the same mode more than once"
 /// repeats the mode in sequence).
+pub fn ordered_selected_mode_indices(indices: &[usize]) -> Vec<usize> {
+    let mut ordered = indices.to_vec();
+    ordered.sort_unstable();
+    ordered
+}
+
+/// CR 700.2a + CR 700.2b + CR 700.2d + CR 608.2c: Return selected mode
+/// descriptions in the printed instruction order used to resolve them. Repeated
+/// indices remain repeated, while a missing legacy description is omitted.
+pub fn selected_mode_labels(mode_descriptions: &[String], indices: &[usize]) -> Vec<String> {
+    ordered_selected_mode_indices(indices)
+        .into_iter()
+        .filter_map(|index| mode_descriptions.get(index).cloned())
+        .collect()
+}
+
 pub fn build_chained_resolved(
     abilities: &[AbilityDefinition],
     indices: &[usize],
@@ -220,8 +281,7 @@ pub fn build_chained_resolved(
         ));
     }
 
-    let mut ordered: Vec<usize> = indices.to_vec();
-    ordered.sort();
+    let ordered = ordered_selected_mode_indices(indices);
 
     let mut result: Option<ResolvedAbility> = None;
     for &idx in ordered.iter().rev() {
@@ -283,12 +343,23 @@ struct SlotAccumulator {
     /// `build_target_slots_labelled` before collecting each mode; `None` for
     /// non-modal collection.
     current_label: Option<String>,
+    /// CR 601.2c + CR 115.1: announcing player applied to every slot pushed while
+    /// the currently-recursed link's `target_chooser` resolves to a non-controller
+    /// player ("of an opponent's choice"). `None` means the controller is the
+    /// announcer (the CR-601.2c default). Set/restored by `collect_target_slots`
+    /// per link so each chained sub-ability stamps only its own slots.
+    current_chooser: Option<PlayerId>,
 }
 
 impl SlotAccumulator {
     /// Push a slot and its mode label together. The label is `current_label` at
     /// push time, keeping `labels` and `slots` index-parallel by construction.
-    fn push(&mut self, slot: TargetSelectionSlot) {
+    /// The slot's `chooser` is stamped from `current_chooser` unless the slot
+    /// already carries one (no producer sets it today, so the default path wins).
+    fn push(&mut self, mut slot: TargetSelectionSlot) {
+        if slot.chooser.is_none() {
+            slot.chooser = self.current_chooser;
+        }
         self.slots.push(slot);
         self.labels.push(self.current_label.clone());
     }
@@ -314,6 +385,14 @@ pub fn kicker_instead_spell_has_legal_targets(
     object_id: ObjectId,
     player: PlayerId,
 ) -> bool {
+    let has_kicker_cost = state
+        .objects
+        .get(&object_id)
+        .and_then(|obj| obj.additional_cost.as_ref())
+        .is_some_and(|additional| matches!(additional, AdditionalCost::Kicker { .. }));
+    if !has_kicker_cost {
+        return false;
+    }
     let Some(sub) = ability_def.sub_ability.as_deref() else {
         return false;
     };
@@ -401,8 +480,7 @@ pub fn build_target_slots_labelled(
     // BEFORE X is chosen (the common non-deferred modal path).
     chosen_x: Option<u32>,
 ) -> Result<(Vec<TargetSelectionSlot>, Vec<Option<String>>), EngineError> {
-    let mut ordered: Vec<usize> = indices.to_vec();
-    ordered.sort();
+    let ordered = ordered_selected_mode_indices(indices);
 
     let mut acc = SlotAccumulator::default();
     for idx in ordered {
@@ -1083,6 +1161,14 @@ pub fn auto_select_targets_for_ability(
     target_slots: &[TargetSelectionSlot],
     constraints: &[TargetSelectionConstraint],
 ) -> Result<Option<Vec<TargetRef>>, EngineError> {
+    // CR 601.2c + CR 115.1: if any slot is announced by a player other than the
+    // controller ("of an opponent's choice"), the choice is not the controller's
+    // to auto-resolve even when only one legal combination exists — force the
+    // interactive per-slot walk so each announcer declares their own slot. Mirrors
+    // the `TargetSelectionMode::Random` guard, which likewise bypasses auto-select.
+    if target_slots.iter().any(|slot| slot.chooser.is_some()) {
+        return Ok(None);
+    }
     let assignments = build_target_assignments_for_ability_with_limit(
         state,
         ability,
@@ -1949,7 +2035,31 @@ pub(crate) fn companion_target_player_retarget_options(
         .then(|| companion_target_player_legal_targets(state, ability))
 }
 
+/// CR 601.2c + CR 115.1: Collect the target slots contributed by `ability` (and
+/// its chained sub-abilities), stamping each slot's announcing player from the
+/// link's own `target_chooser`. The chooser is scoped per link: it is set before
+/// this link's slots are collected and restored afterwards, so a downstream link
+/// with `target_chooser == None` does not inherit an upstream link's opponent
+/// announcer (and vice versa). This per-link scoping is what gives Volcanic
+/// Offering its `[None, Some(opp), None, Some(opp)]` chooser vector.
 fn collect_target_slots(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    acc: &mut SlotAccumulator,
+) -> Result<(), EngineError> {
+    let resolved_chooser = ability.target_chooser.as_ref().and_then(|filter| {
+        crate::game::targeting::resolve_effect_player_ref(state, ability, filter)
+            // A chooser equal to the controller is the CR-601.2c default; leave the
+            // slot's `chooser` as None so default routing and serde-omission apply.
+            .filter(|&player| player != ability.controller)
+    });
+    let previous_chooser = std::mem::replace(&mut acc.current_chooser, resolved_chooser);
+    let result = collect_target_slots_inner(state, ability, acc);
+    acc.current_chooser = previous_chooser;
+    result
+}
+
+fn collect_target_slots_inner(
     state: &GameState,
     ability: &ResolvedAbility,
     acc: &mut SlotAccumulator,
@@ -1986,6 +2096,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
     }
@@ -2009,6 +2120,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
         return Ok(());
@@ -2034,6 +2146,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
         return Ok(());
@@ -2071,6 +2184,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
         return Ok(());
@@ -2097,6 +2211,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
     } else if let Effect::Attach { attachment, target } = &ability.effect {
@@ -2112,6 +2227,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
     } else if let Effect::CreateDamageReplacement {
@@ -2152,6 +2268,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
     } else if let Effect::EachDealsDamageEqualToPower {
@@ -2180,6 +2297,7 @@ fn collect_target_slots(
                     acc.push(TargetSelectionSlot {
                         legal_targets: source_legal.clone(),
                         optional: slot_index >= bounds.min,
+                        chooser: None,
                     });
                 }
             } else {
@@ -2193,6 +2311,7 @@ fn collect_target_slots(
                 acc.push(TargetSelectionSlot {
                     legal_targets: source_legal,
                     optional: false,
+                    chooser: None,
                 });
             }
 
@@ -2208,6 +2327,7 @@ fn collect_target_slots(
                 acc.push(TargetSelectionSlot {
                     legal_targets: extra_legal,
                     optional: true,
+                    chooser: None,
                 });
             }
 
@@ -2222,6 +2342,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets: recipient_legal,
                 optional: false,
+                chooser: None,
             });
         }
     } else {
@@ -2267,6 +2388,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets: player_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
         if ability.target_choice_timing == TargetChoiceTiming::Stack
@@ -2285,6 +2407,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
         if ability.target_choice_timing == TargetChoiceTiming::Stack
@@ -2301,6 +2424,7 @@ fn collect_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets,
                 optional: ability.optional_targeting,
+                chooser: None,
             });
         }
         if ability.target_choice_timing == TargetChoiceTiming::Stack
@@ -2320,6 +2444,7 @@ fn collect_target_slots(
                         acc.push(TargetSelectionSlot {
                             legal_targets: legal_targets.clone(),
                             optional: slot_index >= bounds.min,
+                            chooser: None,
                         });
                     }
                 } else {
@@ -2331,6 +2456,7 @@ fn collect_target_slots(
                     acc.push(TargetSelectionSlot {
                         legal_targets,
                         optional: ability.optional_targeting,
+                        chooser: None,
                     });
                 }
             }
@@ -2973,12 +3099,14 @@ fn collect_attach_attachment_target_slots(
             acc.push(TargetSelectionSlot {
                 legal_targets: legal_targets.clone(),
                 optional: slot_index >= bounds.min,
+                chooser: None,
             });
         }
     } else {
         acc.push(TargetSelectionSlot {
             legal_targets,
             optional: ability.targeting_is_optional(),
+            chooser: None,
         });
     }
     Ok(())
@@ -4044,31 +4172,50 @@ fn collect_target_slot_specs(
 /// CR 601.2c / CR 602.2b: Targets are chosen before costs are paid. This
 /// engine pays a non-self Sacrifice/Discard/Exile activation cost BEFORE
 /// target selection as a documented architectural shortcut (see the ordering
-/// note in `push_activated_ability_to_stack`), so the object that cost just
+/// note in `push_activated_ability_to_stack`), so any object that cost just
 /// moved off the battlefield must not become newly eligible for an unrelated
 /// target slot just because it now sits in the destination zone. Cauldron of
 /// Essence's official ruling states this explicitly: "the target ... can't be
 /// the creature sacrificed to pay its cost." Costs that leave the object on
 /// the battlefield (Tap, Blight, RemoveCounter) never made it newly eligible
 /// for a different zone, so they are correctly left untouched by this gate.
+///
+/// Issue #4948 — Samwise Gamgee: checks EVERY object the cost
+/// consumed (`ability.cost_paid_object_ids`), not just the single referent in
+/// `ability.cost_paid_object`. A multi-object non-self cost (e.g. "Sacrifice
+/// three Foods") can move several objects into the same zone this ability's
+/// own target searches at once; excluding only the first left the rest
+/// eligible, so a just-sacrificed token could be chosen as its own ability's
+/// target and then cease to exist (CR 704.5d) before resolution, silently
+/// fizzling it (CR 608.2b). `cost_paid_object`'s id is folded in too as a
+/// defense-in-depth fallback for any cost-payment site that stamps the
+/// singular referent without also calling
+/// `add_cost_paid_object_ids_recursive`.
 fn exclude_cost_paid_object_that_left_battlefield(
     state: &GameState,
     ability: &ResolvedAbility,
     targets: Vec<TargetRef>,
 ) -> Vec<TargetRef> {
-    let Some(snapshot) = ability.cost_paid_object.as_ref() else {
+    if ability.cost_paid_object_ids.is_empty() && ability.cost_paid_object.is_none() {
         return targets;
-    };
-    let left_battlefield = match state.objects.get(&snapshot.object_id) {
+    }
+    let left_battlefield = |id: ObjectId| match state.objects.get(&id) {
         Some(obj) => obj.zone != Zone::Battlefield,
         None => true,
     };
-    if !left_battlefield {
-        return targets;
-    }
     targets
         .into_iter()
-        .filter(|target| !matches!(target, TargetRef::Object(id) if *id == snapshot.object_id))
+        .filter(|target| match target {
+            TargetRef::Object(id) => {
+                let was_paid_as_cost = ability.cost_paid_object_ids.contains(id)
+                    || ability
+                        .cost_paid_object
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.object_id == *id);
+                !(was_paid_as_cost && left_battlefield(*id))
+            }
+            TargetRef::Player(_) => true,
+        })
         .collect()
 }
 
@@ -4337,10 +4484,12 @@ fn collect_per_opponent_target_fanout_slots(
         acc.push(TargetSelectionSlot {
             legal_targets: player_targets,
             optional: false,
+            chooser: None,
         });
         acc.push(TargetSelectionSlot {
             legal_targets,
             optional: ability.targeting_is_optional(),
+            chooser: None,
         });
     }
 
@@ -7716,6 +7865,20 @@ mod tests {
     }
 
     #[test]
+    fn selected_mode_labels_follow_printed_order_and_preserve_repeats() {
+        let labels = selected_mode_labels(
+            &["First mode.".to_string(), "Second mode.".to_string()],
+            &[1, 0, 1, 2],
+        );
+
+        assert_eq!(
+            labels,
+            ["First mode.", "Second mode.", "Second mode."],
+            "labels use printed order, retain repeat selections, and omit missing legacy descriptions",
+        );
+    }
+
+    #[test]
     fn chained_draw_player_plus_damageall_targetplayer_assigns_both_targets() {
         use crate::types::ability::{ControllerRef, TargetRef};
         // Reproduce Ashling's Command modes 2 + 3 chained:
@@ -8478,6 +8641,7 @@ mod tests {
                     TargetRef::Player(PlayerId(1)),
                 ],
                 optional: false,
+                chooser: None,
             },
             TargetSelectionSlot {
                 legal_targets: vec![
@@ -8485,6 +8649,7 @@ mod tests {
                     TargetRef::Player(PlayerId(1)),
                 ],
                 optional: false,
+                chooser: None,
             },
         ];
 
@@ -8847,6 +9012,7 @@ mod tests {
         let slots = vec![TargetSelectionSlot {
             legal_targets: vec![TargetRef::Player(PlayerId(1))],
             optional: true,
+            chooser: None,
         }];
 
         let selected = auto_select_targets(&slots, &[]).expect("optional targeting stays legal");
@@ -8860,10 +9026,12 @@ mod tests {
             TargetSelectionSlot {
                 legal_targets: vec![TargetRef::Player(PlayerId(0))],
                 optional: true,
+                chooser: None,
             },
             TargetSelectionSlot {
                 legal_targets: vec![TargetRef::Player(PlayerId(0))],
                 optional: false,
+                chooser: None,
             },
         ];
 
@@ -8880,10 +9048,12 @@ mod tests {
             TargetSelectionSlot {
                 legal_targets: vec![TargetRef::Player(PlayerId(1))],
                 optional: false,
+                chooser: None,
             },
             TargetSelectionSlot {
                 legal_targets: vec![TargetRef::Player(PlayerId(1))],
                 optional: false,
+                chooser: None,
             },
         ];
 
@@ -8902,6 +9072,7 @@ mod tests {
                     TargetRef::Player(PlayerId(1)),
                 ],
                 optional: false,
+                chooser: None,
             },
             TargetSelectionSlot {
                 legal_targets: vec![
@@ -8909,6 +9080,7 @@ mod tests {
                     TargetRef::Player(PlayerId(1)),
                 ],
                 optional: false,
+                chooser: None,
             },
         ];
 
@@ -8943,10 +9115,12 @@ mod tests {
             TargetSelectionSlot {
                 legal_targets: vec![TargetRef::Player(PlayerId(1))],
                 optional: true,
+                chooser: None,
             },
             TargetSelectionSlot {
                 legal_targets: vec![TargetRef::Object(ObjectId(42))],
                 optional: false,
+                chooser: None,
             },
         ];
 
@@ -11626,10 +11800,12 @@ mod tests {
                 TargetSelectionSlot {
                     legal_targets: vec![],
                     optional: true,
+                    chooser: None,
                 },
                 TargetSelectionSlot {
                     legal_targets: vec![],
                     optional: true,
+                    chooser: None,
                 },
             ]
         };
@@ -11962,6 +12138,7 @@ mod tests {
                 TargetRef::Object(ObjectId(11)),
             ],
             optional: false,
+            chooser: None,
         };
         let chosen =
             random_select_targets_for_ability(&mut state, std::slice::from_ref(&slot), &[])
@@ -11982,6 +12159,7 @@ mod tests {
                 TargetRef::Object(ObjectId(8)),
             ],
             optional: false,
+            chooser: None,
         };
         let mut state_a = GameState::new_two_player(1234);
         let mut state_b = GameState::new_two_player(1234);
@@ -12003,6 +12181,7 @@ mod tests {
         let slot = TargetSelectionSlot {
             legal_targets: vec![],
             optional: false,
+            chooser: None,
         };
         let result = random_select_targets_for_ability(&mut state, &[slot], &[]);
         assert!(result.is_err(), "empty legal-target set must error");
@@ -12017,6 +12196,7 @@ mod tests {
         let slot = TargetSelectionSlot {
             legal_targets: vec![],
             optional: true,
+            chooser: None,
         };
         let chosen = random_select_targets_for_ability(&mut state, &[slot], &[])
             .expect("optional empty slot resolves to empty selection");
@@ -12036,6 +12216,7 @@ mod tests {
                 TargetRef::Object(ObjectId(2)),
             ],
             optional: false,
+            chooser: None,
         };
         let slot_b = TargetSelectionSlot {
             legal_targets: vec![
@@ -12043,6 +12224,7 @@ mod tests {
                 TargetRef::Object(ObjectId(20)),
             ],
             optional: false,
+            chooser: None,
         };
         let chosen =
             random_select_targets_for_ability(&mut state, &[slot_a.clone(), slot_b.clone()], &[])
@@ -12065,10 +12247,12 @@ mod tests {
         let slot_required = TargetSelectionSlot {
             legal_targets: vec![shared.clone()],
             optional: false,
+            chooser: None,
         };
         let slot_optional = TargetSelectionSlot {
             legal_targets: vec![shared.clone()],
             optional: true,
+            chooser: None,
         };
         // Required + required: second slot has no remaining legal target → error.
         let err = random_select_targets_for_ability(
@@ -12376,6 +12560,7 @@ mod tests {
                 counters: std::collections::HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                attachments: Vec::new(),
             },
         });
 

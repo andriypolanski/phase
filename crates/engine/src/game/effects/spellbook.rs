@@ -54,6 +54,7 @@ pub fn resolve(
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
             source_id: ability.source_id,
+            subject: None,
         });
         return Ok(());
     }
@@ -122,6 +123,7 @@ pub fn complete_draft(
             destination,
             tapped,
             library_position: None,
+            library_players: None,
         },
         Vec::new(),
         source_id,

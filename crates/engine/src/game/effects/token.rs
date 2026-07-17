@@ -604,7 +604,7 @@ pub fn resolve(
         }
     }
 
-    // CR 609.3: Consume the tracked set after reading its size for "this way" counting.
+    // CR 608.2c: Consume the tracked set after reading its size for "this way" counting.
     if matches!(
         &ability.effect,
         Effect::Token {
@@ -625,6 +625,7 @@ pub fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -1267,6 +1268,7 @@ pub(crate) fn commit_liminal_token_entry_with_post_actions(
     entry.object.tapped = enter_tapped.resolve(entry.object.tapped);
     let owner = entry.object.owner;
     state.objects.insert(entry_ref, entry.object);
+    // allow-raw-zone: liminal token birth has no from-zone move; TokenEntry already consults entry replacements (CR 111.2 + CR 614.12).
     zones::add_to_zone(state, entry_ref, Zone::Battlefield, owner);
 
     for (counter_index, (counter_type, counter_count)) in counters_to_apply.iter().enumerate() {
@@ -2408,7 +2410,7 @@ fn powerstone_ability() -> AbilityDefinition {
             },
             restrictions: vec![ManaSpendRestriction::SpellTypeOrAbilityActivation {
                 spell_type: "Artifact".to_string(),
-                ability: crate::types::mana::AbilityActivationScope::OfSpellType,
+                ability: crate::types::mana::AbilityActivationScope::Any,
             }],
             grants: vec![],
             expiry: None,
@@ -4069,7 +4071,19 @@ mod tests {
     fn predefined_powerstone_has_colorless_mana() {
         let abilities = predefined_token_abilities("Powerstone");
         assert_eq!(abilities.len(), 1);
-        assert!(matches!(*abilities[0].effect, Effect::Mana { .. }));
+        assert!(matches!(
+            *abilities[0].effect,
+            Effect::Mana {
+                ref restrictions,
+                ..
+            } if matches!(
+                restrictions.as_slice(),
+                [crate::types::ability::ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                    spell_type,
+                    ability: crate::types::mana::AbilityActivationScope::Any,
+                }] if spell_type == "Artifact"
+            )
+        ));
     }
 
     #[test]
@@ -5806,6 +5820,7 @@ mod tests {
                     GameEvent::EffectResolved {
                         kind: EffectKind::Token,
                         source_id: ObjectId(100),
+                        ..
                     }
                 ))
                 .count(),
@@ -5902,6 +5917,8 @@ mod tests {
                 spec_resume: None,
                 enter_tapped: EtbTapState::Unspecified,
                 enter_with_counters: Vec::new(),
+                kind: crate::types::game_state::LiminalEntryKind::Token,
+                replacement_applied: std::collections::HashSet::new(),
             },
         );
 

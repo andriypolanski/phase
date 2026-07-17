@@ -652,7 +652,9 @@ pub(crate) fn apply_damage_after_replacement(
         && matches!(
             (ctx.excess_recipient, &t),
             (
-                Some(ExcessRecipient::TargetController),
+                Some(ExcessRecipient::TargetController {
+                    source_keyword: None
+                }),
                 TargetRef::Object(_)
             )
         ) {
@@ -778,8 +780,12 @@ pub(crate) fn apply_damage_after_replacement(
     // the snapshot / PendingReplacement). `redirected` records that the excess and
     // this leg's lifelink were handed off, so the creature leg gains nothing here.
     let mut redirected = false;
-    if let (Some(ExcessRecipient::TargetController), TargetRef::Object(obj_id)) =
-        (ctx.excess_recipient, t)
+    if let (
+        Some(ExcessRecipient::TargetController {
+            source_keyword: None,
+        }),
+        TargetRef::Object(obj_id),
+    ) = (ctx.excess_recipient, t)
     {
         if redirect_excess > 0 {
             if let Some(controller) = state.objects.get(obj_id).map(|o| o.controller) {
@@ -1061,6 +1067,31 @@ fn stash_remaining_each_source_damage(
     append_to_pending_continuation(state, Some(Box::new(head)));
 }
 
+/// CR 120.4a + CR 608.2c + CR 702: Resolve an excess-redirect rider against
+/// the actual damage source. Unconditional riders apply directly; keyword-gated
+/// riders apply only while the source has the named effective keyword.
+fn active_excess_recipient(
+    state: &GameState,
+    ctx: &DamageContext,
+    excess: Option<ExcessRecipient>,
+) -> Option<ExcessRecipient> {
+    match excess {
+        Some(ExcessRecipient::TargetController {
+            source_keyword: None,
+        }) => Some(ExcessRecipient::TargetController {
+            source_keyword: None,
+        }),
+        Some(ExcessRecipient::TargetController {
+            source_keyword: Some(keyword),
+        }) if keywords::object_has_effective_keyword_kind(state, ctx.source_id, keyword) => {
+            Some(ExcessRecipient::TargetController {
+                source_keyword: None,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// CR 120.1: Deal N damage — reduces life for players, marks damage on creatures.
 /// Reads amount from `Effect::DealDamage { amount }`.
 pub fn resolve(
@@ -1126,11 +1157,12 @@ pub fn resolve(
         }
     };
 
-    // CR 120.4a: attach the excess-redirect rider parsed onto this DealDamage so
-    // `apply_damage_after_replacement` can redirect excess to the target's
-    // controller. Inert for combat damage (that path builds its own contexts).
+    // CR 120.4a + CR 608.2c: attach the active excess-redirect rider parsed onto
+    // this DealDamage so `apply_damage_after_replacement` can redirect excess to
+    // the target's controller. Keyword-gated riders read the resolved damage
+    // source (for DamageSource::Target, the first object target), not the spell.
     if let Effect::DealDamage { excess, .. } = &ability.effect {
-        ctx.excess_recipient = *excess;
+        ctx.excess_recipient = active_excess_recipient(state, &ctx, *excess);
     }
 
     // CR 120.1 + CR 608.2c: Resolve effective damage targets.
@@ -1198,6 +1230,7 @@ pub fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -1242,6 +1275,7 @@ pub fn resolve_post_replacement(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -1318,6 +1352,7 @@ fn resolve_each_target_power_damage(
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
+                subject: None,
             });
             return Ok(());
         };
@@ -1409,6 +1444,7 @@ fn resolve_each_target_power_damage(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -1509,7 +1545,41 @@ pub fn resolve_all(
 
     // Collect matching object IDs.
     // CR 107.3a + CR 601.2b: ability-context filter evaluation.
-    let ctx = filter::FilterContext::from_ability(ability);
+    //
+    // CR 120.1 + CR 601.2c: When `damage_source` is `Some(Target)`, "other"/
+    // "another"-relative recipient filters (`FilterProp::Another` — "each
+    // OTHER creature") must be evaluated relative to the resolved damage
+    // SOURCE creature, not the ability's nominal source (the spell/permanent
+    // that generated this `DamageAll` effect). Left as `ability.source_id`,
+    // `FilterProp::Another` compares each battlefield candidate against the
+    // spell's own object id — which is never itself a battlefield creature —
+    // so the exclusion never actually fires and the chosen source creature
+    // wrongly deals damage to itself (Chandra's Ignition class: "target
+    // creature you control deals damage ... to each other creature").
+    // Mirrors the damage-source resolution below (used for keyword/
+    // protection purposes); rebinding it here too keeps recipient-set
+    // membership consistent with which object CR 120.1 says the damage is
+    // actually FROM.
+    // Only the resolved damage source's OBJECT identity is overridden here —
+    // `source_controller` is deliberately left as `FilterContext::from_ability`
+    // set it (the ability's own controller). Per `FilterContext`'s own
+    // documented invariant (`filter.rs`), `source_controller` is what
+    // `ControllerRef::You` ("creatures you control") resolves against, and
+    // that pronoun refers to the ABILITY's controller (who cast the spell) —
+    // not to whoever happens to control the resolved damage source (e.g. a
+    // stolen creature dealing the damage). An earlier version of this fix
+    // also overrode `source_controller`, which made "you control" resolve
+    // against the wrong player whenever the resolved source's controller
+    // differs from the caster.
+    let mut ctx = filter::FilterContext::from_ability(ability);
+    if matches!(damage_source, Some(DamageSource::Target)) {
+        if let Some(resolved_source_id) = ability.targets.iter().find_map(|t| match t {
+            TargetRef::Object(id) => Some(*id),
+            _ => None,
+        }) {
+            ctx.source_id = resolved_source_id;
+        }
+    }
     let matching_objects: Vec<_> = state
         .battlefield
         .iter()
@@ -1604,6 +1674,7 @@ pub fn resolve_all(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -2120,6 +2191,7 @@ pub fn resolve_each_player(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -2170,6 +2242,7 @@ pub fn resolve_each_deals_equal_to_power(
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
             source_id: ability.source_id,
+            subject: None,
         });
         return Ok(());
     };
@@ -2214,6 +2287,7 @@ pub fn resolve_each_deals_equal_to_power(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -2393,6 +2467,7 @@ pub fn resolve_each_source_deals_damage(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -4189,6 +4264,94 @@ mod tests {
         assert_eq!(state.objects[&bear2].damage_marked, 2);
     }
 
+    /// #4960 follow-up (maintainer review on PR #5834, second pass): pins the
+    /// FINAL, corrected behavior after an intermediate version of this fix
+    /// was reverted for contradicting `FilterContext`'s own documented
+    /// invariant (`filter.rs`): `source_controller` is what `ControllerRef::
+    /// You` ("creatures you control") resolves against, and that pronoun
+    /// refers to the ABILITY's controller (who cast the spell) — not to
+    /// whoever happens to control the resolved damage source. Only
+    /// `filter_ctx.source_id` (the object identity, for `FilterProp::Another`
+    /// exclusion and similar) is overridden to the resolved damage source;
+    /// `source_controller` is deliberately left untouched.
+    ///
+    /// Two otherwise-identical creature recipients: one controlled by P0 (the
+    /// ability's controller — must match "you control"), one controlled by
+    /// P1 (the resolved damage source's controller, simulating a stolen
+    /// creature dealing the damage — must NOT match "you control", since
+    /// "you" is the caster, not the source).
+    #[test]
+    fn damage_all_controller_matches_recipient_reads_ability_controller() {
+        let mut state = GameState::new_two_player(42);
+        // Damage source: controlled by P1, even though the ability itself
+        // (below) has controller P0 — simulating a control change that
+        // happened between the source being targeted and this ability
+        // resolving.
+        let source = create_object(
+            &mut state,
+            CardId(30),
+            PlayerId(1),
+            "Stolen Creature".to_string(),
+            Zone::Battlefield,
+        );
+        let recipient_p0 = create_object(
+            &mut state,
+            CardId(31),
+            PlayerId(0),
+            "P0's Creature".to_string(),
+            Zone::Battlefield,
+        );
+        let recipient_p1 = create_object(
+            &mut state,
+            CardId(32),
+            PlayerId(1),
+            "P1's Other Creature".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [source, recipient_p0, recipient_p1] {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(4);
+            obj.base_power = Some(4);
+        }
+
+        let ability = ResolvedAbility::new(
+            Effect::DamageAll {
+                amount: QuantityExpr::Fixed { value: 3 },
+                target: TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![crate::types::ability::TypeFilter::Creature],
+                    controller: None,
+                    properties: vec![
+                        FilterProp::Another,
+                        FilterProp::ControllerMatches {
+                            player: Box::new(crate::types::ability::PlayerFilter::Controller),
+                        },
+                    ],
+                }),
+                player_filter: None,
+                damage_source: Some(DamageSource::Target),
+            },
+            vec![TargetRef::Object(source)],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve_all(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(
+            state.objects[&recipient_p0].damage_marked, 3,
+            "\"you control\" resolves against the ABILITY's controller (P0), \
+             per FilterContext's documented source_controller invariant"
+        );
+        assert_eq!(
+            state.objects[&recipient_p1].damage_marked, 0,
+            "the resolved damage source's controller (P1) must NOT be used \
+             for \"you control\" — only source_id (object identity) is \
+             overridden to the resolved damage source, not source_controller"
+        );
+    }
+
     #[test]
     fn damage_all_resolves_recipient_relative_amount_per_creature() {
         let mut state = GameState::new_two_player(42);
@@ -4923,6 +5086,85 @@ mod tests {
         } else {
             panic!("expected DamageDealt event");
         }
+    }
+
+    /// CR 120.4a + CR 608.2c + CR 702: A source-keyword-gated excess rider
+    /// redirects only when the resolved damage source target has the keyword.
+    #[test]
+    fn source_keyword_gated_excess_redirect_requires_source_keyword() {
+        fn run(source_has_trample: bool) -> (GameState, Vec<GameEvent>, ObjectId) {
+            let mut state = GameState::new_two_player(42);
+            let source_id = create_object(
+                &mut state,
+                CardId(10),
+                PlayerId(0),
+                "Source Creature".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&source_id).unwrap();
+                obj.card_types.core_types.push(CoreType::Creature);
+                if source_has_trample {
+                    obj.keywords.push(crate::types::keywords::Keyword::Trample);
+                }
+            }
+            let target_id = create_object(
+                &mut state,
+                CardId(20),
+                PlayerId(1),
+                "Target Creature".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&target_id).unwrap();
+                obj.card_types.core_types.push(CoreType::Creature);
+                obj.toughness = Some(2);
+            }
+            let ability = ResolvedAbility::new(
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 5 },
+                    target: TargetFilter::Any,
+                    damage_source: Some(DamageSource::Target),
+                    excess: Some(ExcessRecipient::TargetController {
+                        source_keyword: Some(crate::types::keywords::KeywordKind::Trample),
+                    }),
+                },
+                vec![TargetRef::Object(source_id), TargetRef::Object(target_id)],
+                ObjectId(100),
+                PlayerId(0),
+            );
+            let mut events = Vec::new();
+
+            resolve(&mut state, &ability, &mut events).unwrap();
+            (state, events, target_id)
+        }
+
+        let (trample_state, trample_events, trample_target) = run(true);
+        assert_eq!(trample_state.objects[&trample_target].damage_marked, 2);
+        assert_eq!(trample_state.players[1].life, 17);
+        assert_eq!(
+            trample_events
+                .iter()
+                .filter(|event| matches!(event, GameEvent::DamageDealt { .. }))
+                .count(),
+            2,
+            "lethal creature leg plus redirected controller leg"
+        );
+
+        let (no_trample_state, no_trample_events, no_trample_target) = run(false);
+        assert_eq!(
+            no_trample_state.objects[&no_trample_target].damage_marked,
+            5
+        );
+        assert_eq!(no_trample_state.players[1].life, 20);
+        assert_eq!(
+            no_trample_events
+                .iter()
+                .filter(|event| matches!(event, GameEvent::DamageDealt { .. }))
+                .count(),
+            1,
+            "without trample the excess stays on the creature event"
+        );
     }
 
     /// CR 120.10 + CR 120.6: the Torch the Witness / Orbital Plunge class —

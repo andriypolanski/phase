@@ -6,7 +6,7 @@ use super::prelude::*;
 use super::support::*;
 use super::{
     anthem::*, cda::*, cost_mod::*, evasion::*, keyword_grant::*, loyalty::*, mana_transform::*,
-    restriction::*, type_change::*,
+    restriction::*, same_is_true::*, type_change::*,
 };
 use crate::types::statics::ProhibitionScope;
 
@@ -704,6 +704,16 @@ pub(crate) fn parse_static_line_inner(
     let lower = text.to_lowercase();
     let tp = TextPair::new(&text, &lower);
 
+    if let Some(def) = parse_same_is_true_type_static(&text, &lower) {
+        return Some(def);
+    }
+    if is_same_is_true_type_static_candidate(&text, &lower) {
+        // The dedicated all-consuming parser recognized this as a malformed
+        // continuation. Fail closed so a battlefield-only legacy parser cannot
+        // silently drop the unmodeled tail; the document dispatcher will retain
+        // the full line as an honest `Unimplemented` residual.
+        return None;
+    }
     if let Some(def) = parse_arcane_adaptation_chosen_type_static(&tp, &text) {
         return Some(def);
     }
@@ -1049,6 +1059,15 @@ pub(crate) fn parse_static_line_inner(
         return Some(result);
     }
 
+    // CR 118.9 + CR 601.2b: "[Once during each of your turns, ]you may cast
+    // [filter] by paying life equal to its mana value rather than paying its
+    // mana cost." Demon of Fate's Design class. Must precede the free-cast
+    // handler below because both match "you may cast" prefix, but this shape
+    // has "by paying" (alternative cost) not "without paying" (free cast).
+    if let Some(result) = parse_cast_by_paying_life_alt_cost(&text) {
+        return Some(result);
+    }
+
     // CR 601.2b + CR 118.9a + CR 601.2: Omniscience-class restricted free-cast
     // static. Optional " from your hand" zone qualifier — Dracogenesis's
     // "you may cast Dragon spells without paying their mana costs" relies on
@@ -1353,6 +1372,16 @@ pub(crate) fn parse_static_line_inner(
 
     // --- "All creatures get/have ..." ---
     if let Some(rest) = nom_tag_tp(&tp, "all creatures ") {
+        // CR 105.2 + CR 613.1f: "All creatures are [color] and <keyword|pump>"
+        // (Onakke Catacomb: "... are black and have deathtouch") is a color-
+        // defining static composed with modifications — route it to the color
+        // path first, which peels the color and composes the trailing keyword/
+        // pump. `parse_continuous_gets_has` would match only the "have <keyword>"
+        // tail and silently drop the color. A bare gets/has line (no leading
+        // color) leaves the color path declining, so it still resolves below.
+        if let Some(def) = parse_all_subject_are_color(&tp, &text) {
+            return Some(def);
+        }
         if let Some(def) = parse_continuous_gets_has(
             rest.original,
             TargetFilter::Typed(TypedFilter::creature()),
@@ -1365,6 +1394,15 @@ pub(crate) fn parse_static_line_inner(
     // CR 205.1a: "All permanents are [type] in addition to their other types."
     // Global type-addition effect (e.g., Mycosynth Lattice, Enchanted Evening).
     if let Some(def) = parse_all_permanents_are_type(&tp, &text) {
+        return Some(def);
+    }
+
+    // CR 611.3 + CR 105.3 + CR 613.1e: multi-zone Oxford compound color static —
+    // "All cards that aren't on the battlefield, spells, and permanents are
+    // <color predicate>" (Painter's Servant / Mycosynth Lattice). Must precede
+    // `parse_all_subject_are_color` / `parse_subject_is_color` so the Oxford
+    // subject is never partial-claimed by the single-subject color paths.
+    if let Some(def) = parse_compound_multi_zone_color_static(&tp, &text) {
         return Some(def);
     }
 
@@ -2918,36 +2956,21 @@ pub(crate) fn parse_static_line_inner(
     // runtime gate matches `keyword == "loyalty"` against a loyalty ability's cost.
     // Combinator: prefix → subject → " cost {N} " → direction. The subject is
     // either the chosen-name source phrase (→ HasChosenName) or a type phrase.
-    if let Some(((amount_n, is_x, mode, subject_filter, dynamic_count, keyword), _)) =
+    if let Some(((amount_n, is_x, mode, subject_filter, dynamic_count, keyword, exemption), _)) =
         nom_on_lower(tp.original, tp.lower, |i| {
-            let (i, keyword) = alt((
-                value("activated", tag("activated abilities of ")),
-                value("loyalty", tag("loyalty abilities of ")),
-            ))
-            .parse(i)?;
-            let (i, subject) = take_until(" cost ").parse(i)?;
-            let (i, _) = tag(" cost ").parse(i)?;
-            // CR 107.3 + CR 601.2f: the amount is a fixed `{N}` (Training Grounds)
-            // or the variable `{X}` (Agatha), whose value is supplied by the
-            // trailing "where X is …" referent parsed below.
-            let (i, (amount_n, is_x)) = nom::sequence::delimited(
-                tag("{"),
-                alt((
-                    map(nom_primitives::parse_number, |n| (n, false)),
-                    value((0u32, true), tag("x")),
-                )),
-                tag("}"),
-            )
-            .parse(i)?;
-            let (i, _) = tag(" ").parse(i)?;
-            let (i, mode) = alt((
-                value(CostModifyMode::Reduce, tag("less to activate")),
-                value(CostModifyMode::Raise, tag("more to activate")),
-            ))
-            .parse(i)?;
+            // CR 601.2f + CR 606.1: shared grammar head (also used by the transient
+            // this-turn form, which lowers to a `GenericEffect` carrying this same
+            // `ReduceAbilityCost` static) — "<activated|loyalty> abilities of
+            // <subject> cost {N|X} <less|more> to activate".
+            let (i, (keyword, subject, amount_n, is_x, mode)) =
+                super::cost_mod::parse_activated_ability_cost_head(i)?;
             // CR 208.1 + CR 113.7: optional dynamic referent for `{X}`
             // ("where X is ~'s power", Agatha).
             let (i, dynamic_count) = opt(parse_where_x_is_self_stat).parse(i)?;
+            // CR 605.1a: consume the optional mana-ability carve-out at the
+            // source-scoped grammar boundary, accepting both apostrophe forms.
+            let (i, exemption) =
+                opt(super::shared::parse_mana_ability_exemption_suffix).parse(i)?;
             Ok((
                 i,
                 (
@@ -2957,6 +2980,7 @@ pub(crate) fn parse_static_line_inner(
                     subject.to_string(),
                     dynamic_count,
                     keyword,
+                    exemption,
                 ),
             ))
         })
@@ -2986,7 +3010,11 @@ pub(crate) fn parse_static_line_inner(
                     amount,
                     minimum_mana,
                     dynamic_count,
-                    exemption: ActivationExemption::None,
+                    exemption: if exemption.is_some() {
+                        ActivationExemption::ManaAbilities
+                    } else {
+                        ActivationExemption::None
+                    },
                     // Source-scoped ("Activated/Loyalty abilities of <filter>"):
                     // scope is the `affected` filter below; no activator gate.
                     activator: None,

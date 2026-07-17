@@ -67,6 +67,7 @@ pub fn resolve(
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
             source_id: ability.source_id,
+            subject: None,
         });
         return Ok(());
     }
@@ -100,6 +101,7 @@ pub fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -148,6 +150,7 @@ pub(crate) fn resolve_random_in_chain(
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
             source_id: ability.source_id,
+            subject: None,
         });
         return true;
     }
@@ -155,6 +158,7 @@ pub(crate) fn resolve_random_in_chain(
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
             source_id: ability.source_id,
+            subject: None,
         });
         return true;
     }
@@ -193,6 +197,7 @@ pub(crate) fn resolve_random_in_chain(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
     true
 }
@@ -635,7 +640,7 @@ fn two_color_options() -> Vec<String> {
 /// `ChosenAttribute::Keyword` entries at resolution.
 ///
 /// INVARIANT: this `", "`-join / split round-trip is only safe because every
-/// keyword admitted by the parser (`parse_keyword_from_oracle`) has a
+/// keyword admitted by the parser (`parse_granted_keyword_fragment`) has a
 /// comma-free `Display` string. A future "choose N abilities" list that admits
 /// a Debug-fallback keyword whose `Display` contains a comma would mis-tokenize
 /// — keep the parser's keyword allowlist comma-free, or persist structured
@@ -955,7 +960,9 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         match &events[0] {
-            GameEvent::EffectResolved { kind, source_id } => {
+            GameEvent::EffectResolved {
+                kind, source_id, ..
+            } => {
                 assert_eq!(*kind, EffectKind::Choose);
                 assert_eq!(*source_id, ObjectId(100));
             }

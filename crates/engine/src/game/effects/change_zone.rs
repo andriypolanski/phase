@@ -151,10 +151,15 @@ pub(crate) fn resolve_search_continuation_attach_host(
 /// CR 701.24a: Shuffle a player's library using the game's seeded RNG.
 /// Reusable helper for auto-shuffle after zone moves to Library.
 pub fn shuffle_library(state: &mut GameState, player: PlayerId, events: &mut Vec<GameEvent>) {
-    let GameState { players, rng, .. } = state;
-    if let Some(p) = players.iter_mut().find(|p| p.id == player) {
-        crate::util::im_ext::shuffle_vector(&mut p.library, rng);
+    {
+        let GameState { players, rng, .. } = state;
+        if let Some(p) = players.iter_mut().find(|p| p.id == player) {
+            crate::util::im_ext::shuffle_vector(&mut p.library, rng);
+        }
     }
+    // CR 401.5 + CR 611.3a: shuffling changes the library's top card, so a
+    // `TopOfLibraryMatches` static must be re-evaluated (self-gated on liveness).
+    crate::game::layers::mark_layers_full_if_top_of_library_static_live(state);
     // CR 701.24a: Emit player-action event so trigger matchers can filter
     // by the identity of the shuffling player.
     events.push(GameEvent::PlayerPerformedAction {
@@ -228,17 +233,15 @@ pub(crate) fn resolve_enters_under_player(
     }
 }
 
+/// CR 608.2c: Resolution-time choices use the resolved legal-cardinality bounds
+/// of the instruction, including a successful zero-card choice.
 fn resolution_choice_cardinality(
     state: &GameState,
     ability: &ResolvedAbility,
     eligible_count: usize,
     up_to: bool,
 ) -> (usize, usize, bool) {
-    let Some(spec) = ability
-        .multi_target
-        .as_ref()
-        .filter(|_| matches!(ability.target_choice_timing, TargetChoiceTiming::Resolution))
-    else {
+    let Some(spec) = ability.multi_target.as_ref() else {
         return (1, 0, up_to);
     };
 
@@ -248,8 +251,17 @@ fn resolution_choice_cardinality(
         spec,
         eligible_count,
     ) {
-        Ok(bounds) => (bounds.max, bounds.min, bounds.min != bounds.max),
-        Err(_) => (0, 0, up_to),
+        Ok(bounds)
+            if bounds.max == 0
+                || matches!(ability.target_choice_timing, TargetChoiceTiming::Resolution) =>
+        {
+            (bounds.max, bounds.min, bounds.min != bounds.max)
+        }
+        Ok(_) => (1, 0, up_to),
+        Err(_) if matches!(ability.target_choice_timing, TargetChoiceTiming::Resolution) => {
+            (0, 0, up_to)
+        }
+        Err(_) => (1, 0, up_to),
     }
 }
 
@@ -471,6 +483,7 @@ pub fn resolve(
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
+                subject: None,
             });
             return Ok(());
         }
@@ -486,6 +499,7 @@ pub fn resolve(
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
+                subject: None,
             });
             return Ok(());
         }
@@ -524,6 +538,7 @@ pub fn resolve(
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
+                subject: None,
             });
             return Ok(());
         }
@@ -534,17 +549,23 @@ pub fn resolve(
         // there is no fixed `InZone` constraint to extract — so derive the scan
         // zone from the members' actual zone rather than defaulting to the
         // battlefield.
-        let scan_zone = if exile_tracked_set_library_only {
-            Zone::Library
+        let scan_zones = if exile_tracked_set_library_only {
+            vec![Zone::Library]
+        } else if let Some(origin) = origin {
+            vec![origin]
         } else {
-            origin
-                .or_else(|| target_filter.extract_in_zone())
-                .or_else(|| {
-                    tracked_set_member_zones(state, target_filter)
-                        .and_then(|zones| zones.into_iter().next())
-                })
-                .unwrap_or(Zone::Battlefield)
+            let extracted = target_filter.extract_zones();
+            if !extracted.is_empty() {
+                extracted
+            } else if let Some(zone) = target_filter.extract_in_zone() {
+                vec![zone]
+            } else if let Some(zones) = tracked_set_member_zones(state, target_filter) {
+                zones
+            } else {
+                vec![Zone::Battlefield]
+            }
         };
+        let scan_zone = scan_zones[0];
         // Filter-controller override is primary here: when a filter like
         // "creature you control" needs "you" to resolve to the *target* player
         // (not the caster), we pass `filter_controller` explicitly. Include the
@@ -557,7 +578,7 @@ pub fn resolve(
             .objects
             .iter()
             .filter(|(id, obj)| {
-                obj.zone == scan_zone
+                scan_zones.contains(&obj.zone)
                     && !obj.is_emblem
                     && crate::game::filter::matches_target_filter(state, **id, target_filter, &ctx)
             })
@@ -584,6 +605,23 @@ pub fn resolve(
             eligible
         };
 
+        let (choice_count, min_count, choice_up_to) =
+            resolution_choice_cardinality(state, ability, eligible.len(), up_to);
+
+        // CR 115.6 + CR 107.3: an exact-X zone choice with X = 0 affects no
+        // cards and must complete without surfacing a one-card choice (Shigeki,
+        // Jukai Visionary channel). Zero is a successful resolution, including
+        // when the source zone is empty.
+        if choice_count == 0 {
+            state.last_effect_count = Some(0);
+            events.push(GameEvent::EffectResolved {
+                kind: EffectKind::from(&ability.effect),
+                source_id: ability.source_id,
+                subject: None,
+            });
+            return Ok(());
+        }
+
         if eligible.is_empty() {
             if !up_to {
                 state.cost_payment_failed_flag = true;
@@ -591,12 +629,10 @@ pub fn resolve(
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
+                subject: None,
             });
             return Ok(());
         }
-
-        let (choice_count, min_count, choice_up_to) =
-            resolution_choice_cardinality(state, ability, eligible.len(), up_to);
 
         if matches!(ability.target_selection_mode, TargetSelectionMode::Random)
             && !choice_up_to
@@ -681,6 +717,7 @@ pub fn resolve(
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
+                subject: None,
             });
             return Ok(());
         }
@@ -764,6 +801,7 @@ pub fn resolve(
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
+                subject: None,
             });
             return Ok(());
         }
@@ -997,6 +1035,7 @@ pub fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -1263,7 +1302,7 @@ pub fn resolve_all(
             random_order,
         } => {
             let extracted = target.extract_zones();
-            let scan_zones = if extracted.len() > 1 {
+            let scan_zones = if !extracted.is_empty() {
                 extracted
             } else if let Some(origin) = origin {
                 vec![*origin]
@@ -1696,6 +1735,7 @@ pub fn resolve_all(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -1757,7 +1797,8 @@ mod tests {
     use crate::game::zones::create_object;
     use crate::types::ability::{
         ControllerRef, FilterProp, MultiTargetSpec, PlayerFilter, PtValue, QuantityExpr,
-        QuantityRef, StaticDefinition, TargetFilter, TargetRef, TypeFilter, TypedFilter,
+        QuantityRef, StaticDefinition, TargetChoiceTiming, TargetFilter, TargetRef, TypeFilter,
+        TypedFilter,
     };
     use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
@@ -2516,6 +2557,7 @@ mod tests {
                     GameEvent::EffectResolved {
                         kind: EffectKind::ChangeZone,
                         source_id: ObjectId(100),
+                        ..
                     }
                 )
             })
@@ -2808,6 +2850,198 @@ mod tests {
         }
     }
 
+    #[test]
+    fn change_zone_choice_can_move_cards_from_hand_and_graveyard() {
+        let mut state = GameState::new_two_player(42);
+        let hand_land = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Hand,
+        );
+        let graveyard_land = create_object(
+            &mut state,
+            CardId(12),
+            PlayerId(0),
+            "Island".to_string(),
+            Zone::Graveyard,
+        );
+        let opposing_land = create_object(
+            &mut state,
+            CardId(13),
+            PlayerId(1),
+            "Mountain".to_string(),
+            Zone::Graveyard,
+        );
+        for id in [hand_land, graveyard_land, opposing_land] {
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Land);
+        }
+
+        let mut ability = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: None,
+                destination: Zone::Battlefield,
+                target: TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![crate::types::ability::TypeFilter::Land],
+                    controller: Some(ControllerRef::You),
+                    properties: vec![FilterProp::InAnyZone {
+                        zones: vec![Zone::Hand, Zone::Graveyard],
+                    }],
+                }),
+                owner_library: false,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: crate::types::zones::EtbTapState::Tapped,
+                enters_attacking: false,
+                up_to: true,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                face_down_profile: None,
+                enters_modified_if: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        ability.multi_target = Some(crate::types::ability::MultiTargetSpec::fixed(0, 2));
+        ability.target_choice_timing = crate::types::ability::TargetChoiceTiming::Resolution;
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        match &state.waiting_for {
+            WaitingFor::EffectZoneChoice { cards, count, .. } => {
+                assert_eq!(*count, 2);
+                assert!(cards.contains(&hand_land));
+                assert!(cards.contains(&graveyard_land));
+                assert!(!cards.contains(&opposing_land));
+            }
+            other => panic!("expected EffectZoneChoice, got {other:?}"),
+        }
+        apply_as_current(
+            &mut state,
+            GameAction::SelectCards {
+                cards: vec![hand_land, graveyard_land],
+            },
+        )
+        .expect("one resolution-time choice must be able to select both source zones");
+
+        for id in [hand_land, graveyard_land] {
+            assert_eq!(state.objects[&id].zone, Zone::Battlefield);
+            assert!(state.objects[&id].tapped);
+        }
+        assert_eq!(state.objects[&opposing_land].zone, Zone::Graveyard);
+    }
+
+    /// CR 608.2c: an explicit one-zone `InAnyZone` filter is still an
+    /// authoritative zone constraint. Both the interactive and mass
+    /// ChangeZone resolvers must scan that zone instead of defaulting to the
+    /// battlefield.
+    #[test]
+    fn singleton_in_any_zone_is_authoritative_for_change_zone_variants() {
+        let mut choice_state = GameState::new_two_player(42);
+        let graveyard_card = create_object(
+            &mut choice_state,
+            CardId(31),
+            PlayerId(0),
+            "Graveyard Card".to_string(),
+            Zone::Graveyard,
+        );
+        let battlefield_decoy = create_object(
+            &mut choice_state,
+            CardId(32),
+            PlayerId(0),
+            "Battlefield Decoy".to_string(),
+            Zone::Battlefield,
+        );
+        let mut choice_ability = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: None,
+                destination: Zone::Hand,
+                target: TargetFilter::Typed(TypedFilter::default().properties(vec![
+                    FilterProp::InAnyZone {
+                        zones: vec![Zone::Graveyard],
+                    },
+                ])),
+                owner_library: false,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: EtbTapState::Unspecified,
+                enters_attacking: false,
+                up_to: true,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                face_down_profile: None,
+                enters_modified_if: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        choice_ability.multi_target =
+            Some(MultiTargetSpec::up_to(QuantityExpr::Fixed { value: 1 }));
+        choice_ability.target_choice_timing = TargetChoiceTiming::Resolution;
+        let mut events = Vec::new();
+        resolve(&mut choice_state, &choice_ability, &mut events).unwrap();
+
+        match &choice_state.waiting_for {
+            WaitingFor::EffectZoneChoice { cards, .. } => {
+                assert!(cards.contains(&graveyard_card));
+                assert!(!cards.contains(&battlefield_decoy));
+            }
+            other => panic!("expected graveyard EffectZoneChoice, got {other:?}"),
+        }
+
+        let mut all_state = GameState::new_two_player(42);
+        let all_graveyard_card = create_object(
+            &mut all_state,
+            CardId(33),
+            PlayerId(0),
+            "Mass Graveyard Card".to_string(),
+            Zone::Graveyard,
+        );
+        let all_battlefield_decoy = create_object(
+            &mut all_state,
+            CardId(34),
+            PlayerId(0),
+            "Mass Battlefield Decoy".to_string(),
+            Zone::Battlefield,
+        );
+        let all_ability = ResolvedAbility::new(
+            Effect::ChangeZoneAll {
+                origin: None,
+                destination: Zone::Exile,
+                target: TargetFilter::Typed(TypedFilter::default().properties(vec![
+                    FilterProp::InAnyZone {
+                        zones: vec![Zone::Graveyard],
+                    },
+                ])),
+                enters_under: None,
+                enter_tapped: EtbTapState::Unspecified,
+                enter_with_counters: vec![],
+                face_down_profile: None,
+                library_position: None,
+                random_order: false,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        resolve_all(&mut all_state, &all_ability, &mut events).unwrap();
+
+        assert_eq!(all_state.objects[&all_graveyard_card].zone, Zone::Exile);
+        assert_eq!(
+            all_state.objects[&all_battlefield_decoy].zone,
+            Zone::Battlefield
+        );
+    }
+
     /// CR 614.12: `effective_enter_mods` applies the tapped/attacking riders
     /// only when the moved object matches the gate filter (Summoner's Grimoire's
     /// "if that card is an enchantment card"). Direct, revert-failing unit test:
@@ -2974,6 +3208,262 @@ mod tests {
                 "enchantment={is_enchantment}: attacking rider must be gated on the moved object's type (CR 508.4 / CR 614.12)"
             );
         }
+    }
+
+    /// CR 601.2c + CR 115.1d (Ill-Gotten Gains class, issue #5784): drives the
+    /// FULL at-resolution round trip for a bounded, non-targeted
+    /// graveyard-to-hand return — not just that the parsed clause carries a
+    /// `multi_target`, but that it survives into a real `EffectZoneChoice`
+    /// pause with the correct cardinality AND that submitting a PARTIAL
+    /// choice (fewer than the eligible cards, within the bound) moves only
+    /// the chosen cards, leaving the rest in the graveyard. The existing
+    /// `targeted_up_to_two_graveyard_bounce_moves_chosen_creature` sibling
+    /// (`game::effects::bounce`) bypasses this picker entirely by injecting a
+    /// pre-resolved `TargetRef` directly; this test is the missing
+    /// non-targeted counterpart, using the real parser output (not a
+    /// hand-built `Effect::ChangeZone`) end to end.
+    #[test]
+    fn ill_gotten_gains_return_clause_resolves_partial_choice_through_effect_zone_choice() {
+        use crate::parser::parse_oracle_text;
+
+        let parsed = parse_oracle_text(
+            "Exile Ill-Gotten Gains. Each player discards their hand, then returns up to three cards from their graveyard to their hand.",
+            "Ill-Gotten Gains",
+            &[],
+            &["Sorcery".to_string()],
+            &[],
+        );
+        let return_clause = parsed.abilities[0]
+            .sub_ability
+            .as_ref()
+            .expect("discard sub-ability")
+            .sub_ability
+            .as_ref()
+            .expect("return sub-ability");
+        assert_eq!(
+            return_clause.target_choice_timing,
+            TargetChoiceTiming::Resolution,
+            "a non-targeted 'returns up to N cards ...' clause must resolve as a \
+             resolution-time choice, not stack-time targeting, got {:?}",
+            return_clause.target_choice_timing
+        );
+        assert_eq!(
+            return_clause.multi_target,
+            Some(MultiTargetSpec::up_to(QuantityExpr::Fixed { value: 3 })),
+            "the 'up to three' count must survive parsed-chain construction, got {:?}",
+            return_clause.multi_target
+        );
+
+        // Four eligible cards in the graveyard — more than the bound of three,
+        // so a genuine sub-maximal choice is possible (not just "take all").
+        let mut state = GameState::new_two_player(42);
+        let cards: Vec<ObjectId> = (1..=4)
+            .map(|n| {
+                create_object(
+                    &mut state,
+                    CardId(n),
+                    PlayerId(0),
+                    format!("Graveyard Card {n}"),
+                    Zone::Graveyard,
+                )
+            })
+            .collect();
+
+        let mut ability = ResolvedAbility::new(
+            return_clause.effect.as_ref().clone(),
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        ability.multi_target = return_clause.multi_target.clone();
+        ability.target_choice_timing = return_clause.target_choice_timing;
+        // CR 115.10: the target filter is owner-scoped via `ControllerRef::
+        // ScopedPlayer` ("each player ... their graveyard"). This clause is
+        // being resolved standalone (outside the "each player" iteration
+        // wrapper that would normally set this per-iteration), so pin it
+        // explicitly to the acting player rather than relying on a fallback.
+        ability.scoped_player = Some(PlayerId(0));
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let (offered, count, min_count) = match &state.waiting_for {
+            WaitingFor::EffectZoneChoice {
+                player,
+                cards,
+                count,
+                min_count,
+                zone: Zone::Graveyard,
+                destination: Some(Zone::Hand),
+                ..
+            } => {
+                assert_eq!(*player, PlayerId(0));
+                (cards.clone(), *count, *min_count)
+            }
+            other => panic!("expected a graveyard-to-hand EffectZoneChoice, got {other:?}"),
+        };
+        assert_eq!(
+            min_count, 0,
+            "\"up to\" must allow choosing fewer than the bound"
+        );
+        assert_eq!(count, 3, "the bound must be exactly three, not unbounded");
+        for card in &cards {
+            assert!(
+                offered.contains(card),
+                "all four eligible graveyard cards must be offered, missing {card:?}"
+            );
+        }
+
+        // Choose two of the four — a genuine partial selection, both within
+        // the bound (<=3) and below the number of eligible cards (<4).
+        let chosen = vec![cards[0], cards[1]];
+        let unchosen = [cards[2], cards[3]];
+        apply_as_current(
+            &mut state,
+            GameAction::SelectCards {
+                cards: chosen.clone(),
+            },
+        )
+        .unwrap();
+
+        for card in &chosen {
+            assert!(
+                state.players[0].hand.contains(card),
+                "chosen card {card:?} must move to hand"
+            );
+            assert!(
+                !state.players[0].graveyard.contains(card),
+                "chosen card {card:?} must leave the graveyard"
+            );
+        }
+        for card in &unchosen {
+            assert!(
+                state.players[0].graveyard.contains(card),
+                "unchosen card {card:?} must remain in the graveyard"
+            );
+            assert!(
+                !state.players[0].hand.contains(card),
+                "unchosen card {card:?} must not move"
+            );
+        }
+    }
+
+    /// CR 608.2c: Liliana, the Necromancer's -7 chooses up to two creature
+    /// cards from graveyards while the ability resolves. Its real parser output
+    /// has no fixed origin, but the singleton graveyard constraint is `InZone`,
+    /// so the resolver must offer creature cards from either player's graveyard
+    /// and exclude battlefield and noncreature decoys.
+    #[test]
+    fn liliana_the_necromancer_minus_seven_resolves_graveyard_choice() {
+        use crate::parser::parse_oracle_text;
+
+        let parsed = parse_oracle_text(
+            "[+1]: Target player loses 2 life.\n\
+             [−1]: Return target creature card from your graveyard to your hand.\n\
+             [−7]: Destroy up to two target creatures. Put up to two creature cards from graveyards onto the battlefield under your control.",
+            "Liliana, the Necromancer",
+            &[],
+            &["Planeswalker".to_string()],
+            &["Liliana".to_string()],
+        );
+        let put_clause = parsed.abilities[2]
+            .sub_ability
+            .as_ref()
+            .expect("Liliana's -7 must retain its graveyard-return clause");
+        assert_eq!(
+            put_clause.target_choice_timing,
+            TargetChoiceTiming::Resolution
+        );
+        assert_eq!(
+            put_clause.multi_target,
+            Some(MultiTargetSpec::up_to(QuantityExpr::Fixed { value: 2 }))
+        );
+        let Effect::ChangeZone {
+            origin,
+            destination,
+            target,
+            ..
+        } = put_clause.effect.as_ref()
+        else {
+            panic!("Liliana's -7 return clause must be ChangeZone");
+        };
+        assert_eq!(*origin, None);
+        assert_eq!(*destination, Zone::Battlefield);
+        assert_eq!(target.extract_zones(), vec![Zone::Graveyard]);
+        assert_eq!(target.extract_in_zone(), Some(Zone::Graveyard));
+        assert!(matches!(
+            target,
+            TargetFilter::Typed(TypedFilter { properties, .. })
+                if properties.contains(&FilterProp::InZone { zone: Zone::Graveyard })
+        ));
+
+        let mut scenario = crate::game::scenario::GameScenario::new();
+        let graveyard_creatures = [
+            scenario
+                .add_creature_to_graveyard(PlayerId(0), "Graveyard Creature A", 2, 2)
+                .id(),
+            scenario
+                .add_creature_to_graveyard(PlayerId(0), "Graveyard Creature B", 2, 2)
+                .id(),
+            scenario
+                .add_creature_to_graveyard(PlayerId(1), "Graveyard Creature C", 2, 2)
+                .id(),
+        ];
+        let graveyard_noncreature = scenario
+            .add_spell_to_graveyard(PlayerId(0), "Graveyard Instant", true)
+            .id();
+        let battlefield_creature = scenario
+            .add_creature(PlayerId(1), "Battlefield Creature", 2, 2)
+            .id();
+        let mut state = scenario.state;
+
+        let ability = crate::game::ability_utils::build_resolved_from_def(
+            put_clause,
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let offered = match &state.waiting_for {
+            WaitingFor::EffectZoneChoice {
+                player,
+                cards,
+                count,
+                min_count,
+                zone: Zone::Graveyard,
+                destination: Some(Zone::Battlefield),
+                ..
+            } => {
+                assert_eq!(*player, PlayerId(0));
+                assert_eq!(*count, 2);
+                assert_eq!(*min_count, 0);
+                cards.clone()
+            }
+            other => panic!("expected Liliana's graveyard EffectZoneChoice, got {other:?}"),
+        };
+        assert_eq!(offered.len(), 3);
+        assert!(graveyard_creatures.iter().all(|id| offered.contains(id)));
+        assert!(!offered.contains(&graveyard_noncreature));
+        assert!(!offered.contains(&battlefield_creature));
+
+        apply_as_current(
+            &mut state,
+            GameAction::SelectCards {
+                cards: vec![graveyard_creatures[0], graveyard_creatures[2]],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            state.objects[&graveyard_creatures[0]].zone,
+            Zone::Battlefield
+        );
+        assert_eq!(
+            state.objects[&graveyard_creatures[2]].zone,
+            Zone::Battlefield
+        );
+        assert_eq!(state.objects[&graveyard_creatures[1]].zone, Zone::Graveyard);
+        assert_eq!(state.objects[&graveyard_noncreature].zone, Zone::Graveyard);
+        assert_eq!(state.objects[&battlefield_creature].zone, Zone::Battlefield);
     }
 
     #[test]
@@ -4410,6 +4900,60 @@ mod tests {
         resolve(&mut state, &ability, &mut events).unwrap();
 
         assert!(state.cost_payment_failed_flag);
+    }
+
+    #[test]
+    fn exact_zero_graveyard_return_completes_without_effect_zone_choice() {
+        let mut state = GameState::new_two_player(42);
+        let rage = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Worldsoul's Rage".to_string(),
+            Zone::Graveyard,
+        );
+        let overlook = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Riveteers Overlook".to_string(),
+            Zone::Graveyard,
+        );
+        let mut ability = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: Some(Zone::Graveyard),
+                destination: Zone::Hand,
+                target: TargetFilter::Any,
+                owner_library: false,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                face_down_profile: None,
+                enters_modified_if: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        ability.target_choice_timing = TargetChoiceTiming::Resolution;
+        ability.multi_target = Some(MultiTargetSpec::exact(QuantityExpr::Fixed { value: 0 }));
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(!matches!(
+            state.waiting_for,
+            WaitingFor::EffectZoneChoice { .. }
+        ));
+        assert!(state.players[0].graveyard.contains(&rage));
+        assert!(state.players[0].graveyard.contains(&overlook));
+        assert!(state.players[0].hand.is_empty());
+        assert_eq!(state.last_effect_count, Some(0));
+        assert!(!state.cost_payment_failed_flag);
     }
 
     #[test]
@@ -7908,6 +8452,7 @@ mod tests {
         );
         state.pending_continuation = Some(crate::types::game_state::PendingContinuation::new(
             Box::new(create_tokens),
+            &state,
         ));
 
         // Decline each replacement; each returned card still enters (tapped).
@@ -7946,9 +8491,9 @@ mod tests {
         use crate::types::actions::GameAction;
 
         let mut state = GameState::new_two_player(42);
-        // Construct two shock-style objects but place them in HAND so that the
-        // EffectZoneChoice code path (which scans eligible cards) is the one
-        // that drives them onto the battlefield.
+        // Construct two shock-style objects in hand and a land in the
+        // graveyard. The mixed-origin choice exercises the replacement-pause
+        // resume path used by Worldsoul's Rage.
         let shock_a = {
             use crate::game::game_object::GameObject;
             use crate::types::ability::{
@@ -8017,6 +8562,20 @@ mod tests {
             state.players[0].hand.push_back(oid);
             oid
         };
+        let graveyard_land = create_object(
+            &mut state,
+            CardId(803),
+            PlayerId(0),
+            "Graveyard Land".to_string(),
+            Zone::Graveyard,
+        );
+        state
+            .objects
+            .get_mut(&graveyard_land)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Land);
         state.active_player = PlayerId(0);
         state.priority_player = PlayerId(0);
 
@@ -8025,8 +8584,8 @@ mod tests {
         // present, so the test drives the resume path directly.
         state.waiting_for = WaitingFor::EffectZoneChoice {
             player: PlayerId(0),
-            cards: vec![shock_a, shock_b],
-            count: 2,
+            cards: vec![shock_a, shock_b, graveyard_land],
+            count: 3,
             min_count: 0,
             up_to: true,
             source_id: ObjectId(100),
@@ -8051,10 +8610,10 @@ mod tests {
         let _ = apply_as_current(
             &mut state,
             GameAction::SelectCards {
-                cards: vec![shock_a, shock_b],
+                cards: vec![shock_a, shock_b, graveyard_land],
             },
         )
-        .expect("select both cards");
+        .expect("select all three cards");
 
         // First shock prompts; decline it (index 1 → tap).
         assert!(
@@ -8077,6 +8636,7 @@ mod tests {
 
         assert_eq!(state.objects[&shock_a].zone, Zone::Battlefield);
         assert_eq!(state.objects[&shock_b].zone, Zone::Battlefield);
+        assert_eq!(state.objects[&graveyard_land].zone, Zone::Battlefield);
         assert!(state.pending_change_zone_iteration.is_none());
     }
 

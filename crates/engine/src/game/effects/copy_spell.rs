@@ -34,6 +34,7 @@ pub fn resolve(
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
             source_id: ability.source_id,
+            subject: None,
         });
         return Ok(());
     }
@@ -69,6 +70,7 @@ pub fn resolve(
         let mut copy_obj = source_obj.clone();
         copy_obj.id = copy_id;
         copy_obj.controller = copy_controller;
+        // allow-raw-zone: spell-copy birth directly on stack has no from-zone event (CR 707.10).
         copy_obj.zone = Zone::Stack;
         copy_obj.is_token = true;
         copy_obj.additional_cost_payment_count = 0;
@@ -110,6 +112,9 @@ pub fn resolve(
                 clear_cast_from_zone_recursive(a);
                 a.context.additional_cost_paid = false;
                 a.context.alternative_mana_cost_paid = false;
+                // CR 707.10: a copy of a spell isn't cast, so it must never
+                // consume a once-per-turn CastWithAlternativeCost grant's slot.
+                a.context.alt_cost_grant_source = None;
                 a.context.additional_cost_payment_count = 0;
                 a.context.kickers_paid.clear();
             }
@@ -215,6 +220,7 @@ pub fn resolve(
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
+                subject: None,
             });
             drain_spell_copied_observer_triggers(state, events, copied_spell_card_id.is_some())?;
             return Ok(());
@@ -235,6 +241,7 @@ pub fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
 
     drain_spell_copied_observer_triggers(state, events, copied_spell_card_id.is_some())?;
@@ -3235,6 +3242,7 @@ mod tests {
                 counters: Default::default(),
                 tapped: false,
                 is_suspected: false,
+                attachments: Vec::new(),
             },
         });
 

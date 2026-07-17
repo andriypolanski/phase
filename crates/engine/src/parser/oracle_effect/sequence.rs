@@ -30,7 +30,7 @@ use crate::types::ability::{
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
-use crate::types::keywords::Keyword;
+use crate::types::keywords::{Keyword, KeywordKind};
 use crate::types::mana::ManaCost;
 use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
@@ -433,10 +433,32 @@ pub(super) fn parse_choice_partition_destination(
     .parse(input)
 }
 
-fn append_definition_to_sub_chain(ability: &mut AbilityDefinition, next: AbilityDefinition) {
+fn append_definition_to_sub_chain(ability: &mut AbilityDefinition, mut next: AbilityDefinition) {
+    // CR 608.2c + CR 701.13a: The Jodah, the Unifier "put the rest on the
+    // bottom" cleanup gate is head-aware — it needs the chain HEAD's effect
+    // (`ExileFromTopUntil { NextMatches }`) as well as the cast link (`cursor`)
+    // and the cleanup (`next`). Snapshot the head effect before the traversal
+    // consumes the `&mut` walk to the deepest sub. The plain linked-exile gate
+    // is head-independent, so it stays inside the loop.
+    let head_effect = ability.effect.clone();
     let mut cursor = ability;
     loop {
         if cursor.sub_ability.is_none() {
+            if cursor.optional
+                && super::lower::is_linked_exile_cast_bottom_cleanup(&cursor.effect, &next.effect)
+            {
+                super::lower::normalize_linked_exile_cast_bottom_cleanup(&mut next.effect);
+                cursor.else_ability = Some(Box::new(next.clone()));
+            } else if cursor.optional
+                && super::lower::is_exile_until_cast_bottom_cleanup(
+                    &head_effect,
+                    &cursor.effect,
+                    &next.effect,
+                )
+            {
+                super::lower::normalize_exile_until_cast_bottom_cleanup(&mut next.effect);
+                cursor.else_ability = Some(Box::new(next.clone()));
+            }
             cursor.sub_ability = Some(Box::new(next));
             break;
         }
@@ -640,7 +662,7 @@ fn target_filter_uses_chosen_card_predicate(filter: &TargetFilter) -> bool {
     }
 }
 
-fn deepest_effect(ability: &AbilityDefinition) -> &Effect {
+pub(super) fn deepest_effect(ability: &AbilityDefinition) -> &Effect {
     let mut cursor = ability;
     while let Some(sub) = cursor.sub_ability.as_deref() {
         cursor = sub;
@@ -789,7 +811,7 @@ fn parse_exile_rest_after_dig(lower: &str) -> bool {
         .is_ok()
 }
 
-/// CR 406.3 + CR 701.16a: Recognize the "[then] exile it/them/that card/those
+/// CR 406.3 + CR 701.20e: Recognize the "[then] exile it/them/that card/those
 /// cards/the card [face down]" clause that follows a private `Dig` look step —
 /// the Gonti, Canny Acquisitor impulse idiom. Returns `Some(face_down)` when the
 /// whole clause matches (`face_down = true` only for the explicit hidden-
@@ -834,17 +856,41 @@ fn parse_exile_looked_at_card(lower: &str) -> Option<bool> {
 /// selects exactly one of the N looked-at cards. The "face down" suffix is the
 /// CR 406.3 hidden-information marker required by this class; pure-peek Digs
 /// (Delver of Secrets — no exile clause) never reach this recognizer.
-fn parse_exile_one_of_them_face_down(lower: &str) -> bool {
+///
+/// CR 122.1: An optional counter rider ("... face down with a hatching counter
+/// on it", The Dragon-Kami Reborn) may follow "face down". `Some(entries)`
+/// signals a match (empty `entries` = the bare Gonti form; non-empty = the
+/// counters the fusion threads onto the chosen exiled card). Delegates the
+/// rider to the shared `parse_counter_suffix_body_combinator`, so every
+/// `<count> <type> counter(s) on it` shape (a/two/X, +1/+1, keyword, named)
+/// is covered by the one building block — not just "a hatching counter".
+fn parse_exile_one_of_them_face_down(lower: &str) -> Option<Vec<(CounterType, QuantityExpr)>> {
     let trimmed = lower.trim().trim_end_matches('.').trim_end();
-    (
+    let (rest, _) = (
         tag::<_, _, OracleError<'_>>("exile "),
         alt((tag("one of them"), tag("one of those cards"))),
         multispace1,
         tag("face down"),
-        eof,
     )
         .parse(trimmed)
-        .is_ok()
+        .ok()?;
+    // CR 122.1: optional "with <count> <type> counter(s) on it" rider. Either
+    // the bare form (nothing after "face down") or exactly one counter clause.
+    match preceded(
+        tag::<_, _, OracleError<'_>>(" with "),
+        crate::parser::oracle_effect::parse_counter_suffix_body_combinator,
+    )
+    .parse(rest)
+    {
+        Ok((after, entry)) => {
+            eof::<_, OracleError<'_>>(after).ok()?;
+            Some(vec![entry])
+        }
+        Err(_) => {
+            eof::<_, OracleError<'_>>(rest).ok()?;
+            Some(Vec::new())
+        }
+    }
 }
 
 pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
@@ -1357,6 +1403,22 @@ fn quote_closes_sentence_before_sequence(current: &str, remainder: &str) -> bool
     {
         return true;
     }
+    // CR 111.3 + CR 608.2c (issue #5844): a token/permanent granted-ability quote
+    // that ends a sentence can be followed by a fresh IMPERATIVE sibling sentence
+    // that acts on the created object — Alien Invasion: `… and "This token
+    // attacks each combat if able." Put a +1/+1 counter on it for each invasion
+    // counter on this enchantment, then …`. Without splitting here the whole
+    // remainder is swallowed into the token-creation clause: its "for each
+    // invasion counter" is mis-read as the token COUNT and the "+1/+1 counter"
+    // pump is dropped entirely. Split when the continuation begins with an
+    // imperative game-action verb; anaphoric-subject continuations ("It becomes
+    // a 2/2 …", "The token is goaded", "That creature gains …") begin with a
+    // pronoun/determiner, NOT a verb, and stay attached so the token-creation
+    // path handles them inline.
+    if starts_imperative_action_continuation(trimmed_lower.as_str()) {
+        return true;
+    }
+
     // CR 608.2c: read the whole text and apply the rules of English — a
     // granted-ability quote that ends a sentence can be followed by a fresh
     // causative "may have …" sentence directed at the affected object's
@@ -1368,6 +1430,48 @@ fn quote_closes_sentence_before_sequence(current: &str, remainder: &str) -> bool
         tag::<_, _, OracleError<'_>>("may have ").parse(i)
     })
     .is_some()
+}
+
+/// True iff `remainder_lower` begins a fresh IMPERATIVE sibling sentence — a game-
+/// action verb such as "put "/"exile "/"create "/"tap " — as opposed to an
+/// anaphoric-subject continuation ("It becomes …", "The token is goaded", "That
+/// creature gains …") that the token-creation path keeps attached to the quote.
+///
+/// Reuses the shared clause-starter verb table (`starts_clause_text_lower`) but
+/// first excludes the pronoun/determiner/subject starters it also recognizes for
+/// comma / "then" / bare-"and" splits. Those subject starters, after a granted
+/// quote, are anaphors that must stay attached (per the guardrail in
+/// `quote_closes_sentence_before_sequence`); only a bare imperative verb marks a
+/// genuine sibling effect here.
+fn starts_imperative_action_continuation(remainder_lower: &str) -> bool {
+    !starts_anaphoric_subject(remainder_lower) && starts_clause_text_lower(remainder_lower)
+}
+
+/// True iff `remainder_lower` begins with a demonstrative/pronoun word that, after
+/// a token/permanent's granted-ability quote, refers back to the CREATED object —
+/// an anaphor ("It becomes …", "Its power …", "That creature gains …", "Those
+/// tokens …", "They gain haste") that must stay attached to the quote rather than
+/// split as a sibling imperative. Each starter carries a trailing space so only a
+/// complete word matches (e.g. "it " does not fire on "item").
+///
+/// Restricted to genuine last-created anaphors. Independent subject-led clauses
+/// that `starts_clause_text_lower` recognizes as fresh instructions — "You gain
+/// …", "Each opponent …", "All creatures …" — are NOT token anaphors and must be
+/// allowed to split, so they are deliberately absent here (issue #5844 review).
+/// "The …" is likewise absent: it is not a `starts_clause_text_lower` starter, so
+/// "The token is goaded" already fails the authority check and stays attached
+/// without an explicit guard.
+fn starts_anaphoric_subject(remainder_lower: &str) -> bool {
+    alt((
+        tag::<_, _, OracleError<'_>>("it "),
+        tag("its "),
+        tag("that "),
+        tag("this "),
+        tag("those "),
+        tag("they "),
+    ))
+    .parse(remainder_lower)
+    .is_ok()
 }
 
 fn parse_search_exile_name_suffix(input: &str) -> Result<(&str, ()), nom::Err<OracleError<'_>>> {
@@ -2510,6 +2614,23 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
         value((), tag("you surveil ")),
         value((), tag("you get ")),
         value((), tag("you may ")),
+        // CR 614.1b + CR 603.7a: "Effects that use the word 'skip' are
+        // replacement effects" — a skip is its own instruction, never a
+        // continuation of the conjunct before it. Ivory Gargoyle / Molten
+        // Firebird: "return it to the battlefield under its owner's control at
+        // the beginning of the next end step AND YOU SKIP YOUR NEXT DRAW STEP";
+        // Waterspout Elemental: "return all other creatures to their owners'
+        // hands and you skip your next turn."
+        //
+        // Without this arm the bare-and splitter left the whole sentence as ONE
+        // clause, which cost both halves at once: the skip tail was swallowed by
+        // the leading imperative (the CR 614.1b replacement vanished), AND the
+        // temporal phrase stopped being a suffix — so `strip_temporal_suffix`
+        // (lower.rs), which only matches a temporal phrase at the END of the
+        // clause, never fired and the delayed return collapsed into an immediate
+        // one. Splitting here restores the temporal phrase to clause-final
+        // position, so ONE arm recovers both behaviors.
+        value((), tag("you skip ")),
         // CR 707.10c: "[subject] may copy this spell and may choose a new
         // target for that copy" — the Chain cycle joins the optional copy and
         // its retarget grant with "and". "may choose" begins a verb phrase,
@@ -3170,6 +3291,33 @@ pub(super) fn effect_wraps_copy_spell(effect: &Effect) -> bool {
     }
 }
 
+/// CR 608.2c: A `Destroy`/`DestroyAll` may be the chain's effect directly, or
+/// nested inside a `CreateDelayedTrigger` wrapper ("When Merieke Ri Berit
+/// leaves the battlefield or becomes untapped, destroy that creature.").
+/// Mirrors `effect_wraps_copy_spell`'s descent through the same wrapper.
+pub(super) fn effect_wraps_destroy_like(effect: &Effect) -> bool {
+    match effect {
+        Effect::Destroy { .. } | Effect::DestroyAll { .. } => true,
+        Effect::CreateDelayedTrigger { effect: inner, .. } => {
+            effect_wraps_destroy_like(&inner.effect)
+        }
+        _ => false,
+    }
+}
+
+/// Mutable counterpart to `effect_wraps_destroy_like` — the effect to patch
+/// when a "can't be regenerated" rider binds to the `DestroyLike` role,
+/// unwrapping the same `CreateDelayedTrigger` wrapper.
+pub(super) fn destroy_like_effect_mut(effect: &mut Effect) -> Option<&mut Effect> {
+    match effect {
+        Effect::Destroy { .. } | Effect::DestroyAll { .. } => Some(effect),
+        Effect::CreateDelayedTrigger { effect: inner, .. } => {
+            destroy_like_effect_mut(&mut inner.effect)
+        }
+        _ => None,
+    }
+}
+
 /// CR 701.8 + CR 608.2c: nom recognizer for the "if a permanent's ability is
 /// countered this way, destroy that permanent" continuation clause (Teferi's
 /// Response, Green Slime). Operates on lowercased text; tolerates a trailing
@@ -3248,9 +3396,28 @@ fn recognize_counter_spell_zone_redirect(lower: &str) -> Option<SpellStackToGrav
 /// (Increasing Vengeance's "You may choose new targets for the copies" — every
 /// copy the spell makes is retargetable), `false` for the singular "the copy" /
 /// "that copy" forms (Fork/Twincast; the Chain cycle).
+///
+/// The leading `opt(parse_affirmative_reflexive_connector)` axis accepts the form
+/// where the grant is printed as the CONSEQUENT of a reflexive gate rather than as
+/// its own sentence — Spider-Verse's "you may copy it. IF YOU DO, you may choose new
+/// targets for the copy." (compare Spinerock Tyrant, which prints the same grant as a
+/// standalone sentence). Without it the clause reached the continuation recognizer
+/// still wearing its "if you do, " prefix, failed `all_consuming`, and fell through
+/// to an honest `orphaned_copy_retarget` residual — the copy was modeled, but its
+/// controller could never retarget it.
+///
+/// Folding the gate away is sound precisely BECAUSE it is affirmative and the copy it
+/// rides is itself optional: "if you do" means "if you made the copy", and a retarget
+/// permission on a copy that was never made is unreachable. So the gate carries no
+/// information the `CopySpell`'s own optionality does not already carry, and CR 707.10c
+/// is satisfied without a separate condition node. This reasoning does NOT extend to
+/// the NEGATED connectors, which is exactly why the affirmative half is its own
+/// combinator (see `oracle_nom::condition`) rather than the whole set with the
+/// condition thrown away.
 pub(super) fn parse_copy_retarget_clause(input: &str) -> OracleResult<'_, bool> {
     map(
         (
+            opt(crate::parser::oracle_nom::condition::parse_affirmative_reflexive_connector),
             opt(alt((tag(", and "), tag("and ")))),
             opt(tag("you ")),
             tag("may choose "),
@@ -3262,7 +3429,7 @@ pub(super) fn parse_copy_retarget_clause(input: &str) -> OracleResult<'_, bool> 
             )),
             opt(alt((tag("."), tag(",")))),
         ),
-        |(_, _, _, _, _, all_copies, _)| all_copies,
+        |(_, _, _, _, _, _, all_copies, _)| all_copies,
     )
     .parse(input)
 }
@@ -3338,6 +3505,76 @@ fn set_copy_retarget_in_ability(
         .as_deref_mut()
         .is_some_and(|sub| set_copy_retarget_in_ability(sub, perm, all));
     patched_here || patched_sub
+}
+
+/// CR 707.10c: Absorb an ORPHANED copy-retarget clause into a `CopySpell` the caller
+/// has just brought into existence. Returns true if a copy was found and patched.
+///
+/// Exists for the mana-spend trigger fold (`oracle::extract_mana_spend_trigger_from_chain`),
+/// which is a POST-PASS: "When that mana is spent to cast …, copy that spell" first
+/// lowers to an `Unimplemented` gap node and is only re-parsed into a
+/// `ManaSpellGrant::TriggerOnSpend` afterwards. So when the clause-streaming
+/// continuation recognizer looked for the retarget sentence's antecedent, the
+/// `CopySpell` DID NOT EXIST YET — the ordinary binding path cannot work here, by
+/// construction, and the sentence necessarily fell through to an honest
+/// `orphaned_copy_retarget` residual. This lets the fold reclaim it once the copy is
+/// real (Pyromancer's Goggles, Primal Wellspring).
+///
+/// Declines (returns false) when the text is not a retarget clause or when no
+/// `CopySpell` is reachable, so it can never strip an unrelated gap node.
+pub(crate) fn absorb_orphaned_copy_retarget(
+    ability: &mut AbilityDefinition,
+    clause_lower: &str,
+) -> bool {
+    let Some(all_copies) = copy_retarget_clause_all_copies(clause_lower) else {
+        return false;
+    };
+    set_copy_retarget_in_ability(
+        ability,
+        &CopyRetargetPermission::MayChooseNewTargets,
+        all_copies,
+    )
+}
+
+/// Membership mirror for `AntecedentRole::CopySpellBearer` (CR 707.10c) — does this
+/// def's effect TREE bear a `CopySpell` that `set_copy_retarget_in_ability` can reach?
+///
+/// A STRUCTURAL MIRROR of that mutator's descent, and it lives beside it so the two
+/// cannot drift apart: the def's own effect, through a `CreateDelayedTrigger` wrapper's
+/// inner ability, and down the `sub_ability` chain. It deliberately does NOT descend
+/// `else_ability` — the mutator does not either. A predicate WIDER than its mutator is
+/// the dangerous direction here: `LastWithRole` stops the walk at the node it binds, so
+/// claiming membership for a def the mutator cannot patch would swallow the retarget
+/// instead of reaching the real copy further back.
+///
+/// Independent of the mutator's `all` flag BY CONSTRUCTION, so one predicate mirrors
+/// both the singular ("the copy") and plural ("the copies") clause: `all` decides how
+/// MANY copies get patched, never WHETHER one is found. Every return path of
+/// `set_copy_retarget_in_ability` reduces to "a reachable `CopySpell` exists" — the
+/// `!all` early return is taken only when `patched_here` is already true.
+///
+/// Membership therefore holds exactly when the mutator would return true, which is why
+/// the binding site can `debug_assert!` the mutation lands.
+pub(super) fn def_bears_retargetable_copy(def: &AbilityDefinition) -> bool {
+    effect_bears_retargetable_copy(&def.effect)
+        || def
+            .sub_ability
+            .as_deref()
+            .is_some_and(def_bears_retargetable_copy)
+}
+
+/// The effect half of `def_bears_retargetable_copy` — mirrors `set_copy_retarget`.
+///
+/// Every arm here MUST have a counterpart there and vice versa. A predicate WIDER
+/// than its mutator is the dangerous direction: `LastWithRole` stops the walk at the
+/// node it binds, so claiming membership for a def the mutator cannot patch would
+/// swallow the retarget instead of reaching the real copy further back.
+fn effect_bears_retargetable_copy(effect: &Effect) -> bool {
+    match effect {
+        Effect::CopySpell { .. } => true,
+        Effect::CreateDelayedTrigger { effect: inner, .. } => def_bears_retargetable_copy(inner),
+        _ => false,
+    }
 }
 
 pub(super) fn apply_clause_continuation(
@@ -3469,9 +3706,11 @@ pub(super) fn apply_clause_continuation(
                 ..
             } = &mut *previous.effect
             {
-                // CR 611.2: "that permanent loses all abilities ..." rider.
+                // CR 611.2 + CR 611.2a: "that permanent loses all abilities for
+                // as long as this creature remains on the battlefield" rider.
                 *existing = Some(CounterSourceRider::LosesAbilities {
                     static_def: source_static,
+                    duration: Box::new(Duration::UntilHostLeavesPlay),
                 });
             }
         }
@@ -3505,32 +3744,59 @@ pub(super) fn apply_clause_continuation(
             }
         }
         ContinuationAst::CopyMayRetarget { all_copies } => {
-            // CR 707.10c: patch the nearest preceding CopySpell — descending
-            // through a CreateDelayedTrigger wrapper ("When you next cast ...,
-            // copy that spell" — Galvanic Iteration) and through the sub-ability
-            // chain ("That player may copy this spell ..." — the Chain cycle,
-            // where the optional CopySpell is nested under the parent discard).
-            // The copy is usually the last def, but a clause that resolves
-            // between the copy and the retarget sentence (Narset's Reversal's
-            // bounce, Increasing Vengeance's conditional "copy that spell twice",
-            // Spinerock Tyrant's "those spells gain wither" rider) can sit in
-            // between — so walk the defs backward to the first ability whose
-            // effect-tree contains a CopySpell. Recognition already confirmed a
-            // preceding copy exists (parse_followup_continuation_ast), so this
-            // binds it; if somehow none is found, the loop is a no-op.
+            // CR 707.10c: bind the copy-bearing ability/abilities and grant their
+            // CopySpell(s) the retarget permission. The copy is usually the last def,
+            // but a clause that resolves between the copy and the retarget sentence can
+            // sit in between (Narset's Reversal's bounce, Spinerock Tyrant's "those
+            // spells gain wither" rider) — so this is a ROLE, not `LastEmitted`.
             //
-            // `all_copies` (the plural "the copies" clause) patches every copy in
-            // that copy-bearing ability — Increasing Vengeance's primary copy and
-            // its nested conditional "copy that spell twice" copy both live in one
-            // ability — while the singular clause keeps nearest-only binding.
-            for previous in defs.iter_mut().rev() {
-                if set_copy_retarget_in_ability(
-                    previous,
+            // `all_copies` — the PLURAL "you may choose new targets for the copIES" —
+            // scopes over BOTH axes, and they are independent:
+            //
+            //   SELECTOR (which defs):   plural ⇒ `AllWithRole`, because a card can make
+            //     its copies in SIBLING defs. Banish into Fable copies once if you
+            //     control an artifact and again if you control an enchantment; Ulalek
+            //     copies all spells, THEN all other abilities. A point binding reaches
+            //     only the last of those and every earlier copy silently keeps its
+            //     original targets — the CR 707.10c defect this arm exists to fix.
+            //   MUTATION (which copies inside one def): plural ⇒ `all = true`, so the
+            //     descent does not stop at the nearest copy. Increasing Vengeance's
+            //     primary copy and its nested conditional "copy that spell twice" copy
+            //     live in ONE def's sub-ability chain, and both must be patched.
+            //
+            // The singular clause ("the copy") keeps the nearest-only point binding on
+            // both axes. Binding only defs already emitted is what makes the fan-out
+            // safe: continuations apply in SOURCE ORDER, so a copy stated AFTER this
+            // sentence (Choreographed Sparks' retarget-less second mode) is not in
+            // `defs` yet and cannot be over-patched.
+            //
+            // `CopySpellBearer` is a LIVE predicate (`def_bears_retargetable_copy`) that
+            // mirrors the mutator's descent exactly (own effect → CreateDelayedTrigger
+            // wrapper → sub-ability chain), so every bound node patches. Recognition
+            // already confirmed a preceding copy exists
+            // (parse_followup_continuation_ast); if somehow none does, `OnMiss::Ignore`
+            // keeps it a silent no-op, as before.
+            let role = super::assembly::AntecedentRole::CopySpellBearer;
+            let selector = if all_copies {
+                super::assembly::AntecedentSelector::AllWithRole(role)
+            } else {
+                super::assembly::AntecedentSelector::LastWithRole(role)
+            };
+            for bound_index in
+                env.resolve_all(defs, selector, None, super::assembly::OnMiss::Ignore)
+            {
+                // `CopySpellBearer` membership is the structural mirror of this
+                // mutator's own success condition (`def_bears_retargetable_copy`), so a
+                // bound node ALWAYS patches — the role and the mutator cannot disagree.
+                let patched = set_copy_retarget_in_ability(
+                    &mut defs[bound_index],
                     &CopyRetargetPermission::MayChooseNewTargets,
                     all_copies,
-                ) {
-                    break;
-                }
+                );
+                debug_assert!(
+                    patched,
+                    "CopySpellBearer membership must imply the mutator patches"
+                );
             }
         }
         ContinuationAst::SuspectLastCreated => {
@@ -3575,20 +3841,26 @@ pub(super) fn apply_clause_continuation(
             );
             if let Some(bound_index) = bound {
                 let def = &mut defs[bound_index];
-                match &mut *def.effect {
-                    Effect::Destroy {
+                // CR 608.2c: the DestroyLike antecedent may be nested inside a
+                // CreateDelayedTrigger wrapper (Merieke Ri Berit), so descend
+                // through it via destroy_like_effect_mut rather than matching
+                // def.effect directly — the registry now includes wrapped nodes.
+                match destroy_like_effect_mut(&mut def.effect) {
+                    Some(Effect::Destroy {
                         cant_regenerate, ..
-                    }
-                    | Effect::DestroyAll {
+                    })
+                    | Some(Effect::DestroyAll {
                         cant_regenerate, ..
-                    } => {
+                    }) => {
                         *cant_regenerate = true;
                     }
                     _ => unreachable!(),
                 }
             }
         }
-        ContinuationAst::ExcessDamageToController => {
+        ContinuationAst::ExcessDamageToController {
+            source_keyword_condition,
+        } => {
             // CR 120.4a + CR 608.2c: bind the nearest DealDamage and attach the
             // excess-redirect rider. The clause may not be adjacent to the DealDamage
             // effect, mirroring the CantRegenerate walk above — so this is a role, not
@@ -3608,9 +3880,16 @@ pub(super) fn apply_clause_continuation(
             );
             if let Some(bound_index) = bound {
                 let def = &mut defs[bound_index];
-                match &mut *def.effect {
+                // CR 608.2c: `def` itself may be the `TargetOnly` head of a
+                // Ram Through-class "Target creature you control deals
+                // damage..." clause, with `DealDamage` nested as its
+                // `sub_ability` — unwrap the same way `def_is_damage_dealer`
+                // detected membership.
+                match super::damage_dealer_effect_mut(def) {
                     Effect::DealDamage { excess, .. } => {
-                        *excess = Some(ExcessRecipient::TargetController);
+                        *excess = Some(ExcessRecipient::TargetController {
+                            source_keyword: source_keyword_condition,
+                        });
                     }
                     _ => unreachable!(),
                 }
@@ -4041,8 +4320,8 @@ pub(super) fn apply_clause_continuation(
             let bottom_def = AbilityDefinition::new(
                 kind,
                 Effect::PutAtLibraryPosition {
-                    target: TargetFilter::Any,
-                    count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::ExiledBySource,
+                    count: crate::types::ability::QuantityExpr::Fixed { value: 0 },
                     position: crate::types::ability::LibraryPosition::Bottom,
                 },
             );
@@ -4231,6 +4510,11 @@ pub(super) fn apply_clause_continuation(
                     // applying them unconditionally.
                     *enters_modified_if = moved_filter;
                 }
+                Effect::Meld { entry, .. } => {
+                    *entry = crate::types::ability::PermanentEntryMode::TappedAndAttacking {
+                        destination: crate::types::ability::EntryAttackDestination::AnyDefender,
+                    };
+                }
                 _ => {}
             }
         }
@@ -4415,7 +4699,9 @@ pub(super) fn apply_clause_continuation(
         // binds to the dug card). Without this fusion the Dig short-circuited as
         // a keep_count:0 pure-peek and a sibling `ChangeZone { ParentTarget }`
         // exiled the trigger source itself (#1146).
-        ContinuationAst::ExileOneOfThemFaceDown => {
+        ContinuationAst::ExileOneOfThemFaceDown {
+            enter_with_counters,
+        } => {
             // Same `DigLook` antecedent as `ExileLookedAtCard` above — the two scans
             // this replaces had byte-identical predicates, so they name ONE role, not
             // two. LIVE, not cached: `append_conceal_sub_ability` nests a `sub_ability`
@@ -4449,6 +4735,12 @@ pub(super) fn apply_clause_continuation(
             // sub-ability's `ParentTarget`; `HideawayConceal` then flips it face
             // down (CR 406.3) and links it to the source (CR 607.2a / CR 702.75a).
             append_conceal_sub_ability(previous);
+            // CR 122.1: a "... face down with a <type> counter on it" rider (The
+            // Dragon-Kami Reborn) places the counters on the CHOSEN dug card.
+            // Append after the conceal so each `PutCounter { ParentTarget }`
+            // inherits the same bound target (the chosen exiled card) — without
+            // this the counters rode a discarded sibling `ChangeZone`.
+            append_counter_riders_sub_abilities(previous, enter_with_counters);
         }
         ContinuationAst::ChooseAndSacrificeRestFilter { sacrifice_filter } => {
             let Some(filter) = sacrifice_filter else {
@@ -4489,6 +4781,44 @@ fn append_conceal_sub_ability(dig: &mut AbilityDefinition) {
             .expect("sub_ability checked above");
     }
     cursor.sub_ability = Some(conceal);
+}
+
+/// CR 122.1 + CR 702.75a: Append the exile-rider's counters onto the fused
+/// Hideaway exile. Each `PutCounter { target: ParentTarget }` link inherits the
+/// continuation chain's bound target (the chosen dug card the `DigChoice` flow
+/// routed to exile), so the whole chain places counters on the ONE card the
+/// player selected — mirroring `lower_put_counter_list`'s `ParentTarget` chain.
+/// Appended at the deepest sub (after the conceal) so it runs once the chosen
+/// card is exiled face down. No-op for the bare Gonti form (empty `entries`).
+fn append_counter_riders_sub_abilities(
+    dig: &mut AbilityDefinition,
+    entries: Vec<(CounterType, QuantityExpr)>,
+) {
+    // Build the counter chain right-to-left so each link owns its successor.
+    let mut chain: Option<Box<AbilityDefinition>> = None;
+    for (counter_type, count) in entries.into_iter().rev() {
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::PutCounter {
+                counter_type,
+                count,
+                target: TargetFilter::ParentTarget,
+            },
+        );
+        def.sub_ability = chain;
+        chain = Some(Box::new(def));
+    }
+    let Some(chain) = chain else {
+        return;
+    };
+    let mut cursor = dig;
+    while cursor.sub_ability.is_some() {
+        cursor = cursor
+            .sub_ability
+            .as_mut()
+            .expect("sub_ability checked above");
+    }
+    cursor.sub_ability = Some(chain);
 }
 
 fn apply_search_destination_to_ability_chain(
@@ -4578,7 +4908,7 @@ pub(super) fn continuation_absorbs_current(
         ContinuationAst::CantRegenerate => true,
         // CR 120.4a: recognition was gated on a preceding DealDamage, so the
         // rider is always absorbed into that effect (never a standalone effect).
-        ContinuationAst::ExcessDamageToController => true,
+        ContinuationAst::ExcessDamageToController { .. } => true,
         ContinuationAst::PutRest { .. } => true,
         ContinuationAst::ChooseFromExile { .. } => true,
         ContinuationAst::SearchRevealResult => true,
@@ -4603,7 +4933,7 @@ pub(super) fn continuation_absorbs_current(
         // Recognition was already gated on a preceding `Dig`; the "exile one of
         // them face down" clause patches that Dig (keep_count:1 / Exile) and
         // pushes the conceal sub-ability — it emits no sibling def.
-        ContinuationAst::ExileOneOfThemFaceDown => true,
+        ContinuationAst::ExileOneOfThemFaceDown { .. } => true,
         ContinuationAst::ChooseAndSacrificeRestFilter { .. } => true,
     }
 }
@@ -4872,7 +5202,8 @@ pub(super) fn parse_dig_from_among(lower: &str, original: &str) -> Option<Contin
             let (parsed_filter, _) = parse_target(filter_text);
             parsed_filter
         };
-        let filter = apply_where_x_to_filter(filter, where_x_expression.as_deref());
+        // CR 107.3c: fail honestly instead of fabricating a raw-text placeholder.
+        let filter = apply_where_x_to_filter(filter, where_x_expression.as_deref())?;
 
         // CR 110.2a: "... under your control" routes the kept cards to the
         // ability controller. Scan the FULL clause — the controller phrase
@@ -4973,7 +5304,8 @@ pub(super) fn parse_dig_from_among(lower: &str, original: &str) -> Option<Contin
         };
         // CR 202.3 + CR 107.3i: Bind the literal `X` in the filter's `Cmc` bound
         // with the stripped "where X is <expression>" defining clause.
-        let filter = apply_where_x_to_filter(filter, where_x_expression.as_deref());
+        // CR 107.3c: fail honestly instead of fabricating a raw-text placeholder.
+        let filter = apply_where_x_to_filter(filter, where_x_expression.as_deref())?;
 
         // CR 110.2a + CR 708.2a/708.3: detect "under your control" / "face down" on
         // the full clause for the from-among put-step.
@@ -5595,7 +5927,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::CreateEmblem { .. }
         | Effect::CastFromZone { .. }
         | Effect::FreeCastFromZones { .. }
-        | Effect::ExileResolvingSpellInsteadOfGraveyard
+        | Effect::ExileResolvingSpellInsteadOfGraveyard { .. }
         | Effect::PreventDamage { .. }
         | Effect::CreateDamageReplacement { .. }
         | Effect::CreateDrawReplacement { .. }
@@ -5610,6 +5942,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::VentureIntoDungeon
         | Effect::VentureInto { .. }
         | Effect::TakeTheInitiative
+        | Effect::ArrangePlanarDeckTop { .. }
         | Effect::Planeswalk
         | Effect::ChaosEnsues
         | Effect::RedistributeLifeTotals
@@ -5851,6 +6184,34 @@ pub(crate) fn is_moved_object_put_onto_battlefield_counters_clause(sentence: &st
     nom_primitives::scan_contains(body, "counter")
 }
 
+/// CR 120.4a + CR 608.2c + CR 702: Parse an excess-damage redirect rider,
+/// with an optional source-keyword condition such as Ram Through's "If the
+/// creature you control has trample" prefix. The body remains the same
+/// CR 120.4a redirect; only the source-keyword gate is optional.
+fn parse_excess_damage_to_controller_rider(input: &str) -> OracleResult<'_, Option<KeywordKind>> {
+    /// CR 608.2c + CR 702: Parse the source-referential keyword gate.
+    fn parse_source_keyword_condition(input: &str) -> OracleResult<'_, KeywordKind> {
+        // This is not parse_inner_condition: Ram Through's definite phrase
+        // refers to the damage source target selected by the preceding sentence,
+        // not to any matching creature on the battlefield.
+        let (input, _) = tag("if ").parse(input)?;
+        let (input, _) = tag("the creature you control has ").parse(input)?;
+        let (input, keyword_name) = parse_keyword_name(input)?;
+        let keyword: Keyword = keyword_name
+            .parse()
+            .map_err(|_| nom::Err::Error(OracleError::new(input, nom::error::ErrorKind::Fail)))?;
+        let (input, _) = tag(", ").parse(input)?;
+        Ok((input, keyword.kind()))
+    }
+
+    let (input, source_keyword_condition) = opt(parse_source_keyword_condition).parse(input)?;
+    let (input, _) =
+        tag("excess damage is dealt to that creature's controller instead").parse(input)?;
+    let (input, _) = opt(tag(".")).parse(input)?;
+    let (input, _) = eof(input)?;
+    Ok((input, source_keyword_condition))
+}
+
 pub(super) fn parse_followup_continuation_ast(
     text: &str,
     previous_effect: &Effect,
@@ -5902,6 +6263,10 @@ pub(super) fn parse_followup_continuation_ast(
             let choice_optional = alt((
                 tag::<_, _, OracleError<'_>>("you may choose "),
                 tag("may choose "),
+                tag("you may exile "),
+                tag("may exile "),
+                tag("you may discard "),
+                tag("may discard "),
             ))
             .parse(lower.as_str())
             .is_ok();
@@ -5996,6 +6361,13 @@ pub(super) fn parse_followup_continuation_ast(
         // CopySpell — directly, or wrapped in a CreateDelayedTrigger ("When you
         // next cast ..., copy that spell"). The guard re-confirms the wrapper
         // actually contains a CopySpell.
+        //
+        // NOT the mana-spend-trigger shape (Pyromancer's Goggles, Primal Wellspring):
+        // there the `CopySpell` is created by a POST-pass fold
+        // (`oracle::extract_mana_spend_trigger_from_chain`), so it does not exist yet
+        // when this recognizer runs and no arm here could bind it. That sentence is
+        // reclaimed from its honest `orphaned_copy_retarget` residual by the fold
+        // itself, via `absorb_orphaned_copy_retarget`.
         Effect::CopySpell { .. } | Effect::CreateDelayedTrigger { .. }
             if effect_wraps_copy_spell(previous_effect)
                 && recognize_copy_retarget_clause(&lower) =>
@@ -6013,8 +6385,16 @@ pub(super) fn parse_followup_continuation_ast(
         // face down and linked to the source — NOT a sibling
         // `ChangeZone { ParentTarget }`, which exiled the trigger source itself.
         // `reveal: false` scopes this to the private look form.
-        Effect::Dig { reveal: false, .. } if parse_exile_one_of_them_face_down(&lower) => {
-            Some(ContinuationAst::ExileOneOfThemFaceDown)
+        Effect::Dig { reveal: false, .. }
+            if parse_exile_one_of_them_face_down(&lower).is_some() =>
+        {
+            // CR 122.1: carry any "... face down with a <type> counter on it"
+            // rider so the fusion places the counters on the CHOSEN dug card.
+            let enter_with_counters =
+                parse_exile_one_of_them_face_down(&lower).unwrap_or_default();
+            Some(ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters,
+            })
         }
         // CR 201.2 + CR 608.2c: "[You may] put one of those cards onto the
         // battlefield if it has the same name as a permanent" after Dig —
@@ -6096,12 +6476,12 @@ pub(super) fn parse_followup_continuation_ast(
                 reorder_all: false,
             })
         }
-        // CR 406.3 + CR 701.16a: "[then] exile it/them [face down]" after a
+        // CR 406.3 + CR 701.20e: "[then] exile it/them [face down]" after a
         // private `Dig` (the "look at the top N cards of <player>'s library"
         // look step). This is the Gonti, Canny Acquisitor impulse idiom —
         // "look at the top card of that player's library, then exile it face
         // down. You may play that card ...". Plain `Dig` only inspects the top
-        // cards (CR 701.16a); without a destination they stay in the library,
+        // cards (CR 701.20e); without a destination they stay in the library,
         // so the exile clause must rewrite the `Dig` into an `Effect::ExileTop`
         // (the face-down impulse-exile primitive shared with Cunning Rhetoric /
         // Bomat Courier) for the looked-at card to actually leave the library.
@@ -6342,28 +6722,30 @@ pub(super) fn parse_followup_continuation_ast(
             Some(ContinuationAst::SuspectLastCreated)
         }
         // CR 701.19c + CR 608.2c: "It can't be regenerated" prevents regeneration shields;
-        // later text modifies the preceding Destroy instruction per CR 608.2c.
-        Effect::Destroy { .. } | Effect::DestroyAll { .. }
-            if nom_primitives::scan_contains(&lower, "can't be regenerated")
-                || nom_primitives::scan_contains(&lower, "cannot be regenerated") =>
+        // later text modifies the preceding Destroy instruction per CR 608.2c. The
+        // antecedent may be nested inside a CreateDelayedTrigger wrapper (Merieke Ri
+        // Berit's "When ~ leaves the battlefield or becomes untapped, destroy that
+        // creature. It can't be regenerated.") — mirrors the CopySpell arm above.
+        // Ordered after the CopySpell arm (whose guard fails for a destroy-wrapping
+        // trigger), so a CreateDelayedTrigger that wraps a Destroy falls through to
+        // here rather than being intercepted.
+        Effect::Destroy { .. } | Effect::DestroyAll { .. } | Effect::CreateDelayedTrigger { .. }
+            if effect_wraps_destroy_like(previous_effect)
+                && (nom_primitives::scan_contains(&lower, "can't be regenerated")
+                    || nom_primitives::scan_contains(&lower, "cannot be regenerated")) =>
         {
             Some(ContinuationAst::CantRegenerate)
         }
-        // CR 120.4a: "Excess damage is dealt to that creature's controller
-        // instead." — trailing rider on a `DealDamage` (Flame Spill, Gandalf's
-        // Sanction, Ravenous Tyrannosaurus). The two negative guards defer the
-        // conditional / trample-gated form (Ram Through: "If the creature you
-        // control has trample, excess ...") to `Effect::Unimplemented` — that
-        // form requires a controlled-source trample check we do not model here.
-        Effect::DealDamage { .. }
-            if nom_primitives::scan_contains(&lower, "excess damage")
-                && nom_primitives::scan_contains(&lower, "that creature's controller")
-                && nom_primitives::scan_contains(&lower, "instead")
-                && !nom_primitives::scan_contains(&lower, "has trample")
-                && !nom_primitives::scan_contains(&lower, "if ") =>
-        {
-            Some(ContinuationAst::ExcessDamageToController)
-        }
+        // CR 120.4a + CR 608.2c + CR 702: excess-damage redirect rider on a
+        // `DealDamage` (Flame Spill, Gandalf's Sanction, Ravenous Tyrannosaurus),
+        // optionally source-keyword-gated (Ram Through's "If the creature you
+        // control has trample" prefix). The combinator owns the full rider shape
+        // so unrelated "if" clauses or partial excess-damage fragments fail closed.
+        Effect::DealDamage { .. } => parse_excess_damage_to_controller_rider(&lower)
+            .ok()
+            .map(|(_, source_keyword_condition)| ContinuationAst::ExcessDamageToController {
+                source_keyword_condition,
+            }),
         Effect::ChooseFromZone { .. } if parse_put_rest_on_bottom_line(&lower).is_ok() => {
             Some(ContinuationAst::PutChoiceRemainderOnBottom)
         }
@@ -6442,8 +6824,10 @@ pub(super) fn parse_followup_continuation_ast(
         // (e.g., Assassin's Trophy / Ranging Raptors / Harrow compound), the
         // explicit "put it onto the battlefield" chunk in the same sentence is
         // a paraphrase and must be absorbed to avoid a duplicate ChangeZone.
+        // Third-person search text uses "puts it" (Field of Ruin) and has the
+        // same meaning as the imperative "put it" form.
         //
-        // CR 701.23i + CR 609.3: Iterated-search variants (Winds of Abandon class)
+        // CR 701.23i + CR 608.2c: Iterated-search variants (Winds of Abandon class)
         // surface a plural subject ("those players put those cards onto the
         // battlefield tapped") because the search step has `repeat_for:
         // TrackedSetSize`. The compound has already been folded by the
@@ -6461,10 +6845,14 @@ pub(super) fn parse_followup_continuation_ast(
                 bare,
                 "put that card onto the battlefield"
                     | "put it onto the battlefield"
+                    | "puts that card onto the battlefield"
+                    | "puts it onto the battlefield"
                     | "put them onto the battlefield"
                     | "put those cards onto the battlefield"
                     | "put that card onto the battlefield tapped"
                     | "put it onto the battlefield tapped"
+                    | "puts that card onto the battlefield tapped"
+                    | "puts it onto the battlefield tapped"
                     | "put them onto the battlefield tapped"
                     | "put those cards onto the battlefield tapped"
             )
@@ -6574,9 +6962,12 @@ pub(super) fn parse_followup_continuation_ast(
         }
         // CR 508.4 / CR 614.1: "It/The token enters tapped and attacking" (singular)
         // or "They/Those tokens enter tapped and attacking" (plural)
-        // after CopyTokenOf or Token. Tokens/copies always enter
+        // after CopyTokenOf, Token, or Meld. Tokens/copies always enter
         // unconditionally — no moved-object type gate applies.
-        Effect::CopyTokenOf { .. } | Effect::Token { .. }
+        // CR 701.42c: a successfully melded permanent is the single object
+        // entering in the follow-up sentence, so the same entry modifier is
+        // applied to the preceding Meld effect.
+        Effect::CopyTokenOf { .. } | Effect::Token { .. } | Effect::Meld { .. }
             if nom_primitives::scan_contains(&lower, "enters tapped and attacking")
                 || nom_primitives::scan_contains(&lower, "enter tapped and attacking") =>
         {
@@ -7550,6 +7941,83 @@ mod tests {
         assert_eq!(chunks.len(), 1, "unexpected split: {chunks:?}");
     }
 
+    #[test]
+    fn quoted_grant_splits_before_imperative_sibling_sentence() {
+        // CR 111.3 + CR 608.2c (issue #5844): Alien Invasion — the token's quoted
+        // ability ends the sentence (`able."`); the following IMPERATIVE sentence
+        // ("Put a +1/+1 counter on it …") is a sibling effect and must split off.
+        // Without the split the token-creation clause swallows it, mis-reading
+        // "for each invasion counter" as the token COUNT and dropping the pump.
+        let chunks = clause_texts(
+            "create a 1/1 red Alien creature token with haste and \"This token attacks each combat if able.\" Put a +1/+1 counter on it for each invasion counter on this enchantment, then put an invasion counter on this enchantment.",
+        );
+        assert_eq!(
+            chunks[0],
+            "create a 1/1 red Alien creature token with haste and \"This token attacks each combat if able.\"",
+            "the token + quoted ability must be its own chunk: {chunks:?}"
+        );
+        // allow-noncombinator: structural test assertion over the pre-tokenized chunk vector, not parser dispatch
+        let counter_clause_split_off = chunks.len() >= 2
+            && chunks[1].starts_with("Put a +1/+1 counter on it for each invasion counter"); // allow-noncombinator: same, on the `.starts_with` line
+        assert!(
+            counter_clause_split_off,
+            "the imperative counter sentence must split into its own chunk: {chunks:?}"
+        );
+    }
+
+    /// CR 608.2c (#5844 review): an INDEPENDENT subject-led continuation after a
+    /// granted-ability quote — "You gain …", "Each opponent …", "All creatures …" —
+    /// is a fresh sibling instruction, NOT an anaphor to the created token, so it
+    /// must split off. `starts_clause_text_lower` already recognizes `you `,
+    /// `each `/`each opponent `, and `all ` as clause starters; the anaphor guard
+    /// must not reject them before that authority is consulted, or they stay glued
+    /// to the token clause and are swallowed — the very bug class this PR fixes.
+    #[test]
+    fn quoted_grant_splits_before_independent_subject_continuation() {
+        for (text, expected_head) in [
+            (
+                "create a 1/1 white Soldier creature token with \"This creature can't block.\" You gain 3 life.",
+                "You gain 3 life",
+            ),
+            (
+                "create a 1/1 white Soldier creature token with \"This creature can't block.\" Each opponent loses 2 life.",
+                "Each opponent loses 2 life",
+            ),
+            (
+                "create a 1/1 white Soldier creature token with \"This creature can't block.\" All creatures you control get +1/+1 until end of turn.",
+                "All creatures you control get +1/+1 until end of turn",
+            ),
+        ] {
+            let chunks = clause_texts(text);
+            assert_eq!(
+                chunks[0],
+                "create a 1/1 white Soldier creature token with \"This creature can't block.\"",
+                "the token + quoted ability must stay its own chunk: {chunks:?}"
+            );
+            assert_eq!(
+                chunks.get(1).map(String::as_str),
+                Some(expected_head),
+                "an independent subject-led continuation must split into its own chunk: {chunks:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_grant_keeps_anaphoric_subject_continuation() {
+        // The exclusion side of #5844: an anaphoric-SUBJECT continuation after a
+        // token quote ("It gains …", "That creature gets …") refers back to the
+        // CREATED object, not a fresh instruction, so it must stay attached — the
+        // token-creation path resolves the anaphor inline.
+        let chunks = clause_texts(
+            "create a 1/1 white Soldier creature token with \"This creature can't block.\" It gains haste until end of turn.",
+        );
+        assert_eq!(
+            chunks.len(),
+            1,
+            "anaphoric 'It gains …' must not split: {chunks:?}"
+        );
+    }
+
     // --- Bare " and " splitting: positive cases (should split) ---
 
     #[test]
@@ -8230,6 +8698,7 @@ mod tests {
             choose_filter: TargetFilter::Typed(TypedFilter::permanent()),
             sacrifice_filter: TargetFilter::Typed(TypedFilter::permanent()),
             total_power_cap: None,
+            keeper_constraint: None,
         };
         assert_eq!(
             parse_followup_continuation_ast(
@@ -8490,6 +8959,34 @@ mod tests {
         assert!(!recognize_copy_retarget_clause("copy that spell"));
         assert!(!recognize_copy_retarget_clause(
             "may choose a new target for the creature"
+        ));
+
+        // CR 707.10c + CR 603.12: the grant printed as the CONSEQUENT of an
+        // AFFIRMATIVE reflexive gate rather than as its own sentence (Spider-Verse's
+        // "you may copy it. If you do, you may choose new targets for the copy.").
+        // The gate is redundant on an already-optional copy — no copy, nothing to
+        // retarget — so it folds into the same continuation.
+        assert!(recognize_copy_retarget_clause(
+            "if you do, you may choose new targets for the copy."
+        ));
+        assert!(recognize_copy_retarget_clause(
+            "when you do, you may choose new targets for the copies"
+        ));
+        assert_eq!(
+            copy_retarget_clause_all_copies("if you do, you may choose new targets for the copies"),
+            Some(true),
+            "the gate must not disturb the plurality axis"
+        );
+
+        // A NEGATED reflexive gate must NOT be folded away. "if you don't" gates a
+        // branch that runs precisely when the antecedent did NOT happen, so swallowing
+        // it into an unconditional retarget permission would invert the clause. Only
+        // the affirmative half of the connector set is accepted.
+        assert!(!recognize_copy_retarget_clause(
+            "if you don't, you may choose new targets for the copy"
+        ));
+        assert!(!recognize_copy_retarget_clause(
+            "if they don't, you may choose new targets for the copy"
         ));
     }
 
@@ -9208,7 +9705,9 @@ mod tests {
         let env = env_for(&defs);
         apply_clause_continuation(
             &mut defs,
-            ContinuationAst::ExcessDamageToController,
+            ContinuationAst::ExcessDamageToController {
+                source_keyword_condition: None,
+            },
             AbilityKind::Spell,
             &env,
         );
@@ -9218,7 +9717,9 @@ mod tests {
         };
         assert_eq!(
             *excess,
-            Some(ExcessRecipient::TargetController),
+            Some(ExcessRecipient::TargetController {
+                source_keyword: None
+            }),
             "the rider must walk back to the DealDamage at index 0 — `LastEmitted` \
              would have bound the intervening def at index 1"
         );
@@ -9240,7 +9741,9 @@ mod tests {
         let env = env_for(&defs);
         apply_clause_continuation(
             &mut defs,
-            ContinuationAst::ExileOneOfThemFaceDown,
+            ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters: Vec::new(),
+            },
             AbilityKind::Spell,
             &env,
         );
@@ -9271,6 +9774,72 @@ mod tests {
             "the intervening def must be left untouched, got {:?}",
             defs[1].effect
         );
+    }
+
+    /// #5631 (The Dragon-Kami Reborn): the "... face down with a hatching
+    /// counter on it" rider threads its counters into the fused exile as a
+    /// `PutCounter { ParentTarget }` chained AFTER the conceal, so the CHOSEN
+    /// dug card (not the trigger source) receives the counter.
+    #[test]
+    fn exile_one_of_them_face_down_counter_rider_appends_put_counter_after_conceal() {
+        let mut defs = vec![AbilityDefinition::new(
+            AbilityKind::Spell,
+            make_dig_effect(),
+        )];
+        let env = env_for(&defs);
+        let hatching = crate::types::counter::parse_counter_type("hatching");
+        apply_clause_continuation(
+            &mut defs,
+            ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters: vec![(hatching.clone(), QuantityExpr::Fixed { value: 1 })],
+            },
+            AbilityKind::Spell,
+            &env,
+        );
+
+        // The Dig is patched into the choose-one exile shape.
+        let Effect::Dig {
+            keep_count,
+            destination,
+            ..
+        } = &*defs[0].effect
+        else {
+            panic!("expected patched Dig, got {:?}", defs[0].effect);
+        };
+        assert_eq!(*keep_count, Some(1));
+        assert_eq!(*destination, Some(Zone::Exile));
+
+        // Chain shape: Dig -> HideawayConceal(ParentTarget) -> PutCounter(ParentTarget).
+        let conceal = defs[0]
+            .sub_ability
+            .as_ref()
+            .expect("conceal sub-ability must be chained onto the Dig");
+        assert!(
+            matches!(&*conceal.effect, Effect::HideawayConceal { .. }),
+            "first sub must be the conceal, got {:?}",
+            conceal.effect
+        );
+        let put_counter = conceal
+            .sub_ability
+            .as_ref()
+            .expect("the counter rider must append a PutCounter after the conceal");
+        match &*put_counter.effect {
+            Effect::PutCounter {
+                counter_type,
+                count,
+                target,
+            } => {
+                assert_eq!(*counter_type, hatching);
+                assert_eq!(*count, QuantityExpr::Fixed { value: 1 });
+                assert_eq!(
+                    *target,
+                    TargetFilter::ParentTarget,
+                    "the counter must land on the chosen dug card (ParentTarget), \
+                     inherited through the continuation chain"
+                );
+            }
+            other => panic!("expected PutCounter after conceal, got {other:?}"),
+        }
     }
 
     /// CR 406.3 + CR 701.20e: the Gonti impulse rewrite binds the same `Dig`.
@@ -11680,7 +12249,9 @@ mod tests {
         );
         assert_eq!(
             result,
-            Some(ContinuationAst::ExileOneOfThemFaceDown),
+            Some(ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters: Vec::new(),
+            }),
             "the Gonti-class exile-the-dug-card clause must be recognized"
         );
     }
@@ -11695,7 +12266,44 @@ mod tests {
             &dig,
             &mut ParseContext::default(),
         );
-        assert_eq!(result, Some(ContinuationAst::ExileOneOfThemFaceDown));
+        assert_eq!(
+            result,
+            Some(ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters: Vec::new(),
+            })
+        );
+    }
+
+    /// #5631 (The Dragon-Kami Reborn): a CR 122.1 counter rider between "face
+    /// down" and the clause end is accepted, and its counter is captured so the
+    /// fusion can place it on the CHOSEN dug card. Before this, the counter
+    /// rider made the recognizer decline and the clause silently exiled the
+    /// trigger source itself (the #1146 shape).
+    #[test]
+    fn exile_one_of_them_face_down_with_counter_rider_captures_counters() {
+        let entries = parse_exile_one_of_them_face_down(
+            "exile one of them face down with a hatching counter on it",
+        )
+        .expect("the counter-rider form must still be recognized");
+        assert_eq!(
+            entries,
+            vec![(
+                crate::types::counter::parse_counter_type("hatching"),
+                QuantityExpr::Fixed { value: 1 }
+            )],
+            "the hatching-counter rider must be captured for the fusion to thread"
+        );
+    }
+
+    /// The bare Gonti form recognizes with NO counters — a match with an empty
+    /// rider list, distinct from a decline.
+    #[test]
+    fn exile_one_of_them_face_down_bare_form_has_no_counters() {
+        assert_eq!(
+            parse_exile_one_of_them_face_down("exile one of them face down"),
+            Some(Vec::new()),
+            "the bare form is a match with no counter rider"
+        );
     }
 
     /// #1146 scope guard: the recognizer requires the "face down" CR 406.3
@@ -11704,7 +12312,7 @@ mod tests {
     #[test]
     fn exile_one_of_them_without_face_down_is_not_gonti_continuation() {
         assert!(
-            !parse_exile_one_of_them_face_down("exile one of them"),
+            parse_exile_one_of_them_face_down("exile one of them").is_none(),
             "without the 'face down' marker this is not the Gonti look-and-exile class"
         );
     }
@@ -11721,9 +12329,8 @@ mod tests {
             &dig,
             &mut ParseContext::default(),
         );
-        assert_ne!(
-            result,
-            Some(ContinuationAst::ExileOneOfThemFaceDown),
+        assert!(
+            !matches!(result, Some(ContinuationAst::ExileOneOfThemFaceDown { .. })),
             "a pure-peek 'you may reveal it' must not be fused into the Gonti exile continuation"
         );
     }

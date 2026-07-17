@@ -3,6 +3,7 @@ use std::sync::Arc;
 use super::*;
 use crate::game::combat::AttackTarget;
 use crate::game::game_object::{BackFaceData, RoomDoor};
+use crate::game::scenario::{GameScenario, P0};
 use crate::game::zones::create_object;
 use crate::parser::oracle::parse_oracle_text;
 use crate::types::ability::{
@@ -11,10 +12,10 @@ use crate::types::ability::{
     StaticDefinition, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CardType;
-use crate::types::card_type::CoreType;
+use crate::types::card_type::{CoreType, Supertype};
 use crate::types::counter::CounterType;
 use crate::types::format::FormatConfig;
-use crate::types::game_state::CastingVariant;
+use crate::types::game_state::{CastPaymentMode, CastingVariant};
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use crate::types::statics::{CastFrequency, StaticMode};
@@ -401,6 +402,71 @@ fn setup_game_at_main_phase() -> GameState {
         player: PlayerId(0),
     };
     state
+}
+
+#[test]
+fn shigeki_channel_x_zero_resolves_from_stack_without_zone_choice() {
+    let mut state = setup_game_at_main_phase();
+    let shigeki = create_object(
+        &mut state,
+        CardId(9200),
+        PlayerId(0),
+        "Shigeki, Jukai Visionary".to_string(),
+        Zone::Hand,
+    );
+    {
+        let obj = state.objects.get_mut(&shigeki).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.card_types.supertypes.push(Supertype::Legendary);
+    }
+    apply_oracle_to_object(
+        &mut state,
+        shigeki,
+        "Shigeki, Jukai Visionary",
+        "{1}{G}, {T}, Return Shigeki to its owner's hand: Reveal the top four cards of your library. You may put a land card from among them onto the battlefield tapped. Put the rest into your graveyard.\nChannel — {X}{X}{G}{G}, Discard this card: Return X target nonlegendary cards from your graveyard to your hand.",
+    );
+    let rage = create_object(
+        &mut state,
+        CardId(9201),
+        PlayerId(0),
+        "Worldsoul's Rage".to_string(),
+        Zone::Graveyard,
+    );
+    let overlook = create_object(
+        &mut state,
+        CardId(9202),
+        PlayerId(0),
+        "Riveteers Overlook".to_string(),
+        Zone::Graveyard,
+    );
+    state.players[0]
+        .mana_pool
+        .add(ManaUnit::new(ManaType::Green, shigeki, false, vec![]));
+    state.players[0]
+        .mana_pool
+        .add(ManaUnit::new(ManaType::Green, shigeki, false, vec![]));
+
+    apply_as_current(
+        &mut state,
+        GameAction::ActivateAbility {
+            source_id: shigeki,
+            ability_index: 1,
+        },
+    )
+    .unwrap();
+    assert!(matches!(state.waiting_for, WaitingFor::ChooseXValue { .. }));
+    apply_as_current(&mut state, GameAction::ChooseX { value: 0 }).unwrap();
+    assert!(state.stack.iter().any(|entry| entry.source_id == shigeki));
+
+    apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+    apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+
+    assert!(state.stack.is_empty());
+    assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
+    assert!(state.players[0].graveyard.contains(&rage));
+    assert!(state.players[0].graveyard.contains(&overlook));
+    assert!(state.players[0].graveyard.contains(&shigeki));
+    assert!(state.players[0].hand.is_empty());
 }
 
 /// Perf guard for go-wide mana-board slowness (turn-40 Cryptolith-Rite
@@ -1699,8 +1765,14 @@ fn turn_face_up_restricted_mana_funds_special_action() {
         ManaRestriction::OnlyForSpecialAction(SpecialAction::TurnFaceUp),
     );
 
-    let result = apply_as_current(&mut state, GameAction::TurnFaceUp { object_id: morph })
-        .expect("turn-face-up-restricted mana must fund the morph turn-up special action");
+    let result = apply_as_current(
+        &mut state,
+        GameAction::TurnFaceUp {
+            object_id: morph,
+            x: 0,
+        },
+    )
+    .expect("turn-face-up-restricted mana must fund the morph turn-up special action");
 
     assert!(
         !state.objects[&morph].face_down,
@@ -1739,7 +1811,13 @@ fn turn_face_up_empty_pool_cannot_pay_and_stays_face_down() {
     let mut state = setup_game_at_main_phase();
     let morph = setup_face_down_morph(&mut state, PlayerId(0));
 
-    let result = apply_as_current(&mut state, GameAction::TurnFaceUp { object_id: morph });
+    let result = apply_as_current(
+        &mut state,
+        GameAction::TurnFaceUp {
+            object_id: morph,
+            x: 0,
+        },
+    );
     assert!(
         result.is_err(),
         "with no mana the {{3}} morph turn-up cost must be unpayable: {result:?}"
@@ -1772,7 +1850,13 @@ fn turn_face_up_rejects_unlock_door_restricted_mana() {
         ManaRestriction::OnlyForSpecialAction(SpecialAction::UnlockDoor),
     );
 
-    let result = apply_as_current(&mut state, GameAction::TurnFaceUp { object_id: morph });
+    let result = apply_as_current(
+        &mut state,
+        GameAction::TurnFaceUp {
+            object_id: morph,
+            x: 0,
+        },
+    );
     assert!(
         result.is_err(),
         "door-unlock-restricted mana must not pay a turn-face-up: {result:?}"
@@ -2373,6 +2457,67 @@ fn set_may_trigger_auto_choice_remove_cannot_target_another_player() {
         state.may_trigger_auto_choice(&p0_key),
         Some(AutoMayChoice::Accept),
         "P0's stored auto-choice survives P1's attempt to remove it"
+    );
+}
+
+// --- GameAction::SetTriggerOrderTemplate (CR 603.3b) ---
+
+/// Build a persistent (`AllCopies`-keyed) ordering template for `owner` naming one card.
+fn persistent_order_template(
+    owner: PlayerId,
+    card_id: u64,
+) -> crate::analysis::decision_template::DecisionTemplate {
+    use crate::analysis::decision_template::{
+        DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+    };
+    use crate::types::game_state::YieldTarget;
+    let src = YieldTarget::AllCopies {
+        card_id: crate::types::identifiers::CardId(card_id),
+        trigger_description: None,
+    };
+    DecisionTemplate {
+        owner,
+        decisions: vec![PinnedDecision::Order {
+            source: src.clone(),
+            pos: 0,
+        }],
+        replay: ReplayMode::Static,
+        key: DecisionGroupKey::from_sources(&[src], DecisionKind::TriggerOrdering),
+    }
+}
+
+/// T5 (CR 603.3b): `SetTriggerOrderTemplate { ClearAll }` is actor-scoped — a player
+/// clears only THEIR OWN saved ordering templates, never another player's. Drives the
+/// real `apply()` pipeline; reverting the actor scoping (clearing by a client-supplied
+/// player) would drop P1's template and fail the surviving-template assertion.
+#[test]
+fn set_trigger_order_template_clear_all_is_actor_scoped() {
+    use crate::types::actions::TriggerOrderTemplateOp;
+
+    let mut state = setup_game_at_main_phase();
+    state.set_trigger_order_template(persistent_order_template(PlayerId(0), 100));
+    state.set_trigger_order_template(persistent_order_template(PlayerId(0), 101));
+    state.set_trigger_order_template(persistent_order_template(PlayerId(1), 200));
+    assert_eq!(state.decision_templates.len(), 3);
+
+    apply(
+        &mut state,
+        PlayerId(0),
+        GameAction::SetTriggerOrderTemplate {
+            op: TriggerOrderTemplateOp::ClearAll,
+        },
+    )
+    .expect("SetTriggerOrderTemplate is legal in any state");
+
+    assert_eq!(
+        state.decision_templates.len(),
+        1,
+        "ClearAll drops only the acting player's (P0's two) persistent templates — P1's op took effect on nobody else"
+    );
+    assert_eq!(
+        state.decision_templates[0].owner,
+        PlayerId(1),
+        "another player's saved template survives an actor's ClearAll"
     );
 }
 
@@ -3246,6 +3391,178 @@ fn apply_play_land_rejects_under_cant_play_land_transient_effect() {
     assert!(
         result.is_err(),
         "PlayLand must be rejected under transient CantPlayLand effect (Pardic Miner class)"
+    );
+}
+
+#[test]
+fn apply_play_land_rejects_under_cant_play_lands_chosen_name_filter() {
+    // CR 305.1 + CR 116.2a + CR 201.2: Conjurer's Ban's land-play half —
+    // "lands with the chosen name can't be played". Filter-scoped sibling of
+    // `apply_play_land_rejects_under_cant_play_land` (the blanket static
+    // form): the restriction denies only the SPECIFICALLY NAMED land, not
+    // every land. The prohibiting object sits in the graveyard (as Conjurer's
+    // Ban, a sorcery, would after resolving) to prove the chosen-name
+    // `chosen_attributes` binding survives its own source's zone change —
+    // `HasChosenName` is a LIVE lookup against `source_id` at each
+    // evaluation, not a value snapshotted into the restriction.
+    use crate::types::ability::{
+        ChosenAttribute, GameRestriction, ProhibitedActivity, RestrictionExpiry,
+        RestrictionPlayerScope,
+    };
+
+    let mut state = setup_game_at_main_phase();
+
+    let forest_id = create_object(
+        &mut state,
+        CardId(1),
+        PlayerId(0),
+        "Forest".to_string(),
+        Zone::Hand,
+    );
+    let island_id = create_object(
+        &mut state,
+        CardId(2),
+        PlayerId(0),
+        "Island".to_string(),
+        Zone::Hand,
+    );
+
+    // The (already-resolved) Conjurer's Ban, sitting in the graveyard with its
+    // chosen name still attached.
+    let source_id = create_object(
+        &mut state,
+        CardId(3),
+        PlayerId(0),
+        "Conjurer's Ban".to_string(),
+        Zone::Graveyard,
+    );
+    state
+        .objects
+        .get_mut(&source_id)
+        .unwrap()
+        .chosen_attributes
+        .push(ChosenAttribute::CardName("Forest".to_string()));
+
+    state.restrictions.push(GameRestriction::ProhibitActivity {
+        source: source_id,
+        affected_players: RestrictionPlayerScope::AllPlayers,
+        expiry: RestrictionExpiry::EndOfTurn,
+        activity: ProhibitedActivity::PlayLands {
+            land_filter: Some(TargetFilter::HasChosenName),
+        },
+    });
+
+    let forest_result = apply_as_current(
+        &mut state,
+        GameAction::PlayLand {
+            object_id: forest_id,
+            card_id: CardId(1),
+        },
+    );
+    assert!(
+        forest_result.is_err(),
+        "the specifically-named land (Forest) must be rejected"
+    );
+
+    let island_result = apply_as_current(
+        &mut state,
+        GameAction::PlayLand {
+            object_id: island_id,
+            card_id: CardId(2),
+        },
+    );
+    assert!(
+        island_result.is_ok(),
+        "a differently-named land (Island) must NOT be blocked by a filter-scoped \
+         restriction — got {island_result:?}"
+    );
+}
+
+/// CR 305.1 + CR 116.2a + CR 601.2a + CR 201.2: Conjurer's Ban, driven through
+/// the REAL cast → resolve pipeline (`GameScenario`/`GameRunner`), not direct
+/// `GameState`/`GameRestriction` construction like the sibling test above.
+/// Proves `Effect::Choose` actually binds the chosen name onto the resolving
+/// sorcery's own source object, that `Effect::AddRestriction`'s sub_ability
+/// chain (`CastSpells` → `PlayLands`) is actually installed by real
+/// resolution (not hand-assembled), and that `handle_play_land`'s new gate —
+/// and the pre-existing `CastSpells` cast-prohibition gate, for the same
+/// resolved restriction — both see it, all after the sorcery has resolved
+/// into the graveyard. This test fails if either the `PlayLands` sub-ability
+/// or its production gate is reverted.
+#[test]
+fn conjurers_ban_full_cast_resolve_blocks_named_land_and_spell() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    // Verbatim Oracle text (Scryfall).
+    let oracle = "Choose a card name. Until your next turn, spells with the chosen \
+                  name can't be cast and lands with the chosen name can't be played.\n\
+                  Draw a card.";
+    let ban = scenario
+        .add_spell_to_hand_from_oracle(P0, "Conjurer's Ban", false, oracle)
+        .id();
+
+    let forest_land = scenario.add_land_to_hand(P0, "Forest").id();
+    let island_land = scenario.add_land_to_hand(P0, "Island").id();
+    // A second card sharing the chosen name, but a SPELL this time — exercises
+    // the cast-prohibition half (the already-proven `CastSpells` machinery)
+    // against the exact same resolved restriction, not just the new land half.
+    let forest_spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Forest", true, "You gain 1 life.")
+        .id();
+    scenario.with_library_top(P0, &["Library Filler"]);
+
+    let mut runner = scenario.build();
+    runner.state_mut().all_card_names = vec![
+        "Conjurer's Ban".to_string(),
+        "Forest".to_string(),
+        "Island".to_string(),
+    ]
+    .into();
+
+    let forest_land_card_id = runner.state().objects[&forest_land].card_id;
+    let island_card_id = runner.state().objects[&island_land].card_id;
+    let forest_spell_card_id = runner.state().objects[&forest_spell].card_id;
+
+    let outcome = runner.cast(ban).choose_option("Forest").resolve();
+    outcome.assert_hand_drawn(P0, 1);
+    outcome.assert_zone(&[ban], Zone::Graveyard);
+
+    // Land half: the specifically-named land is rejected...
+    let forest_land_result = runner.act(GameAction::PlayLand {
+        object_id: forest_land,
+        card_id: forest_land_card_id,
+    });
+    assert!(
+        forest_land_result.is_err(),
+        "Forest must be rejected while the chosen-name land-play ban is active, \
+         got {forest_land_result:?}"
+    );
+    // ...while a differently-named land remains legal (proves the ban is
+    // filter-scoped, not the blanket `CantPlayLand` static).
+    let island_result = runner.act(GameAction::PlayLand {
+        object_id: island_land,
+        card_id: island_card_id,
+    });
+    assert!(
+        island_result.is_ok(),
+        "Island must remain playable — got {island_result:?}"
+    );
+
+    // Spell half: a spell sharing the chosen name is rejected by the same
+    // resolved restriction (`ProhibitedActivity::CastSpells { HasChosenName }`,
+    // installed by the SAME `Effect::Choose` → `Effect::AddRestriction` chain
+    // as the land half above).
+    let forest_spell_result = runner.act(GameAction::CastSpell {
+        object_id: forest_spell,
+        card_id: forest_spell_card_id,
+        targets: vec![],
+        payment_mode: CastPaymentMode::default(),
+    });
+    assert!(
+        forest_spell_result.is_err(),
+        "a spell named Forest must be rejected while the chosen-name cast ban \
+         is active, got {forest_spell_result:?}"
     );
 }
 
@@ -6682,8 +6999,10 @@ fn test_mana_ability_during_mana_payment_stays_in_mana_payment() {
         declared_mana_additions: Vec::new(),
         activation_cost: None,
         activation_ability_index: None,
+        pending_loyalty_activation_player: None,
         target_constraints: vec![],
         casting_variant: crate::types::game_state::CastingVariant::Normal,
+        casting_permission_index: None,
         cast_timing_permission: None,
         distribute: None,
         origin_zone: crate::types::zones::Zone::Hand,
@@ -6705,6 +7024,8 @@ fn test_mana_ability_during_mana_payment_stays_in_mana_payment() {
         payment_mode: crate::types::game_state::CastPaymentMode::Auto,
         assist_state: AssistState::NotOffered,
         activation_residual: crate::types::game_state::ActivationResidual::None,
+        activation_target_selection: crate::types::game_state::ActivationTargetSelection::Pending,
+        alt_cost_grant_source: None,
     }));
     state.waiting_for = WaitingFor::ManaPayment {
         player: PlayerId(0),
@@ -7072,8 +7393,10 @@ fn taps_for_mana_multiplier_fires_once_on_color_choice_mana_payment_resume() {
         declared_mana_additions: Vec::new(),
         activation_cost: None,
         activation_ability_index: None,
+        pending_loyalty_activation_player: None,
         target_constraints: vec![],
         casting_variant: crate::types::game_state::CastingVariant::Normal,
+        casting_permission_index: None,
         cast_timing_permission: None,
         distribute: None,
         origin_zone: crate::types::zones::Zone::Hand,
@@ -7095,6 +7418,8 @@ fn taps_for_mana_multiplier_fires_once_on_color_choice_mana_payment_resume() {
         payment_mode: crate::types::game_state::CastPaymentMode::Auto,
         assist_state: AssistState::NotOffered,
         activation_residual: crate::types::game_state::ActivationResidual::None,
+        activation_target_selection: crate::types::game_state::ActivationTargetSelection::Pending,
+        alt_cost_grant_source: None,
     }));
     state.waiting_for = WaitingFor::ManaPayment {
         player: PlayerId(0),
@@ -8362,6 +8687,7 @@ fn learn_rummage_stashes_draw_continuation() {
             source,
             PlayerId(0),
         )),
+        &state,
     ));
 
     let learn_ability = ResolvedAbility::new(Effect::Learn, vec![], source, PlayerId(0));
@@ -8930,7 +9256,7 @@ fn disguise_face_down_has_ward_morph_does_not() {
 
     assert!(
         cast_face_down(crate::types::keywords::Keyword::Disguise(
-            ManaCost::generic(4)
+            ManaCost::generic(4).into()
         )),
         "CR 702.168a: a disguise face-down 2/2 must have ward {{2}}"
     );
@@ -9084,6 +9410,7 @@ fn grant_graveyard_creature_cast_and_bury(
                 play_mode: crate::types::ability::CardPlayMode::Cast,
                 graveyard_destination_replacement: None,
                 extra_cost: None,
+                enters_with_counter: None,
             })
             .affected(TargetFilter::Typed(
                 TypedFilter::creature().controller(ControllerRef::You),

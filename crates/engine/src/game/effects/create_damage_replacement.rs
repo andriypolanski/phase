@@ -113,7 +113,7 @@ pub fn resolve(
                     // than wedging on an empty prompt.
                     if !options.is_empty() {
                         state.pending_continuation =
-                            Some(PendingContinuation::new(Box::new(ability.clone())));
+                            Some(PendingContinuation::new(Box::new(ability.clone()), state));
                         state.waiting_for = WaitingFor::DamageSourceChoice {
                             player: ability.controller,
                             source_filter: prompt_filter,
@@ -122,6 +122,7 @@ pub fn resolve(
                         events.push(GameEvent::EffectResolved {
                             kind: EffectKind::CreateDamageReplacement,
                             source_id: ability.source_id,
+                            subject: None,
                         });
                         return Ok(());
                     }
@@ -249,6 +250,7 @@ pub fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::CreateDamageReplacement,
         source_id: ability.source_id,
+        subject: None,
     });
     Ok(())
 }

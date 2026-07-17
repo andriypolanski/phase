@@ -9,7 +9,9 @@ use nom::Parser;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::primitives::scan_contains;
 use super::oracle_util::parse_mana_symbols;
-use crate::parser::oracle_effect::{split_leading_conditional, try_parse_named_choice};
+use crate::parser::oracle_effect::{
+    split_leading_conditional, try_parse_named_choice, try_parse_named_choice_conjunction,
+};
 
 pub(crate) fn is_cant_win_lose_compound(lower: &str) -> bool {
     scan_contains(lower, "can't win the game") && scan_contains(lower, "can't lose the game")
@@ -97,10 +99,17 @@ pub(crate) fn is_defiler_cost_pattern(lower: &str) -> bool {
 /// structural pre-filter; the lowering (`parse_spells_alternative_cost`)
 /// re-parses with combinators and strict-fails on non-mana / unparsed filters.
 pub(crate) fn is_spells_alternative_cost_pattern(lower: &str) -> bool {
-    lower_starts_with(lower, "you may pay ")
+    // CR 118.9 + CR 601.2b: an optional once-per-turn frequency prefix (As
+    // Foretold: "Once each turn, ...") precedes the "you may pay ..." grant.
+    // Strip it via the shared lowering combinator before the structural gate.
+    let after_frequency = opt(crate::parser::oracle_static::parse_alt_cost_frequency_prefix)
+        .parse(lower)
+        .map_or(lower, |(rest, _)| rest);
+    lower_starts_with(after_frequency, "you may pay ")
         && scan_contains(lower, "rather than pay")
         && scan_contains(lower, "mana cost for")
-        && scan_contains(lower, "spells you cast")
+        // Accept singular ("a spell you cast") and plural ("spells you cast").
+        && (scan_contains(lower, "spell you cast") || scan_contains(lower, "spells you cast"))
 }
 
 /// CR 118.9 + CR 701.59a: Collect-evidence alternative-cost grant static —
@@ -548,6 +557,14 @@ fn is_static_compound_pattern(lower: &str) -> bool {
         opt(alt((
             tag::<_, _, OracleError<'_>>("once during each of your turns, "),
             tag("once each turn, "),
+            // CR 117.1c: "During your turn, you may [cast|play] … from <zone>"
+            // — the timing qualifier gates a standing cast-from-zone permission
+            // (Leonardo, Sewer Samurai; Festival of Embers). Route to the static
+            // parser ahead of the Priority-8 "enters … counter" replacement gate;
+            // the graveyard/exile builder honors the qualifier via a
+            // `DuringYourTurn` condition. Narrowly widens only the leading
+            // frequency/timing qualifier, not the zone anchors below.
+            tag("during your turn, "),
         ))),
         alt((tag("you may play"), tag("you may cast"))),
     )
@@ -567,7 +584,14 @@ fn is_static_compound_pattern(lower: &str) -> bool {
             // permission (The Matrix of Time). Routes to `parse_static_line` so
             // it lowers to `StaticMode::ExileCastPermission { pool: Persistent }`
             // instead of falling through to the imperative impulse-draw flow.
-            || scan_contains(lower, "from among cards exiled with"))
+            || scan_contains(lower, "from among cards exiled with")
+            // CR 108.3 + CR 113.6b: The "cards you own exiled with ~" variant
+            // (Intrepid Paleontologist; Dawnhand Dissident) carries a "you own"
+            // ownership infix between "cards" and "exiled with". Tolerate it so
+            // the ExileCastPermission line routes to the static parser instead
+            // of the Priority-8 replacement gate. Narrowly widens the exile
+            // anchor to accept the ownership infix.
+            || scan_contains(lower, "from among cards you own exiled with"))
     {
         return true;
     }
@@ -747,6 +771,11 @@ pub(crate) fn is_replacement_pattern(lower: &str) -> bool {
 
 fn is_replacement_compound_pattern(lower: &str) -> bool {
     if is_as_enters_choose_pattern(lower) {
+        return true;
+    }
+    // CR 701.3a + CR 614.1: "As ~ becomes attached [to X], choose …" — the
+    // attach-time analogue of `is_as_enters_choose_pattern` (Psychic Paper).
+    if is_as_becomes_attached_choose_pattern(lower) {
         return true;
     }
     // CR 614.1c + CR 614.12: "As a [filter] enters, it becomes a [P/T] [type]
@@ -937,6 +966,29 @@ fn is_as_enters_choose_pattern(lower: &str) -> bool {
     })
     .is_some();
     has_as && has_enters && has_choose
+}
+
+/// CR 701.3a + CR 614.1: the attach-time analogue of `is_as_enters_choose_pattern`
+/// (Psychic Paper: "As this Equipment becomes attached to a creature, choose a
+/// creature card name and a creature type."). Accepts both a single choice and
+/// a conjunction ("choose X and Y") sharing one "choose".
+fn is_as_becomes_attached_choose_pattern(lower: &str) -> bool {
+    let has_as = nom_primitives::scan_at_word_boundaries(lower, |i| {
+        tag::<_, _, OracleError<'_>>("as ").parse(i)
+    })
+    .is_some();
+    let has_becomes_attached = nom_primitives::scan_at_word_boundaries(lower, |i| {
+        tag::<_, _, OracleError<'_>>("becomes attached").parse(i)
+    })
+    .is_some();
+    let has_choose = nom_primitives::scan_at_word_boundaries(lower, |i| {
+        verify(tag::<_, _, OracleError<'_>>("choose "), |_: &&str| {
+            try_parse_named_choice(i).is_some() || try_parse_named_choice_conjunction(i).is_some()
+        })
+        .parse(i)
+    })
+    .is_some();
+    has_as && has_becomes_attached && has_choose
 }
 
 /// CR 603.2 vs CR 614.1c: "Whenever <subject> enters with a counter on it, <consequence>"

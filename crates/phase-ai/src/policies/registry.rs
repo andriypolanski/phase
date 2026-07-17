@@ -10,6 +10,7 @@ use super::card_advantage::CardAdvantagePolicy;
 use super::chalice_avoidance::ChaliceAvoidancePolicy;
 use super::context::{PolicyContext, PriorsEnv};
 use super::copy_value::CopyValuePolicy;
+use super::cycling_discipline::CyclingDisciplinePolicy;
 use super::effect_timing::EffectTimingPolicy;
 use super::etb_value::EtbValuePolicy;
 use super::evasion_removal_priority::EvasionRemovalPriorityPolicy;
@@ -21,6 +22,7 @@ use super::interaction_reservation::InteractionReservationPolicy;
 use super::landfall_timing::LandfallTimingPolicy;
 use super::lethality_awareness::LethalityAwarenessPolicy;
 use super::life_total_resource::LifeTotalResourcePolicy;
+use super::loop_shortcut::LoopShortcutPolicy;
 use super::payment_selection::PaymentSelectionPolicy;
 use super::payoff::{
     PayoffPolicy, ARTIFACT_SYNERGY, BLINK_PAYOFF, ENCHANTMENTS_PAYOFF, ENERGY_PAYOFF,
@@ -116,6 +118,7 @@ pub enum PolicyId {
     LandSequencing,
     ConditionGatedActivation,
     ControlChangeAwareness,
+    CyclingDiscipline,
     XValue,
     LandAnimation,
     MillTargeting,
@@ -125,6 +128,7 @@ pub enum PolicyId {
     PaymentSelection,
     SeparatePilesTiming,
     XCastGate,
+    LoopShortcut,
 }
 
 /// Coarse routing kind for a candidate decision. Each policy declares which
@@ -360,6 +364,7 @@ impl Default for PolicyRegistry {
             Box::new(super::spellskite_priority::SpellskitePriorityPolicy),
             Box::new(super::land_sequencing::LandSequencingPolicy),
             Box::new(super::condition_gated_activation::ConditionGatedActivationPolicy),
+            Box::new(CyclingDisciplinePolicy),
             Box::new(XValuePolicy),
             Box::new(XCastGatePolicy),
             Box::new(super::control_change_awareness::ControlChangeAwarenessPolicy),
@@ -372,6 +377,7 @@ impl Default for PolicyRegistry {
             Box::new(SeparatePilesTimingPolicy),
             Box::new(PayoffPolicy::new(&REANIMATOR_PAYOFF)),
             Box::new(PayoffPolicy::new(&BLINK_PAYOFF)),
+            Box::new(LoopShortcutPolicy),
         ];
         let mut by_kind: HashMap<DecisionKind, Vec<usize>> = HashMap::new();
         for (idx, policy) in policies.iter().enumerate() {

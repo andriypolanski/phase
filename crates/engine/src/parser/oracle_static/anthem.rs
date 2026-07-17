@@ -23,6 +23,27 @@ pub(crate) fn parse_typed_you_control(
         let descriptor = before.original.trim();
         if !descriptor.is_empty() {
             let after_prefix = &after.original[" creatures you control ".len()..];
+            // CR 611.3: "X creatures you control and Y ..." — "you control" here
+            // ends only the FIRST conjunct of a compound subject, not the whole
+            // subject. A well-formed single-subject predicate always starts with
+            // a verb (get/gets/has/have/gain/gains) right after "you control ",
+            // never the conjunction "and" — so a leading "and " means this
+            // positional split guessed wrong and the real subject is compound
+            // (Dune Chanter: "Lands you control and land cards you own that
+            // aren't on the battlefield are Deserts..."). Decline so dispatch
+            // falls through to a handler that resolves the whole compound
+            // subject correctly (`parse_contextual_continuous_subject_static` for
+            // get/has predicates, `parse_subject_additive_type_static` for
+            // are/is predicates) instead of treating the second conjunct as
+            // unparsed predicate noise that `parse_continuous_gets_has`'s lenient
+            // `parse_additive_type_clause_modifications` fallback can scan past
+            // and silently drop.
+            if tag::<_, _, OracleError<'_>>("and ")
+                .parse(after_prefix.trim_start())
+                .is_ok()
+            {
+                return None;
+            }
             let full_subject = tp.original[..creatures_pos + " creatures you control".len()].trim();
             // CR 509.1h: Strip combat-status prefixes ("Attacking Ninja" → props=[Attacking], subtype="Ninja")
             let mut extra_props = Vec::new();
@@ -162,6 +183,14 @@ pub(crate) fn parse_typed_you_control(
         let descriptor = before.original.trim();
         if !descriptor.is_empty() {
             let after_prefix = &after.original[" you control ".len()..];
+            // CR 611.3: same compound-subject guard as the "creatures you
+            // control" branch above — see its comment for the full rationale.
+            if tag::<_, _, OracleError<'_>>("and ")
+                .parse(after_prefix.trim_start())
+                .is_ok()
+            {
+                return None;
+            }
             let full_subject = tp.original[..yc_pos + " you control".len()].trim();
             // CR 509.1h: Strip combat-status prefixes
             let mut extra_props = Vec::new();
@@ -277,9 +306,58 @@ pub(crate) fn parse_typed_you_control(
     None
 }
 
+/// CR 611.3a + CR 109.5 + CR 301.5a: Peel a leading "During your turn, as long
+/// as &lt;condition&gt;, " prefix and attach it — as an intrinsic conditional
+/// gate (CR 611.3a, re-evaluated each layer recompute) — to the
+/// recursively-parsed remainder static. Cloud, Planet's Champion:
+/// "During your turn, as long as ~ is equipped, it has double strike and
+/// indestructible" → the double-strike/indestructible static gains
+/// `condition: And { [DuringYourTurn, SourceIsEquipped] }`.
+///
+/// Both prefixes are REQUIRED. Bare "As long as X, Y" statics are already owned
+/// by `parse_conditional_static` (later in dispatch), and plain "During your
+/// turn, Y" statics by the dedicated during-your-turn handler; requiring the
+/// full compound keeps both untouched (no shadowing of either class). When the
+/// remainder does not parse to a clean subject static (the counter-animation
+/// "…, it's a P/T and has …" form), returns `None` so the dispatcher's
+/// `parse_compound_turn_counter_animation` still claims it.
+fn parse_leading_condition_peel(tp: &TextPair) -> Option<StaticDefinition> {
+    let after_turn = nom_tag_tp(tp, "during your turn, ")?;
+    let after_gate = nom_tag_tp(&after_turn, "as long as ")?;
+    // First-comma split: "<condition>, <remainder>".
+    let (body_tp, remainder_tp) = after_gate.split_around(", ")?;
+    // CR 109.5: "during your turn" binds to the source object's controller.
+    let condition = parse_static_condition(body_tp.original.trim())?;
+    let leading = StaticCondition::And {
+        conditions: vec![StaticCondition::DuringYourTurn, condition],
+    };
+
+    // Recurse on the remainder; on failure return None so specialized parsers run.
+    let mut def = parse_subject_continuous_static(remainder_tp.original.trim())?;
+    // CR 611.3a: compose with any condition the remainder itself carried rather
+    // than dropping one (mirrors `parse_conditional_static`).
+    def.condition = Some(match def.condition.take() {
+        Some(existing) => StaticCondition::And {
+            conditions: vec![leading, existing],
+        },
+        None => leading,
+    });
+    def.description = Some(tp.original.to_string());
+    Some(def)
+}
+
 pub(crate) fn parse_subject_continuous_static(text: &str) -> Option<StaticDefinition> {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
+
+    // CR 611.3a + CR 109.5 + CR 301.5a: peel a leading "During your turn, as long
+    // as <cond>, " condition prefix onto the recursively-parsed remainder static
+    // (Cloud, Planet's Champion). Runs first so the intrinsic conditional gate is
+    // attached; the counter-animation remainder form returns None and falls
+    // through to `parse_compound_turn_counter_animation`.
+    if let Some(def) = parse_leading_condition_peel(&tp) {
+        return Some(def);
+    }
 
     // Additive-type clauses do not use any of the get/has/have/lose verbs that
     // `find_continuous_predicate_start` scans for. They split on "are"/"is"
@@ -1104,6 +1182,22 @@ fn strip_trailing_distributive_each(s: &str) -> &str {
     }
 }
 
+/// Split a compound "+X/+Y" pump binding clause `<A>, and Y is <B>` into the
+/// X-axis expression (`A`) and Y-axis expression (`B`) when the two axes bind to
+/// different quantities (Aspect of Wolf: "X is half the number of Forests you
+/// control, rounded down, and Y is half the number of Forests you control,
+/// rounded up"). Returns `None` for the common single-quantity clause. `wx`
+/// reaches here in original case (printed "and Y is"), so it is lowercased
+/// before locating the boundary via the `split_once_on` combinator. The
+/// separator `", and y is "` consumes the joining comma, and the sentence period
+/// is already stripped upstream by `strip_trailing_where_x`, so each half feeds
+/// the case-insensitive `parse_cda_quantity` after a plain whitespace trim.
+fn split_x_and_y_where_clause(wx: &str) -> Option<(String, String)> {
+    let lower = wx.to_lowercase();
+    let (_, (x_expr, y_expr)) = nom_primitives::split_once_on(&lower, ", and y is ").ok()?;
+    Some((x_expr.trim().to_string(), y_expr.trim().to_string()))
+}
+
 pub(crate) fn parse_dynamic_pt_in_text(
     lower: &str,
     where_x_expression: Option<&str>,
@@ -1114,14 +1208,31 @@ pub(crate) fn parse_dynamic_pt_in_text(
     let after_verb = nom_tag_lower(after_gets, after_gets, "gets ")
         .or_else(|| nom_tag_lower(after_gets, after_gets, "get "))?;
 
-    // CR 613.4c: Parse variable P/T pattern via nom combinator. Each axis is
-    // either the variable X (`None`) or a fixed magnitude (`Some(n)`).
+    // CR 613.4c: Parse the variable P/T pattern. Each axis is a fixed magnitude,
+    // the variable X, or (toughness only, in a distinct "+X/+Y" pump) the
+    // variable Y.
     let (_, (p_sign, p_mag, t_sign, t_mag)) = parse_variable_pt_pattern(after_verb).ok()?;
-    let p_is_x = p_mag.is_none();
-    let t_is_x = t_mag.is_none();
+    let p_is_dynamic = matches!(p_mag, PtAxisMag::VarX | PtAxisMag::VarY);
+    let t_is_dynamic = matches!(t_mag, PtAxisMag::VarX | PtAxisMag::VarY);
 
-    if !p_is_x && !t_is_x {
-        return None; // No X variable — not a dynamic P/T pattern
+    if !p_is_dynamic && !t_is_dynamic {
+        return None; // No variable axis — not a dynamic P/T pattern
+    }
+
+    // A distinct-letter "+X/+Y" pump (X on power, Y on toughness) is supported
+    // ONLY when a paired "where X is <A>, and Y is <B>" binding was structurally
+    // parsed — its two axes carry independent bindings. Without one the pattern
+    // stays UNSUPPORTED rather than synthesizing from cost-X: Snowblind's
+    // "gets -X/-Y" (X/Y defined by later conditional sentences, no `{X}` cost)
+    // must not emit a bogus `-CostXPaid/-CostXPaid` static.
+    let is_distinct_xy = p_mag == PtAxisMag::VarX && t_mag == PtAxisMag::VarY;
+    // `Y` is not a generic cost variable in this grammar. The only supported
+    // Y-bearing form is Aspect of Wolf's ordered `+X/+Y` pair, whose distinct
+    // bindings are carried by the structured where-clause below. Reject every
+    // other placement so `+Y/+X` or `+Y/+Y` cannot silently borrow `CostXPaid`
+    // or an X-only binding.
+    if (matches!(p_mag, PtAxisMag::VarY) || matches!(t_mag, PtAxisMag::VarY)) && !is_distinct_xy {
+        return None;
     }
 
     // CR 706.2 + CR 706.3b: "where X is the result" binds X to the preceding
@@ -1139,13 +1250,33 @@ pub(crate) fn parse_dynamic_pt_in_text(
     // case. This unblocks +X/+0 and +X/+X pump activations like Kessig Wolf
     // Run whose effect text has no binding clause — the X is bound to the
     // cost, not to a derived quantity.
-    let quantity = match where_x_expression {
-        Some(wx) => parse_cda_quantity(wx)
-            .or_else(|| parse_event_context_quantity(wx))
-            .or_else(|| parse_source_intensity_where_x(wx))?,
-        None => QuantityExpr::Ref {
-            qty: QuantityRef::CostXPaid,
-        },
+    // Intensity and the other derived quantities live in the shared
+    // `parse_quantity_ref` combinator (oracle_nom/quantity.rs), which
+    // `parse_cda_quantity` delegates to. Most pumps bind X to a single quantity
+    // applied to both axes; a "+X/+Y" pump whose clause reads "where X is <A> and
+    // Y is <B>" (Aspect of Wolf) binds each axis to its own quantity, so the
+    // clause is split on " and y is " and each half is parsed independently.
+    let resolve_quantity =
+        |wx: &str| parse_cda_quantity(wx).or_else(|| parse_event_context_quantity(wx));
+    let (p_quantity, t_quantity) = if is_distinct_xy {
+        // Require the paired binding; a "+X/+Y" without it is unsupported.
+        let (x_expr, y_expr) = split_x_and_y_where_clause(where_x_expression?)?;
+        (resolve_quantity(&x_expr)?, resolve_quantity(&y_expr)?)
+    } else {
+        match where_x_expression {
+            Some(wx) => {
+                let q = resolve_quantity(wx)?;
+                (q.clone(), q)
+            }
+            // CR 107.3a + CR 107.3i: no binding clause → X is the value chosen as
+            // the ability's cost-X was paid (Kessig Wolf Run).
+            None => {
+                let q = QuantityExpr::Ref {
+                    qty: QuantityRef::CostXPaid,
+                };
+                (q.clone(), q)
+            }
+        }
     };
 
     let mut mods = Vec::new();
@@ -1153,61 +1284,41 @@ pub(crate) fn parse_dynamic_pt_in_text(
     // fixed nonzero axis grants a constant modification alongside it (the mixed
     // "+X/+1" case). A fixed `0` axis contributes nothing.
     match p_mag {
-        None => {
-            let qty = if p_sign < 0 {
+        PtAxisMag::VarX | PtAxisMag::VarY => {
+            let value = if p_sign < 0 {
                 QuantityExpr::Multiply {
                     factor: -1,
-                    inner: Box::new(quantity.clone()),
+                    inner: Box::new(p_quantity),
                 }
             } else {
-                quantity.clone()
+                p_quantity
             };
-            mods.push(ContinuousModification::AddDynamicPower { value: qty });
+            mods.push(ContinuousModification::AddDynamicPower { value });
         }
-        Some(n) if n != 0 => mods.push(ContinuousModification::AddPower { value: p_sign * n }),
-        Some(_) => {}
+        PtAxisMag::Fixed(n) if n != 0 => {
+            mods.push(ContinuousModification::AddPower { value: p_sign * n })
+        }
+        PtAxisMag::Fixed(_) => {}
     }
     match t_mag {
-        None => {
-            let qty = if t_sign < 0 {
+        PtAxisMag::VarX | PtAxisMag::VarY => {
+            let value = if t_sign < 0 {
                 QuantityExpr::Multiply {
                     factor: -1,
-                    inner: Box::new(quantity),
+                    inner: Box::new(t_quantity),
                 }
             } else {
-                quantity
+                t_quantity
             };
-            mods.push(ContinuousModification::AddDynamicToughness { value: qty });
+            mods.push(ContinuousModification::AddDynamicToughness { value });
         }
-        Some(n) if n != 0 => mods.push(ContinuousModification::AddToughness { value: t_sign * n }),
-        Some(_) => {}
+        PtAxisMag::Fixed(n) if n != 0 => {
+            mods.push(ContinuousModification::AddToughness { value: t_sign * n })
+        }
+        PtAxisMag::Fixed(_) => {}
     }
 
     Some(mods)
-}
-
-/// Digital-only Alchemy (Arena): "where X is <source>'s intensity" — a dynamic
-/// P/T pump that scales by the STATIC's own source object's intensity (Minthara
-/// of the Absolute, Teysa of the Ghost Council, Quickbeast Amulet). The
-/// self-possessive axis reuses [`nom_quantity::parse_self_possessive`]
-/// (its / ~'s / this creature's / …) rather than enumerating verbatim strings;
-/// `normalize_card_name_refs` funnels every card-name and permanent-type
-/// self-reference to `~` upstream, so `~'s intensity` is the form the static
-/// parser actually receives. `QuantityRef::Intensity { scope: Source }` is fully
-/// evaluated at runtime by `game::quantity`, so this is a grammar-only seam that
-/// reuses existing modeling.
-fn parse_source_intensity_where_x(wx: &str) -> Option<QuantityExpr> {
-    nom_parse_lower(wx.trim().trim_end_matches('.').trim(), |i| {
-        value(
-            QuantityExpr::Ref {
-                qty: QuantityRef::Intensity {
-                    scope: ObjectScope::Source,
-                },
-            },
-            terminated(nom_quantity::parse_self_possessive, tag(" intensity")),
-        )
-        .parse(i)
-    })
 }
 
 pub(crate) fn parse_base_pt_mod(text: &str) -> Option<(i32, i32)> {
@@ -1311,5 +1422,134 @@ pub(crate) fn parse_base_pt_dynamic(
                 base_pt_side_to_expr(t_side, &x_ref),
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod l02_bb5_leading_condition_peel_tests {
+    use super::*;
+
+    /// Positive: Cloud, Planet's Champion — the "During your turn, as long as ~
+    /// is equipped, ..." compound peels into an intrinsic conditional static
+    /// gated on `And { [DuringYourTurn, SourceIsEquipped] }` (was fully
+    /// swallowed pre-fix: `statics: null`). REVERT-PROBE: dropping the peel
+    /// leaves `condition == None` / the whole static unparsed.
+    #[test]
+    fn cloud_leading_condition_peel_attaches_compound_condition() {
+        let def = parse_subject_continuous_static(
+            "During your turn, as long as ~ is equipped, it has double strike and indestructible",
+        )
+        .expect("Cloud's double-strike/indestructible static must parse");
+        assert_eq!(
+            def.condition,
+            Some(StaticCondition::And {
+                conditions: vec![
+                    StaticCondition::DuringYourTurn,
+                    StaticCondition::SourceIsEquipped,
+                ],
+            }),
+            "peel must attach And{{DuringYourTurn, SourceIsEquipped}}"
+        );
+        assert!(
+            !def.modifications.is_empty(),
+            "the recursed remainder must still grant the keywords"
+        );
+        assert_eq!(
+            def.description.as_deref(),
+            Some("During your turn, as long as ~ is equipped, it has double strike and indestructible"),
+            "full description must be restored after the peel"
+        );
+    }
+
+    /// F1 non-vacuity (team-lead mandate, `parser-coverage-regression-ci-only`):
+    /// every live static whose Oracle text starts "During your turn," and
+    /// contains get/has/gain but has NO "as long as" must NOT be claimed by the
+    /// leading-condition peel — those belong to the dedicated during-your-turn
+    /// dispatch handler downstream, unchanged (byte-identical shape). `as long
+    /// as ` is MANDATORY in the peel; these lines lack it, so the peel returns
+    /// None.
+    ///
+    /// REVERT-PROBE (this is the F1 discriminator): making `as long as `
+    /// OPTIONAL — the reviewed-out bug where a bare "during your turn, " alone
+    /// fires the peel — makes the peel recurse on the anthem remainder and
+    /// return `Some` for the anthem-shaped lines (e.g. "creatures you control
+    /// get +2/+0"), so these per-card asserts flip to fail. Aggregate
+    /// REGRESSED=0 would not catch a lose-N-here / gain-N-elsewhere swap; the
+    /// per-card `is_none()` does. Enumerated via jq over `data/card-data.json`
+    /// (50 cards at impl time).
+    #[test]
+    fn during_your_turn_without_as_long_as_is_not_peeled() {
+        const SHADOWED: &[&str] = &[
+            "During your turn, this creature has first strike.",
+            "During your turn, commanders you control have indestructible.",
+            "During your turn, outlaws you control have first strike.",
+            "During your turn, Avatar Kyoshi has hexproof.",
+            "During your turn, each creature assigns combat damage equal to its toughness rather than its power.",
+            "During your turn, creatures you control have hexproof.",
+            "During your turn, each non-Equipment artifact and non-Aura enchantment you control with mana value 4 or greater is a 4/4 Elemental creature in addition to its other types and has indestructible, haste, and \"Whenever this creature deals combat damage to a player, draw a card.\"",
+            "During your turn, equipped creature has hexproof and can't be blocked.",
+            "During your turn, this creature has lifelink.",
+            "During your turn, Cait has indestructible.",
+            "During your turn, Colossus has indestructible.",
+            "During your turn, this creature has flying.",
+            "During your turn, Gideon Blackblade is a 4/4 Human Soldier creature with indestructible that's still a planeswalker.",
+            "During your turn, creatures you control get +2/+0.",
+            "During your turn, this creature gets +0/+2.",
+            "During your turn, Kefka has indestructible.",
+            "During your turn, equipped creature gets +1/+0 and has first strike.",
+            "During your turn, this creature has lifelink.",
+            "During your turn, other creatures you control get +1/+0.",
+            "During your turn, Mounts and Vehicles you control have hexproof.",
+            "During your turn, creatures you control have first strike and equip abilities you activate cost {1} less to activate.",
+            "During your turn, this creature has hexproof.",
+            "During your turn, creature tokens you control get +1/+4.",
+            "During your turn, this creature gets +2/+0 and has first strike.",
+            "During your turn, equipped creature gets +2/+0 and has first strike.",
+            "During your turn, Radha has first strike.",
+            "During your turn, attacking creatures get +1/+0.",
+            "During your turn, each instant and sorcery card in your graveyard has flashback. Its flashback cost is equal to its mana cost.",
+            "During your turn, Shocker has first strike.",
+            "During your turn, this creature gets +2/+0.",
+            "During your turn, Allies you control have double strike and lifelink.",
+            "During your turn, creatures and planeswalkers you control have lifelink.",
+            "During your turn, Spider-Girl has flying.",
+            "During your turn, this creature gets +0/+2.",
+            "During your turn, creatures you control get +1/+0 and have trample.",
+            "During your turn, Sun-Spider has flying.",
+            "During your turn, The River Warlock has flying, lifelink, and indestructible.",
+            "During your turn, this creature gets +2/+2.",
+            "During your turn, Yuna and enchantment creatures you control have trample, lifelink, and ward {2}.",
+        ];
+        for line in SHADOWED {
+            let lower = line.to_lowercase();
+            let tp = TextPair::new(line, &lower);
+            assert!(
+                parse_leading_condition_peel(&tp).is_none(),
+                "leading-condition peel must NOT claim a plain during-your-turn static (no 'as long as'): {line:?}"
+            );
+        }
+    }
+
+    /// Regression (plan Risk #1 / test #7): the counter-animation form
+    /// ("During your turn, as long as ~ has … counters …, it's a P/T … and has
+    /// …") must NOT be claimed by `parse_subject_continuous_static` — its "'s a"
+    /// remainder has no clean subject, so the peel recurses to None and returns
+    /// None, letting `parse_compound_turn_counter_animation` (later in dispatch)
+    /// claim it. Kaito, Bane of Nightmares is the live case
+    /// (`parse_compound_static_kaito_animation` in `tests.rs` guards the
+    /// downstream animation shape). REVERT-PROBE: if the peel wrongly claimed
+    /// the remainder, this returns `Some` and the assert flips.
+    #[test]
+    fn counter_animation_falls_through_the_peel() {
+        let kaito = "During your turn, as long as ~ has one or more loyalty counters on him, he's a 3/4 Ninja creature and has hexproof.";
+        assert!(
+            parse_subject_continuous_static(kaito).is_none(),
+            "counter-animation must fall through to parse_compound_turn_counter_animation"
+        );
+        // The specialized parser still claims it (guards the fallthrough target).
+        assert!(
+            parse_compound_turn_counter_animation(&kaito.to_lowercase(), kaito).is_some(),
+            "parse_compound_turn_counter_animation must still handle Kaito's animation"
+        );
     }
 }

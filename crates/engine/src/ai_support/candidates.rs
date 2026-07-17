@@ -15,9 +15,9 @@ use crate::types::card::LayoutKind;
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterMatch;
 use crate::types::game_state::{
-    CastOfferKind, CastPaymentMode, ConvokeMode, CounterCostChoice, CounterMoveChoice,
-    CounterRemoveChoice, GameState, MulliganDecisionPhase, PayCostKind, PendingMulliganAction,
-    TargetSelectionSlot, WaitingFor,
+    CastOfferKind, CastPaymentMode, CompanionDeclaration, ConvokeMode, CounterCostChoice,
+    CounterMoveChoice, CounterRemoveChoice, GameState, MulliganDecisionPhase, PayCostKind,
+    PendingMulliganAction, TargetSelectionSlot, WaitingFor,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
@@ -355,6 +355,33 @@ fn permute_into(
 /// constructing `GameAction::Concede { player_id }` directly.
 pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
     match &state.waiting_for {
+        WaitingFor::MeldPairChoice { player, choices } => choices
+            .iter()
+            .map(|choice| {
+                candidate(
+                    GameAction::ChooseMeldPair {
+                        source_id: choice.source_id,
+                        partner_id: choice.partner_id,
+                    },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
+        WaitingFor::MeldAttackTargetChoice {
+            player,
+            valid_targets,
+            ..
+        } => valid_targets
+            .iter()
+            .map(|target| {
+                candidate(
+                    GameAction::ChooseEntryAttackTarget { target: *target },
+                    TacticalClass::Attack,
+                    Some(*player),
+                )
+            })
+            .collect(),
         WaitingFor::ReplacementChoice {
             candidate_count,
             player,
@@ -668,6 +695,20 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
+        WaitingFor::ChooseAnnouncingOpponent {
+            player, candidates, ..
+        } => candidates
+            .iter()
+            .map(|opponent| {
+                candidate(
+                    GameAction::ChooseAnnouncingOpponent {
+                        opponent: *opponent,
+                    },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
         WaitingFor::BetweenGamesChoosePlayDraw { player, .. } => vec![
             candidate(
                 GameAction::ChoosePlayDraw { play_first: true },
@@ -744,7 +785,24 @@ pub fn candidate_actions_broad_with_probe(
     probe: Option<&casting::PriorityCastProbe>,
 ) -> Vec<CandidateAction> {
     let actions = match &state.waiting_for {
+        WaitingFor::MeldPairChoice { .. } | WaitingFor::MeldAttackTargetChoice { .. } => {
+            candidate_actions_exact(state)
+        }
         WaitingFor::Priority { player } => priority_actions_with_probe(state, *player, probe),
+        WaitingFor::ChooseAnnouncingOpponent {
+            player, candidates, ..
+        } => candidates
+            .iter()
+            .map(|opponent| {
+                candidate(
+                    GameAction::ChooseAnnouncingOpponent {
+                        opponent: *opponent,
+                    },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
         WaitingFor::ManaPayment {
             player,
             convoke_mode,
@@ -986,6 +1044,11 @@ pub fn candidate_actions_broad_with_probe(
             }
         }
         WaitingFor::ScryChoice { player, cards } => select_cards_variants(*player, cards, None),
+        WaitingFor::ArrangePlanarDeckTopChoice {
+            player,
+            cards,
+            keep_on_top,
+        } => select_cards_variants(*player, cards, Some(*keep_on_top)),
         // CR 119.7 + CR 119.8: every enumerated redistribution option is legal by
         // construction (the resolver filtered CR 119.7/119.8), so each is a
         // candidate submission.
@@ -1382,6 +1445,22 @@ pub fn candidate_actions_broad_with_probe(
                     )
                 })
                 .collect()
+        }
+        WaitingFor::KeepExactPermanentsChoice {
+            player,
+            eligible,
+            required_count,
+            ..
+        } => {
+            // CR 101.4 + CR 701.21a: any distinct exact-size subset is legal.
+            // Enumerate a compact deterministic baseline and leave richer board
+            // evaluation to the tactical policy layer.
+            let kept = eligible.iter().copied().take(*required_count).collect();
+            vec![candidate(
+                GameAction::ChooseKeptPermanents { kept },
+                TacticalClass::Selection,
+                Some(*player),
+            )]
         }
         WaitingFor::BetweenGamesSideboard { player, .. } => sideboard_actions(state, *player),
         WaitingFor::NamedChoice {
@@ -1794,38 +1873,46 @@ pub fn candidate_actions_broad_with_probe(
             }));
             actions
         }
-        // CR 107.4f + CR 601.2f: AI picks per-shard Phyrexian payment.
-        // Heuristic (life threshold): with life > 6, the AI prefers 2-life per shard for
-        // tempo (keep mana for other plays); with life <= 6, the AI preserves life.
-        // Shards with only one viable option use that option.
+        // CR 107.4f + CR 601.2f: Every mana-or-life vector is a distinct
+        // payment route. Generate all structurally available combinations so
+        // the legality filter can retain every fully payable route.
         WaitingFor::PhyrexianPayment { player, shards, .. } => {
             use crate::types::game_state::{ShardChoice, ShardOptions};
-            let life = state
-                .players
-                .iter()
-                .find(|p| p.id == *player)
-                .map(|p| p.life)
-                .unwrap_or(0);
-            let prefer_life = life > 6;
-            let choices: Vec<ShardChoice> = shards
-                .iter()
-                .map(|shard| match shard.options {
-                    ShardOptions::ManaOnly => ShardChoice::PayMana,
-                    ShardOptions::LifeOnly => ShardChoice::PayLife,
-                    ShardOptions::ManaOrLife => {
-                        if prefer_life {
-                            ShardChoice::PayLife
-                        } else {
-                            ShardChoice::PayMana
-                        }
+            let mut routes = vec![Vec::with_capacity(shards.len())];
+            for shard in shards {
+                match shard.options {
+                    ShardOptions::ManaOnly => {
+                        routes
+                            .iter_mut()
+                            .for_each(|route| route.push(ShardChoice::PayMana));
                     }
+                    ShardOptions::LifeOnly => {
+                        routes
+                            .iter_mut()
+                            .for_each(|route| route.push(ShardChoice::PayLife));
+                    }
+                    ShardOptions::ManaOrLife => {
+                        let mut mana_routes = routes.clone();
+                        routes
+                            .iter_mut()
+                            .for_each(|route| route.push(ShardChoice::PayLife));
+                        mana_routes
+                            .iter_mut()
+                            .for_each(|route| route.push(ShardChoice::PayMana));
+                        routes.extend(mana_routes);
+                    }
+                }
+            }
+            routes
+                .into_iter()
+                .map(|choices| {
+                    candidate(
+                        GameAction::SubmitPhyrexianChoices { choices },
+                        TacticalClass::Selection,
+                        Some(*player),
+                    )
                 })
-                .collect();
-            vec![candidate(
-                GameAction::SubmitPhyrexianChoices { choices },
-                TacticalClass::Selection,
-                Some(*player),
-            )]
+                .collect()
         }
         // CR 601.2b: Defiler cycle — accept or decline life payment for mana reduction.
         WaitingFor::DefilerPayment { player, .. } => vec![
@@ -1842,7 +1929,8 @@ pub fn candidate_actions_broad_with_probe(
         ],
         // CR 118.3 + CR 601.2b + CR 605.3b: AI selects objects to pay a cost.
         // Single-object RemoveCounter chooses one source per candidate;
-        // from-among RemoveCounter and Sacrifice honor the [min, max] range;
+        // from-among RemoveCounter, Sacrifice, and optional zone-exile costs
+        // honor the [min, max] range;
         // every other kind selects exactly `count` objects.
         WaitingFor::PayCost {
             player,
@@ -1883,7 +1971,7 @@ pub fn candidate_actions_broad_with_probe(
         ),
         WaitingFor::PayCost {
             player,
-            kind: PayCostKind::Sacrifice,
+            kind: PayCostKind::Sacrifice | PayCostKind::ExileFromZone { .. },
             choices,
             count,
             min_count,
@@ -2436,11 +2524,10 @@ pub fn candidate_actions_broad_with_probe(
         } => {
             let mut actions: Vec<CandidateAction> = eligible_companions
                 .iter()
-                .enumerate()
-                .map(|(i, _)| {
+                .map(|choice| {
                     candidate(
                         GameAction::DeclareCompanion {
-                            card_index: Some(i),
+                            choice: CompanionDeclaration::Reveal(choice.clone()),
                         },
                         TacticalClass::Selection,
                         Some(*player),
@@ -2449,7 +2536,9 @@ pub fn candidate_actions_broad_with_probe(
                 .collect();
             // Always offer the option to decline
             actions.push(candidate(
-                GameAction::DeclareCompanion { card_index: None },
+                GameAction::DeclareCompanion {
+                    choice: CompanionDeclaration::Decline,
+                },
                 TacticalClass::Selection,
                 Some(*player),
             ));
@@ -3003,6 +3092,89 @@ pub fn candidate_actions_broad_with_probe(
             ));
             v
         }
+        // CR 732.2a: proposing a shortcut is optional. Offer both legal actions so the
+        // policy/search layer, rather than the candidate generator, decides whether an AI
+        // proposer declares or returns to ordinary priority.
+        // (Scored by `phase_ai::policies::loop_shortcut::LoopShortcutPolicy`.)
+        WaitingFor::LoopShortcut { proposer, .. } => vec![
+            candidate(
+                GameAction::DeclareShortcut {
+                    count: crate::analysis::decision_template::IterationCount::UntilLethal,
+                    template: None,
+                },
+                TacticalClass::Utility,
+                Some(*proposer),
+            ),
+            candidate(
+                GameAction::DeclineShortcut,
+                TacticalClass::Pass,
+                Some(*proposer),
+            ),
+        ],
+        // CR 732.2b/c: an opponent answers a loop-shortcut offer. PR-7 Phase 4c (LOW-2):
+        // self-preservation via the single-authority `smart_shortcut_response` — Shorten
+        // when the polled player has a meaningful way to break the loop, else Accept.
+        WaitingFor::RespondToShortcut { player, .. } => {
+            vec![candidate(
+                GameAction::RespondToShortcut {
+                    response: crate::ai_support::smart_shortcut_response(state, *player),
+                },
+                TacticalClass::Utility,
+                Some(*player),
+            )]
+        }
+        WaitingFor::PrecastCopyShortcutOffer {
+            proposer, epoch, ..
+        } => vec![
+            candidate(
+                GameAction::PrecastCopyShortcut {
+                    epoch: *epoch,
+                    response: crate::types::actions::PrecastCopyShortcutResponse::Propose {
+                        route_id: *epoch,
+                    },
+                },
+                TacticalClass::Utility,
+                Some(*proposer),
+            ),
+            candidate(
+                GameAction::PrecastCopyShortcut {
+                    epoch: *epoch,
+                    response: crate::types::actions::PrecastCopyShortcutResponse::Decline,
+                },
+                TacticalClass::Pass,
+                Some(*proposer),
+            ),
+        ],
+        WaitingFor::RespondToPrecastCopyShortcut {
+            player,
+            epoch,
+            breakpoint_ids,
+            ..
+        } => {
+            let response = match crate::ai_support::smart_shortcut_response(state, *player) {
+                crate::analysis::loop_check::ShortcutResponse::Shorten { .. } => {
+                    breakpoint_ids.first().map_or(
+                        crate::types::actions::PrecastCopyShortcutResponse::Accept,
+                        |breakpoint_id| {
+                            crate::types::actions::PrecastCopyShortcutResponse::Shorten {
+                                breakpoint_id: *breakpoint_id,
+                            }
+                        },
+                    )
+                }
+                crate::analysis::loop_check::ShortcutResponse::Accept => {
+                    crate::types::actions::PrecastCopyShortcutResponse::Accept
+                }
+            };
+            vec![candidate(
+                GameAction::PrecastCopyShortcut {
+                    epoch: *epoch,
+                    response,
+                },
+                TacticalClass::Utility,
+                Some(*player),
+            )]
+        }
     };
 
     actions
@@ -3110,7 +3282,10 @@ pub(crate) fn priority_actions_with_probe(
                         bf.layout_kind == Some(LayoutKind::Modal)
                             && bf.card_types.core_types.contains(&CoreType::Land)
                     });
-                if is_playable_land {
+                // CR 305.1: Don't offer a land whose specific card is denied by
+                // a `PlayLands` restriction (Conjurer's Ban) — mirrors the
+                // blanket `CantPlayLand` gate above, but per-object.
+                if is_playable_land && !casting::is_blocked_by_cant_play_lands(state, player, obj) {
                     actions.push(candidate(
                         GameAction::PlayLand {
                             object_id: obj_id,
@@ -3125,14 +3300,16 @@ pub(crate) fn priority_actions_with_probe(
         // CR 604.2 + CR 305.1: Lands playable from graveyard via static permission
         for (obj_id, _source) in casting::graveyard_lands_playable_by_permission(state, player) {
             if let Some(obj) = state.objects.get(&obj_id) {
-                actions.push(candidate(
-                    GameAction::PlayLand {
-                        object_id: obj_id,
-                        card_id: obj.card_id,
-                    },
-                    TacticalClass::Land,
-                    Some(player),
-                ));
+                if !casting::is_blocked_by_cant_play_lands(state, player, obj) {
+                    actions.push(candidate(
+                        GameAction::PlayLand {
+                            object_id: obj_id,
+                            card_id: obj.card_id,
+                        },
+                        TacticalClass::Land,
+                        Some(player),
+                    ));
+                }
             }
         }
         // CR 401.5 + CR 305.1: Land on top of library playable via
@@ -3142,26 +3319,30 @@ pub(crate) fn priority_actions_with_probe(
             casting::top_of_library_land_playable_by_permission(state, player)
         {
             if let Some(obj) = state.objects.get(&top_id) {
-                actions.push(candidate(
-                    GameAction::PlayLand {
-                        object_id: top_id,
-                        card_id: obj.card_id,
-                    },
-                    TacticalClass::Land,
-                    Some(player),
-                ));
+                if !casting::is_blocked_by_cant_play_lands(state, player, obj) {
+                    actions.push(candidate(
+                        GameAction::PlayLand {
+                            object_id: top_id,
+                            card_id: obj.card_id,
+                        },
+                        TacticalClass::Land,
+                        Some(player),
+                    ));
+                }
             }
         }
         for (obj_id, _source) in casting::exile_lands_playable_by_permission(state, player) {
             if let Some(obj) = state.objects.get(&obj_id) {
-                actions.push(candidate(
-                    GameAction::PlayLand {
-                        object_id: obj_id,
-                        card_id: obj.card_id,
-                    },
-                    TacticalClass::Land,
-                    Some(player),
-                ));
+                if !casting::is_blocked_by_cant_play_lands(state, player, obj) {
+                    actions.push(candidate(
+                        GameAction::PlayLand {
+                            object_id: obj_id,
+                            card_id: obj.card_id,
+                        },
+                        TacticalClass::Land,
+                        Some(player),
+                    ));
+                }
             }
         }
     }
@@ -4891,6 +5072,45 @@ mod tests {
     use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
     use crate::types::zones::Zone;
 
+    /// CR 732.2a: an AI-controlled priority holder receives both legal shortcut choices.
+    /// The `legal_actions` assertion reaches the simulation-filtered surface used by AI search;
+    /// reverting the DeclineShortcut candidate leaves that surface declaration-only.
+    #[test]
+    fn loop_shortcut_candidates_include_decline() {
+        let mut state = GameState::new_two_player(42);
+        state.waiting_for = WaitingFor::LoopShortcut {
+            proposer: PlayerId(1),
+            predicted_winner: Some(PlayerId(0)),
+            certificate: crate::analysis::loop_check::LoopCertificate {
+                unbounded: vec![],
+                win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
+                mandatory: false,
+                residual_board_delta: crate::analysis::resource::BoardDelta::default(),
+            },
+            schema: crate::analysis::decision_template::ShortcutDecisionSchema::default(),
+        };
+
+        let candidates = candidate_actions(&state);
+        assert!(
+            candidates.iter().any(|candidate| {
+                candidate.action == GameAction::DeclineShortcut
+                    && candidate.metadata.actor == Some(PlayerId(1))
+            }),
+            "the priority holder's DeclineShortcut must be an AI candidate"
+        );
+        assert!(candidates.iter().any(|candidate| {
+            matches!(candidate.action, GameAction::DeclareShortcut { .. })
+                && candidate.metadata.actor == Some(PlayerId(1))
+        }));
+
+        assert!(
+            crate::ai_support::legal_actions(&state)
+                .iter()
+                .any(|action| matches!(action, GameAction::DeclineShortcut)),
+            "the simulation-filtered AI action surface must retain DeclineShortcut"
+        );
+    }
+
     fn prepare_back_face_with_cost(mana_cost: ManaCost) -> crate::game::game_object::BackFaceData {
         let mut card_types = crate::types::card_type::CardType::default();
         card_types.core_types.push(CoreType::Sorcery);
@@ -5531,6 +5751,7 @@ mod tests {
             target_slots: vec![TargetSelectionSlot {
                 legal_targets: vec![TargetRef::Object(target_a), TargetRef::Object(target_b)],
                 optional: false,
+                chooser: None,
             }],
             mode_labels: Vec::new(),
             target_constraints: Vec::new(),
@@ -6570,6 +6791,7 @@ mod tests {
         // Baseline: no constraint, pool ≤ cap → all C(5,2) = 10 combinations.
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: ids.clone(),
             count: 2,
             reveal: false,
@@ -6592,6 +6814,7 @@ mod tests {
         // which is name-unique (no combo contains two cards sharing a name).
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: ids,
             count: 2,
             reveal: false,
@@ -6653,6 +6876,7 @@ mod tests {
         }
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: ids,
             count: 4,
             reveal: false,

@@ -17,7 +17,7 @@ use super::turn_control;
 /// is split into [`finalize_display_state`] so engine-owned fast-forward loops
 /// can keep rules state current while batching expensive display recomputes.
 pub fn finalize_rules_state(state: &mut GameState) {
-    // CR 614.12a + CR 615.5: Backward-compat for the 2026-05-09 audit M4
+    // Backward-compat for the 2026-05-09 audit M4
     // post-replacement-continuation slot fold. Idempotent on already-migrated
     // states; cheap on every other invocation.
     state.migrate_post_replacement_continuation();
@@ -402,6 +402,7 @@ pub fn mark_public_state_from_events(state: &mut GameState, events: &[GameEvent]
             // field `derive_display_state` computes. Grouped explicitly (never
             // `_ => {}`) so a new event variant must be classified to compile.
             GameEvent::GameStarted
+            | GameEvent::HiddenSearchViewed { .. }
             | GameEvent::PhaseChanged { .. }
             | GameEvent::PriorityPassed { .. }
             | GameEvent::SpellCast { .. }
@@ -510,6 +511,7 @@ mod tests {
                 kind: CastOfferKind::Discover {
                     hit_card: ObjectId(10),
                     exiled_misses: Vec::new(),
+                    source_id: ObjectId(11),
                     discover_value: 0,
                 },
             },
@@ -527,6 +529,7 @@ mod tests {
             kind: CastOfferKind::Discover {
                 hit_card: ObjectId(10),
                 exiled_misses: Vec::new(),
+                source_id: ObjectId(11),
                 discover_value: 0,
             },
         };
@@ -567,7 +570,7 @@ mod tests {
             PlayerId(0),
         );
         ability.multi_target = Some(crate::types::ability::MultiTargetSpec::unlimited(0));
-        state.pending_continuation = Some(PendingContinuation::new(Box::new(ability)));
+        state.pending_continuation = Some(PendingContinuation::new(Box::new(ability), &state));
         state.waiting_for = WaitingFor::EffectZoneChoice {
             enters_modified_if: None,
             player: PlayerId(0),

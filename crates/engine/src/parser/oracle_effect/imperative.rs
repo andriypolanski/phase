@@ -13,7 +13,7 @@ use super::counter::{
 };
 use super::lower::{
     parse_for_each_multiplier_prefix, parse_multi_target_count_expr,
-    parse_where_x_quantity_expression, strip_trailing_where_x,
+    parse_where_x_quantity_expression, strip_leading_quantifier, strip_trailing_where_x,
 };
 use super::mana::{try_parse_activate_only_condition, try_parse_add_mana_effect_with_context};
 use super::token::try_parse_token;
@@ -25,6 +25,7 @@ use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
 use crate::parser::oracle_nom::bridge::{nom_on_lower, nom_parse_lower, split_once_on_lower};
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::parser::oracle_nom::quantity as nom_quantity;
+use crate::parser::oracle_static::parse_activated_ability_cost_head;
 use crate::parser::oracle_static::{
     parse_continuous_modifications, parse_may_look_at_face_down_filter,
     parse_quoted_ability_modifications,
@@ -42,19 +43,89 @@ use crate::types::ability::{
 use crate::types::card_type::CoreType;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerCounterKind;
-use crate::types::statics::StaticMode;
+use crate::types::statics::{ActivationExemption, CostModifyMode, StaticMode};
 use crate::types::zones::Zone;
 
 use super::super::oracle_target::{
     parse_anaphoric_target_ref, parse_event_context_ref, parse_fight_target, parse_mass_type_union,
     parse_target, parse_target_with_ctx, parse_target_with_syntax, parse_type_phrase,
-    parse_word_bounded, resolve_pronoun_target, resolve_singular_exiled_card_target, TargetSyntax,
+    parse_type_phrase_with_ctx, parse_word_bounded, resolve_pronoun_target,
+    resolve_singular_exiled_card_target, TargetSyntax,
 };
 use super::super::oracle_util::{
     contains_possessive, contains_self_or_object_pronoun, parse_count_expr, parse_mana_symbols,
     parse_ordinal, parse_rounding_suffix_only, rewrite_quantity_expr_rounding, split_around,
     starts_with_possessive, TextPair,
 };
+
+/// CR 611.2 + CR 601.2f + CR 118.7: Parse the transient (this-turn)
+/// activated-ability cost-reduction effect — "activated abilities of <subject>
+/// cost {N} less to activate [this turn]" (The Dining Car's chaos ability).
+///
+/// This lowers to the SAME `StaticMode::ReduceAbilityCost` the printed static
+/// (Training Grounds) produces, wrapped in a `GenericEffect` that installs it as
+/// a `Duration::UntilEndOfTurn` continuous effect (CR 611.2). There is no
+/// separate transient cost-reduction pathway: the cost hook
+/// (`casting::reduce_activated_ability_cost`, the single CR 601.2f/CR 118.5 cost
+/// authority) reads this duration-scoped continuous effect right alongside
+/// battlefield statics. The reduction rides as an `AddStaticMode` modification —
+/// mirroring the `MayLookAtFaceDown` duration-bound permission (Lumbering
+/// Laundry) — so `effect.rs::register_transient_effect` keeps the `affected`
+/// source filter intact on the TCE (dynamic per CR 611.2c: a rules-modifying
+/// effect's affected set is re-evaluated each activation, so tokens created
+/// later this turn are still covered) and `layers.rs` does NOT graft it onto
+/// individual objects.
+///
+/// Reuses the shared static grammar head `parse_activated_ability_cost_head`, so
+/// the static and transient forms share one authority. Only the fixed-amount,
+/// `Reduce`, `"activated"` transient case has a real driver today; loyalty /
+/// `Raise` / variable-`{X}` transient wordings are left unparsed (→
+/// `Unimplemented`) rather than emitting a speculative effect.
+///
+/// The static/transient separation is a DISPATCH-SITE invariant, not a textual
+/// one: a standalone printed line (Training Grounds) is claimed by
+/// `parse_static_line` before `parse_imperative_effect` ever runs, so this arm
+/// only fires for a trigger's effect body. The turn scope is enforced by the
+/// `UntilEndOfTurn` duration (CR 514.2 cleanup expires the continuous effect),
+/// never by text keyed here (the "this turn" is already stripped upstream before
+/// the body reaches this parser).
+pub(crate) fn try_parse_activated_ability_cost_reduction_effect(
+    tp: TextPair,
+    ctx: &mut ParseContext,
+) -> Option<Effect> {
+    let (_rest, (keyword, subject, amount, is_x, mode)) =
+        parse_activated_ability_cost_head(tp.lower).ok()?;
+    if keyword != "activated" || is_x || !matches!(mode, CostModifyMode::Reduce) {
+        return None;
+    }
+    // "artifact tokens you control" → Typed[Artifact, You, FilterProp::Token].
+    let (source_filter, _after) = parse_type_phrase_with_ctx(subject, ctx);
+    // CR 601.2f + CR 118.7: identical shape to Training Grounds' printed static
+    // (dispatch.rs). `keyword: "activated"` matches every activated ability;
+    // `exemption`/`activator`/`minimum_mana`/`dynamic_count` carry no clause on
+    // any known transient reducer, so they take the static's defaults.
+    let reduce_mode = StaticMode::ReduceAbilityCost {
+        mode: CostModifyMode::Reduce,
+        keyword: "activated".to_string(),
+        amount,
+        minimum_mana: None,
+        dynamic_count: None,
+        exemption: ActivationExemption::None,
+        activator: None,
+    };
+    // CR 611.2c: The reduction rides as an `AddStaticMode` modification (read off
+    // the TCE by the cost hook), with the source filter in `affected`. `target:
+    // None` + `duration: UntilEndOfTurn` = a battlefield-wide, this-turn effect.
+    Some(Effect::GenericEffect {
+        static_abilities: vec![StaticDefinition::new(reduce_mode.clone())
+            .affected(source_filter)
+            .modifications(vec![ContinuousModification::AddStaticMode {
+                mode: reduce_mode,
+            }])],
+        duration: Some(Duration::UntilEndOfTurn),
+        target: None,
+    })
+}
 
 /// CR 702.26: Phasing direction used by the "phase in"/"phase out" dispatch.
 #[derive(Copy, Clone)]
@@ -1122,7 +1193,7 @@ fn strip_article(text: &str) -> &str {
         .unwrap_or(text)
 }
 
-/// CR 107.1a + CR 701.16a: Extract the typed filter embedded in an
+/// CR 107.1a + CR 701.21a: Extract the typed filter embedded in an
 /// `ObjectCount` quantity expression. Used by the sacrifice AST builder to
 /// lift "half the permanents they control" → ObjectCount's filter into the
 /// effect's target, so eligibility matches the same set the count was
@@ -1707,7 +1778,9 @@ pub(super) fn parse_targeted_action_ast(
                 }
             ) {
                 count = QuantityExpr::Ref {
-                    qty: QuantityRef::PreviousEffectAmount,
+                    qty: QuantityRef::PreviousEffectAmount {
+                        channel: crate::types::ability::DamageChannel::Total,
+                    },
                 };
             }
             let filter = parse_discard_card_filter(after_discard);
@@ -1759,6 +1832,29 @@ pub(super) fn parse_targeted_action_ast(
         ))
         .parse(input)
     }) {
+        // CR 115.1d + CR 601.2c: Strip a bare, BOUNDED "up to N" quantifier
+        // immediately after the verb before any destination or target parsing
+        // runs below. Left in place, the quantifier's own embedded "to"
+        // collides with the trailing "to <hand>" destination scan
+        // (`strip_return_destination_ext` just below) and derails BOTH
+        // destination recognition and the count together — Ill-Gotten Gains's
+        // "returns up to three cards from their graveyard to their hand"
+        // otherwise silently returns the ENTIRE graveyard instead of up to
+        // three cards. `strip_leading_quantifier` is pure slice arithmetic, so
+        // the remainder stays a true subslice of `rest` — no reconstruction
+        // needed. It ALSO recognizes the unrelated unbounded "any number of"
+        // quantifier (`max: None`) — that shape already has its own working
+        // mechanism a few lines below (`any_number_prefix` → `return_up_to` →
+        // `ReturnToZone.up_to`, the Grave Sifter class), so only act here on
+        // the genuinely bounded `max: Some(_)` result to avoid double-handling
+        // it or disturbing that already-correct path.
+        let (stripped_rest, return_multi_target) = strip_leading_quantifier(rest);
+        let return_multi_target = return_multi_target.filter(|spec| spec.max.is_some());
+        let rest = if return_multi_target.is_some() {
+            stripped_rest
+        } else {
+            rest
+        };
         let rest_lower = &lower[lower.len() - rest.len()..];
         let (trailing_target_text, trailing_dest) = super::strip_return_destination_ext(rest);
         let (leading_target_text, leading_dest) = super::strip_leading_return_destination_ext(rest);
@@ -1919,9 +2015,14 @@ pub(super) fn parse_targeted_action_ast(
                         origin,
                         destination: Zone::Hand,
                         up_to: return_up_to,
+                        multi_target: return_multi_target,
                     })
                 } else {
-                    Some(TargetedImperativeAst::Return { target, selection })
+                    Some(TargetedImperativeAst::Return {
+                        target,
+                        selection,
+                        multi_target: return_multi_target,
+                    })
                 }
             }
             Some(d) => {
@@ -1940,6 +2041,7 @@ pub(super) fn parse_targeted_action_ast(
                         origin,
                         destination: d.zone,
                         up_to: return_up_to,
+                        multi_target: return_multi_target,
                     })
                 }
             }
@@ -1951,7 +2053,11 @@ pub(super) fn parse_targeted_action_ast(
                 if is_mass {
                     Some(TargetedImperativeAst::ReturnAll { target, count })
                 } else {
-                    Some(TargetedImperativeAst::Return { target, selection })
+                    Some(TargetedImperativeAst::Return {
+                        target,
+                        selection,
+                        multi_target: return_multi_target,
+                    })
                 }
             }
         };
@@ -2125,7 +2231,16 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
         // implicit (1 per parent-affected ID; the runtime expands ParentTarget
         // into the full set at rebind time).
         TargetedImperativeAst::DiscardCard { target } => Effect::DiscardCard { count: 1, target },
-        TargetedImperativeAst::Return { target, selection } => Effect::Bounce {
+        // CR 115.1d + CR 601.2c: the "up to N" cardinality is an ability-level
+        // field (`ParsedEffectClause.multi_target`), not an `Effect::Bounce`
+        // field. It is recovered at the clause layer in
+        // `lower_imperative_family_ast`; this bare-Effect lowering
+        // deliberately ignores `multi_target`.
+        TargetedImperativeAst::Return {
+            target,
+            selection,
+            multi_target: _,
+        } => Effect::Bounce {
             target,
             destination: None,
             selection,
@@ -2169,11 +2284,17 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
             enters_modified_if: None,
         },
         // CR 400.6: Return to a non-hand, non-battlefield zone (graveyard, library).
+        // CR 115.1d + CR 601.2c: `multi_target` (the bounded "up to N" count)
+        // is an ability-level field (`ParsedEffectClause.multi_target`), not
+        // an `Effect::ChangeZone` field — recovered at the clause layer in
+        // `lower_imperative_family_ast`; this bare-Effect lowering
+        // deliberately ignores it.
         TargetedImperativeAst::ReturnToZone {
             target,
             origin,
             destination,
             up_to,
+            multi_target: _,
         } => Effect::ChangeZone {
             origin,
             destination,
@@ -2556,7 +2677,7 @@ pub(super) fn parse_search_and_creation_ast(
             source_zones: details.source_zones,
         });
     }
-    // CR 701.16a + CR 701.20a: "look at the top N" (private) and "reveal the top N" (public)
+    // CR 701.20e + CR 701.20a: "look at the top N" (private) and "reveal the top N" (public)
     // both produce Dig — the reveal flag distinguishes visibility semantics.
     if let Some((reveal, rest)) = nom_on_lower(text, lower, |input| {
         alt((
@@ -2660,7 +2781,7 @@ pub(super) fn parse_search_and_creation_ast(
             }
         }
     }
-    // CR 701.16a: "look at that many cards from the top of your library" — variable-count dig
+    // CR 701.20e: "look at that many cards from the top of your library" — variable-count dig
     // where "that many" references the result of a previous effect (e.g., damage dealt).
     if let Some((reveal, _)) = nom_on_lower(text, lower, |input| {
         alt((
@@ -4793,6 +4914,7 @@ pub(super) fn lower_choose_ast(ast: ChooseImperativeAst) -> Effect {
             choose_filter,
             sacrifice_filter,
             total_power_cap,
+            keeper_constraint: None,
         },
         // CR 115.1c + CR 601.2c: Two independent target slots. The bare-Effect
         // lowering surfaces only the first slot — the chained `TargetOnly`
@@ -5983,6 +6105,30 @@ pub(super) fn parse_put_ast(
         || nom_primitives::scan_contains(lower, "each"))
         && nom_primitives::scan_contains(lower, "from");
 
+    // CR 608.2c + CR 401.4: a "put all <filter> revealed this way into <z1> and
+    // the rest on the bottom/top of <library> …" partition must reach the
+    // tracked-set path (`try_parse_put_zone_change_parts`, called below) — NOT
+    // the single-card Bottom/TopOfLibrary reposition. The rest clause supplies
+    // the "on the bottom/top of … library" phrase; without this guard it
+    // hijacks the whole sentence (The Fourteenth Doctor, Garruk Caller of
+    // Beasts, Goblin Ringleader, and the rest of the reveal-partition class).
+    // Scoped to the REVEAL-origin anaphor ("revealed this way") plus the "the
+    // rest" complement subject so ordinary single-card "put it on the bottom"
+    // text is unaffected. The anaphor is deliberately the full "revealed this
+    // way" phrase, not the bare "this way": an exile-origin partition whose
+    // primary subject is itself a negation over the *cast* set — Muse Vortex's
+    // "put the exiled instant and sorcery cards that weren't cast this way into
+    // your hand and the rest on the bottom of your library in a random order" —
+    // matches "the rest" + "this way" but is NOT the reveal-partition shape this
+    // guard means (it has no revealed tracked set and no targeting), so it must
+    // fall through to its own positional handling rather than be hijacked here.
+    // This is a gating pre-filter, not the classifier — the structural
+    // classification is delegated to `try_parse_put_zone_change_parts` (which
+    // recognizes the reveal tracked anaphor via `tracked_anaphor_cause`),
+    // mirroring the `has_mass_zone_origin` idiom above.
+    let is_this_way_partition = nom_primitives::scan_contains(lower, "the rest")
+        && nom_primitives::scan_contains(lower, "revealed this way");
+
     // "put X on top of Y's library" — specific position, no auto-shuffle.
     // Must check before try_parse_put_zone_change which would emit ChangeZone (auto-shuffles).
     // Fixed-count forms with an origin zone ("from your graveyard") remain library
@@ -5990,6 +6136,7 @@ pub(super) fn parse_put_ast(
     if nom_primitives::scan_contains(lower, "on top of")
         && nom_primitives::scan_contains(lower, "library")
         && !has_mass_zone_origin
+        && !is_this_way_partition
     {
         return Some(PutImperativeAst::TopOfLibrary);
     }
@@ -6006,6 +6153,7 @@ pub(super) fn parse_put_ast(
     if nom_primitives::scan_contains(lower, "on the bottom of")
         && nom_primitives::scan_contains(lower, "library")
         && !has_mass_zone_origin
+        && !is_this_way_partition
     {
         return Some(PutImperativeAst::BottomOfLibrary);
     }
@@ -6071,6 +6219,14 @@ pub(super) fn parse_put_ast(
                 )
                 .then(|| super::parse_put_rest_destination(lower))
                 .flatten();
+                // CR 401.4: only meaningful when the rest returns to the
+                // library — capture whether it lands on the bottom or top so the
+                // complement move suppresses the default shuffle and places at
+                // that position (The Fourteenth Doctor / Garruk / Goblin
+                // Ringleader class).
+                let rest_library_position = (rest_destination == Some(Zone::Library))
+                    .then(|| super::parse_put_rest_library_position(lower))
+                    .flatten();
                 Some(PutImperativeAst::ZoneChangeAll {
                     origin,
                     destination,
@@ -6080,6 +6236,7 @@ pub(super) fn parse_put_ast(
                     library_position,
                     random_order,
                     rest_destination,
+                    rest_library_position,
                 })
             }
             Effect::ChangeZone {
@@ -6185,6 +6342,10 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
             // intercepts the partition form before this bare-effect lowering.
             // Here it has already been consumed (or was absent).
             rest_destination: _,
+            // CR 401.4: The rest pile's library position belongs to the
+            // complement move, which `lower_imperative_family_ast` emits; the
+            // bare (non-partition) lowering never carries it.
+            rest_library_position: _,
         } => Effect::ChangeZoneAll {
             origin,
             destination,
@@ -8131,7 +8292,8 @@ pub(super) fn parse_counter_ast(text: &str, lower: &str) -> Option<ZoneCounterIm
     // `parse_target("... spell with mana value X or less")` already scopes
     // the spell phrase to the stack through the shared target parser. Keep this
     // path on that building block and only apply the trailing X definition.
-    let target = super::apply_where_x_to_filter(target, where_x_expression.as_deref());
+    // CR 107.3c: fail honestly instead of fabricating a raw-text placeholder.
+    let target = super::apply_where_x_to_filter(target, where_x_expression.as_deref())?;
     // CR 118.12: Parse "unless its controller pays {X}" for conditional counters
     let unless_pay = parse_counter_unless_pay(rest)?;
     Some(ZoneCounterImperativeAst::Counter {
@@ -10718,7 +10880,24 @@ pub(super) fn lower_imperative_family_ast(ast: ImperativeFamilyAst) -> ParsedEff
             library_position,
             random_order,
             rest_destination: Some(rest_destination),
+            rest_library_position,
         }) => {
+            // CR 401.4: "in a random order" (and the bottom/top position)
+            // describes whichever pile returns to the library. Exactly one pile
+            // does in the printed partition class (the other goes to a
+            // hidden/unordered zone — hand/graveyard/exile), so route position
+            // and randomness to that pile. `random_order` was scanned by
+            // `try_parse_put_zone_change_parts` from the post-primary tail
+            // (which contains the rest clause), so it belongs to the rest
+            // whenever the rest is the library pile. Note "in a random order"
+            // (The Fourteenth Doctor) → random_order true; "in any order"
+            // (Garruk, Goblin Ringleader) → random_order false (owner arranges),
+            // because the scan only matches "in a random order".
+            let (primary_random, complement_random) = if rest_destination == Zone::Library {
+                (false, random_order)
+            } else {
+                (random_order, false)
+            };
             // "The rest" excludes the chosen subset by predicate. When the
             // primary names a filtered subset, negate its inner filter;
             // otherwise (no inner filter) the complement is the full tracked set.
@@ -10747,8 +10926,11 @@ pub(super) fn lower_imperative_family_ast(ast: ImperativeFamilyAst) -> ParsedEff
                 enter_tapped: crate::types::zones::EtbTapState::from_legacy_bool(enter_tapped),
                 enter_with_counters: vec![],
                 face_down_profile: None,
+                // CR 401.4: `library_position` is the PRIMARY move's own
+                // position (set only when the primary destination is a library
+                // pile); randomness for the primary is routed above.
                 library_position,
-                random_order,
+                random_order: primary_random,
             };
             let complement = Effect::ChangeZoneAll {
                 origin: None,
@@ -10758,8 +10940,9 @@ pub(super) fn lower_imperative_family_ast(ast: ImperativeFamilyAst) -> ParsedEff
                 enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 enter_with_counters: vec![],
                 face_down_profile: None,
-                library_position: None,
-                random_order: false,
+                // CR 401.4: the "rest" pile's bottom/top position and randomness.
+                library_position: rest_library_position,
+                random_order: complement_random,
             };
             let mut clause = parsed_clause(primary);
             clause.sub_ability = Some(Box::new(AbilityDefinition::new(
@@ -10932,6 +11115,50 @@ pub(super) fn lower_imperative_family_ast(ast: ImperativeFamilyAst) -> ParsedEff
             let multi_target = match &ast {
                 TargetedImperativeAst::Tap { multi_target, .. }
                 | TargetedImperativeAst::Untap { multi_target, .. } => multi_target.clone(),
+                _ => None,
+            };
+            let mut clause = parsed_clause(lower_targeted_action_ast(ast));
+            clause.multi_target = multi_target;
+            clause
+        }
+        // CR 115.1d + CR 601.2c: "return up to N cards from your graveyard to
+        // your hand" (Ill-Gotten Gains) or "return that many cards …"
+        // (dynamic count) captured a `multi_target` on a non-targeted
+        // (`BounceSelection::AtResolution`) return. The bare-Effect lowering
+        // (`lower_targeted_action_ast`) cannot carry it, so intercept here and
+        // thread the count onto the clause — mirroring the Tap/Untap arm
+        // above. The runtime resolves the card selection via the shared
+        // `EffectZoneChoice` multi-target picker (Wrenn and Six precedent).
+        ImperativeFamilyAst::Structured(ImperativeAst::Targeted(
+            ast @ TargetedImperativeAst::Return {
+                multi_target: Some(_),
+                ..
+            },
+        )) => {
+            let multi_target = match &ast {
+                TargetedImperativeAst::Return { multi_target, .. } => multi_target.clone(),
+                _ => None,
+            };
+            let mut clause = parsed_clause(lower_targeted_action_ast(ast));
+            clause.multi_target = multi_target;
+            clause
+        }
+        // CR 115.1d + CR 601.2c + CR 700.4: sibling of the `Return` arm above
+        // for the `origin.is_some()` shape ("return up to N cards from your
+        // graveyard to your hand" lowers to a `ChangeZone`, not a `Bounce`,
+        // when an explicit origin zone is present — Ill-Gotten Gains). Mirrors
+        // `ZoneCounterImperativeAst::Exile`'s `multi_target` handling (#5649 /
+        // Forage precedent): `Effect::ChangeZone` has no count slot of its
+        // own, so the quantity rides the clause's `MultiTargetSpec` instead,
+        // resolved by the same shared `EffectZoneChoice` picker.
+        ImperativeFamilyAst::Structured(ImperativeAst::Targeted(
+            ast @ TargetedImperativeAst::ReturnToZone {
+                multi_target: Some(_),
+                ..
+            },
+        )) => {
+            let multi_target = match &ast {
+                TargetedImperativeAst::ReturnToZone { multi_target, .. } => multi_target.clone(),
                 _ => None,
             };
             let mut clause = parsed_clause(lower_targeted_action_ast(ast));
@@ -19638,6 +19865,122 @@ mod tests {
             def.multi_target,
             Some(MultiTargetSpec::exact(QuantityExpr::Fixed { value: 2 })),
             "the count must ride the clause MultiTargetSpec as exact(Fixed {{ 2 }})"
+        );
+    }
+
+    /// Ill-Gotten Gains class (issue filed alongside this fix): "return up to
+    /// N cards from your graveyard to your hand" with no "target" keyword
+    /// lowers to `Effect::ChangeZone` (via `ReturnToZone` — an explicit origin
+    /// zone routes here rather than the target-less `Return`/`Bounce` arm,
+    /// confirmed against the actual parser output) — the shape the *targeted*
+    /// sibling "return up to N target cards …" already handles correctly via
+    /// `strip_optional_target_prefix`. Before this fix the bare "up to N"
+    /// prefix was silently absorbed by the destination/target parser: the
+    /// count never reached `ParsedEffectClause.multi_target`, so the effect
+    /// resolved as an unbounded "return every matching graveyard card"
+    /// instead of "up to N". Pins the `Fixed` arm (this test) and the dynamic
+    /// arm (below), plus a negative proving the singular case is untouched.
+    #[test]
+    fn return_up_to_n_cards_from_graveyard_binds_bounded_multi_target() {
+        let def = crate::parser::oracle_effect::parse_effect_chain(
+            "return up to three cards from your graveyard to your hand",
+            AbilityKind::Spell,
+        );
+        let Effect::ChangeZone {
+            origin: Some(crate::types::zones::Zone::Graveyard),
+            destination: crate::types::zones::Zone::Hand,
+            target,
+            ..
+        } = &*def.effect
+        else {
+            panic!(
+                "expected a graveyard-to-hand ChangeZone, got {:?}",
+                def.effect
+            );
+        };
+        let TargetFilter::Typed(tf) = target else {
+            panic!("expected a Typed graveyard-card filter, got {target:?}");
+        };
+        assert!(
+            tf.properties
+                .contains(&crate::types::ability::FilterProp::InZone {
+                    zone: crate::types::zones::Zone::Graveyard
+                }),
+            "target must be constrained to the graveyard, got {target:?}"
+        );
+        assert_eq!(
+            def.multi_target,
+            Some(MultiTargetSpec::up_to(QuantityExpr::Fixed { value: 3 })),
+            "the count must ride the clause MultiTargetSpec as up_to(Fixed {{ 3 }}), got {:?}",
+            def.multi_target
+        );
+    }
+
+    /// Dynamic-count sibling of the test above: "return up to that many
+    /// cards …" (the Nefarious-Lich-shaped anaphoric back-reference, CR
+    /// 608.2c, composed with the "up to" quantifier this fix handles) must
+    /// bind `QuantityRef::EventContextAmount` through the same seam rather
+    /// than silently dropping to a fixed/absent count. `strip_leading_quantifier`
+    /// only recognizes "any number of "/"up to " as top-level prefixes (a bare
+    /// "that many" with no "up to" is a distinct, not-yet-handled shape — see
+    /// `parse_exile_count_from_your_graveyard`'s bare "that many" arm for
+    /// `exile`, #5649), so this exercises the dynamic count *inside* the "up
+    /// to" branch via `parse_multi_target_count_expr`; not tied to a specific
+    /// named card.
+    #[test]
+    fn return_up_to_that_many_cards_from_graveyard_binds_dynamic_multi_target() {
+        let def = crate::parser::oracle_effect::parse_effect_chain(
+            "return up to that many cards from your graveyard to your hand",
+            AbilityKind::Spell,
+        );
+        assert!(
+            matches!(
+                &*def.effect,
+                Effect::ChangeZone {
+                    origin: Some(crate::types::zones::Zone::Graveyard),
+                    destination: crate::types::zones::Zone::Hand,
+                    ..
+                }
+            ),
+            "expected a graveyard-to-hand ChangeZone, got {:?}",
+            def.effect
+        );
+        assert_eq!(
+            def.multi_target,
+            Some(MultiTargetSpec::up_to(QuantityExpr::Ref {
+                qty: crate::types::ability::QuantityRef::EventContextAmount
+            })),
+            "the dynamic count must ride the clause MultiTargetSpec, got {:?}",
+            def.multi_target
+        );
+    }
+
+    /// Negative: the ordinary singular "return a card from your graveyard to
+    /// your hand" (Forbidden Crypt / Recall / Skullwinder class) carries no
+    /// quantifier at all and must stay `multi_target: None` — the resolver's
+    /// existing single-object default is unaffected by this fix.
+    #[test]
+    fn return_a_card_from_graveyard_has_no_multi_target() {
+        let def = crate::parser::oracle_effect::parse_effect_chain(
+            "return a card from your graveyard to your hand",
+            AbilityKind::Spell,
+        );
+        assert!(
+            matches!(
+                &*def.effect,
+                Effect::ChangeZone {
+                    origin: Some(crate::types::zones::Zone::Graveyard),
+                    destination: crate::types::zones::Zone::Hand,
+                    ..
+                }
+            ),
+            "expected a graveyard-to-hand ChangeZone, got {:?}",
+            def.effect
+        );
+        assert_eq!(
+            def.multi_target, None,
+            "a bare singular return must not gain a multi_target, got {:?}",
+            def.multi_target
         );
     }
 }

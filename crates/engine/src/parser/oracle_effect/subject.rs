@@ -9,30 +9,30 @@ use nom::Parser;
 
 use super::animation::{
     animation_modifications_with_replacement, has_in_addition_to_other_colors,
-    has_in_addition_to_other_types, parse_animation_spec,
+    has_in_addition_to_other_types, parse_animation_spec, split_in_addition_tail,
 };
 use super::imperative;
 use super::lower::BOUNDED_TARGET_CARDINALITIES;
 use super::{resolve_it_pronoun, ParseContext};
 use crate::parser::oracle_ir::ast::*;
 use crate::types::ability::{
-    AbilityDefinition, AbilityKind, ChosenSubtypeKind, ContinuousModification, ControllerRef,
-    Duration, EachDamageRecipient, Effect, FilterProp, MultiTargetSpec, PlayerFilter, PlayerScope,
-    PtValue, QuantityExpr, QuantityRef, StaticCondition, StaticDefinition, TargetFilter,
-    TypedFilter,
+    AbilityDefinition, AbilityKind, ChosenSubtypeKind, ColorChangeMode, ContinuousModification,
+    ControllerRef, Duration, EachDamageRecipient, Effect, FilterProp, MultiTargetSpec,
+    PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef, StaticCondition,
+    StaticDefinition, TargetFilter, TypedFilter,
 };
 use crate::types::game_state::DayNight;
 use crate::types::keywords::Keyword;
 use crate::types::phase::Phase;
 use crate::types::statics::{ProhibitionScope, StaticMode};
 
-use super::super::oracle_keyword::parse_keyword_from_oracle;
+use super::super::oracle_keyword::parse_granted_keyword_fragment;
 use super::super::oracle_nom::bridge::nom_on_lower;
 use super::super::oracle_nom::duration::parse_duration;
 use super::super::oracle_nom::error::OracleResult;
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::quantity as nom_quantity;
-use super::super::oracle_nom::target::parse_event_context_ref;
+use super::super::oracle_nom::target::{parse_event_context_ref, parse_supertype_word};
 use super::super::oracle_quantity;
 use super::super::oracle_static::{
     classify_block_exception, parse_additive_type_clause_modifications,
@@ -196,6 +196,15 @@ pub(super) fn try_parse_subject_predicate_ast(
             },
             ctx,
         ));
+    }
+
+    // CR 205.4b + CR 611.2a: one-shot supertype removal — "target <filter> isn't
+    // / is not / is no longer <supertype>", the RemoveSupertype sibling of the
+    // "becomes <supertype>" AddSupertype one-shot above (Arcum's Weathervane,
+    // Thermal Flux). Runs after the become arm because its subject is always
+    // targeted, never a carried-over conjunct.
+    if let Some(ast) = try_parse_subject_supertype_removal_clause(text, ctx) {
+        return Some(ast);
     }
 
     // CR 509.1b + CR 611.2c: "<source> and up to N other target creature(s) can't
@@ -725,6 +734,103 @@ fn try_parse_subject_become_clause(
         parse_subject_application(subject, ctx)?
     };
     build_become_clause(application, &predicate, ctx)
+}
+
+/// CR 205.4b + CR 611.2a: One-shot supertype REMOVAL on a targeted permanent —
+/// "target <filter> isn't / is not / is no longer <supertype> [until end of
+/// turn]". This is the inverse of the "target <filter> becomes <supertype>"
+/// one-shot that [`build_become_clause`] already lowers (it emits
+/// [`ContinuousModification::AddSupertype`]); this arm emits the sibling
+/// [`ContinuousModification::RemoveSupertype`] into the SAME targeted
+/// [`Effect::GenericEffect`] continuous grant, which `game/layers.rs` already
+/// applies in both directions (CR 205.4 layer 4). Parser-only: no new effect
+/// variant and no resolver path.
+///
+/// Anchored on the AddSupertype sibling that ships on the very same cards:
+///   * Arcum's Weathervane pairs "{2}, {T}: Target snow land is no longer snow."
+///     (this arm) with "{2}, {T}: Target nonsnow basic land becomes snow."
+///     (already supported).
+///   * Thermal Flux pairs the "isn't snow until end of turn" mode with the
+///     already-supported "becomes snow until end of turn" mode.
+///
+/// Scoped strictly to the five CR 205.4a supertype words via `all_consuming`, so
+/// the copula-negation core-type removal path ("target creature isn't a creature
+/// until end of turn" -> `RemoveType`) is never claimed here, and gated on an
+/// explicit target so anaphoric / self-referential copy-exception forms
+/// ("it isn't legendary") do not match.
+fn try_parse_subject_supertype_removal_clause(
+    text: &str,
+    ctx: &mut ParseContext,
+) -> Option<ClauseAst> {
+    let lower = text.to_lowercase();
+    // The copula-negation seam. Keep recognition in the nom grammar and map the
+    // remainder back to original case through `nom_on_lower`; the three copulas
+    // are independent alternatives, not a full-string permutation list.
+    let (subject_lower, predicate) = nom_on_lower(text, &lower, |input| {
+        map(
+            alt((
+                terminated(
+                    take_until::<_, _, OracleError<'_>>(" isn't "),
+                    tag(" isn't "),
+                ),
+                terminated(
+                    take_until::<_, _, OracleError<'_>>(" is no longer "),
+                    tag(" is no longer "),
+                ),
+                terminated(
+                    take_until::<_, _, OracleError<'_>>(" is not "),
+                    tag(" is not "),
+                ),
+            )),
+            str::to_owned,
+        )
+        .parse(input)
+    })?;
+    let subject = text[..subject_lower.len()].trim();
+    if subject.is_empty() {
+        return None;
+    }
+    // Peel a trailing duration ("until end of turn"); CR 611.2a: a one-shot type
+    // change with no explicit duration is permanent.
+    let (supertype_text, duration) = super::strip_trailing_duration(predicate.trim());
+    let supertype_lower = supertype_text
+        .trim()
+        .trim_end_matches('.')
+        .trim()
+        .to_lowercase();
+    let (_, supertype) = all_consuming(parse_supertype_word)
+        .parse(supertype_lower.as_str())
+        .ok()?;
+
+    // Only a genuinely targeted subject reaches the shared AddSupertype runtime
+    // as `ParentTarget`; decline anaphoric / self-referential subjects (no
+    // target) so an out-of-context "it isn't legendary" cannot animate here.
+    let application = parse_subject_application(subject, ctx)?;
+    application.target.as_ref()?;
+    let affected = static_affected_for_application(&application);
+    let duration = duration.or(Some(Duration::Permanent));
+    let effect = Effect::GenericEffect {
+        static_abilities: vec![StaticDefinition::continuous()
+            .affected(affected)
+            .modifications(vec![ContinuousModification::RemoveSupertype { supertype }])
+            .description(text.to_string())],
+        duration: duration.clone(),
+        target: application.target.clone(),
+    };
+    Some(ClauseAst::SubjectPredicate {
+        subject: Box::new(SubjectPhraseAst {
+            affected: application.affected,
+            target: application.target,
+            multi_target: application.multi_target,
+            inherits_parent: application.inherits_parent,
+            is_optional: application.is_optional,
+        }),
+        predicate: Box::new(PredicateAst::Become {
+            effect,
+            duration,
+            sub_ability: None,
+        }),
+    })
 }
 
 /// CR 208.1: which base characteristic(s) a "base power [and toughness] become"
@@ -1421,6 +1527,38 @@ fn filter_carries_same_name_as_parent_target(filter: &TargetFilter) -> bool {
     }
 }
 
+/// CR 611.2b + CR 110.5: Recognize a trailing "for as long as &lt;target
+/// anaphor&gt; remains tapped" duration on a `CantBeActivated` grant (Braided
+/// Net: "Its activated abilities can't be activated for as long as it remains
+/// tapped."). The anaphoric subject ("it" / "that creature" / …) co-refers with
+/// the grant's target, which the arm binds to `ParentTarget`, so the tapped
+/// gate is `IsTapped { scope: Target }` — NOT the standalone duration
+/// combinator's source-scoped `SourceIsTapped`
+/// (`oracle_nom::duration::parse_remains_tapped`), which has no clause subject
+/// to disambiguate and defaults to the source. Returns the tapped-bound
+/// `Duration` when the clause is present, `None` otherwise (caller keeps the
+/// default `UntilEndOfTurn`, so suffix-free prohibitions are unchanged).
+fn tapped_bound_prohibition_duration(lower: &str) -> Option<Duration> {
+    nom_primitives::scan_at_word_boundaries(lower, |input: &str| {
+        let (input, _) = tag::<_, _, OracleError<'_>>("for as long as ").parse(input)?;
+        let (input, _) = alt((
+            tag("it"),
+            tag("that creature"),
+            tag("that permanent"),
+            tag("that artifact"),
+            tag("~"),
+        ))
+        .parse(input)?;
+        let (input, _) = tag(" remains tapped").parse(input)?;
+        Ok((input, ()))
+    })
+    .map(|()| Duration::ForAsLongAs {
+        condition: StaticCondition::IsTapped {
+            scope: crate::types::ability::ObjectScope::Target,
+        },
+    })
+}
+
 fn try_parse_subject_restriction_clause(
     text: &str,
     ctx: &mut ParseContext,
@@ -1613,6 +1751,10 @@ fn try_parse_subject_restriction_clause(
         let affected = static_affected_for_application(&application);
         // CR 605.1a: "unless they're mana abilities" exemption rides on the mode.
         let exemption = parse_cant_be_activated_exemption_in_text(&lower);
+        // CR 611.2b + CR 110.5: "for as long as it remains tapped" (Braided Net)
+        // ties the prohibition to the target's tap state; without the suffix
+        // (Dovin Baan, Xathrid Gorgon) it keeps the default end-of-turn duration.
+        let duration = tapped_bound_prohibition_duration(&lower).or(Some(Duration::UntilEndOfTurn));
         let mode = StaticMode::CantBeActivated {
             who: ProhibitionScope::AllPlayers,
             source_filter: TargetFilter::SelfRef,
@@ -1623,12 +1765,12 @@ fn try_parse_subject_restriction_clause(
                 static_abilities: vec![StaticDefinition::new(mode.clone())
                     .affected(affected)
                     .modifications(vec![ContinuousModification::AddStaticMode { mode }])],
-                duration: Some(Duration::UntilEndOfTurn),
+                duration: duration.clone(),
                 target: application.target,
             },
             distribute: None,
             multi_target: None,
-            duration: Some(Duration::UntilEndOfTurn),
+            duration,
             sub_ability: None,
             condition: None,
             optional: false,
@@ -3138,7 +3280,7 @@ fn try_split_pump_compound(
     let remainder = remainder_tp.original.trim();
 
     // Parse the pump clause first to check whether it carries its own duration.
-    let (power, toughness, duration) =
+    let (power, toughness, mut duration) =
         super::lower::parse_pump_clause_with_context(pump_part, ctx)?;
 
     // Guard: when the pump part has NO duration (e.g., "get +2/+2 and gain flying
@@ -3157,9 +3299,24 @@ fn try_split_pump_compound(
 
     let effect = build_pump_effect(application, power, toughness);
 
-    // Parse the remainder as an independent effect chain (sub_ability).
+    // CR 608.2d: a pump compounded with a modal keyword grant --
+    // "gets +1/+1 and gains your choice of deathtouch or lifelink" (Alchemist's
+    // Gift) -- has a grant half that is a two-branch player choice, so it cannot
+    // collapse into a single `ContinuousModification` the way a fixed "and gains
+    // trample" does (which the guard above routes to `build_continuous_clause`'s
+    // coalescing path). Route the choice through the same
+    // `parse_keyword_choice_grant` / `keyword_choice_branch` builders the
+    // standalone modal grant uses (`build_keyword_choice_clause`), riding the
+    // pump as a `ChooseOneOf` sub_ability keyed to the pumped creature
+    // (`ParentTarget`). Non-modal remainders ("you gain 1 life") fall back to
+    // the general effect-chain parse.
     let sub_ability = if remainder.is_empty() {
         None
+    } else if let Some((choice, choice_duration)) =
+        build_keyword_choice_sub_ability(application, remainder)
+    {
+        duration = duration.or(choice_duration);
+        Some(Box::new(choice))
     } else {
         Some(Box::new(super::parse_effect_chain(
             remainder,
@@ -3178,6 +3335,42 @@ fn try_split_pump_compound(
     })
 }
 
+/// CR 608.2d: build the modal keyword-grant half of a pump
+/// compound ("gets +1/+1 AND gains your choice of X or Y") as a `ChooseOneOf`
+/// sub_ability. Reuses the same `parse_keyword_choice_grant` /
+/// `keyword_choice_branch` builders as the standalone `build_keyword_choice_clause`,
+/// keyed to the pumped creature via `static_affected_for_application`
+/// (`ParentTarget` for a targeted application). Returns `None` for a non-modal
+/// remainder so the caller falls back to the general effect-chain parse.
+fn build_keyword_choice_sub_ability(
+    application: &SubjectApplication,
+    remainder: &str,
+) -> Option<(AbilityDefinition, Option<Duration>)> {
+    // The split remainder keeps its conjugated verb ("gains ..."):
+    // `deconjugate_verb` in `build_continuous_clause` only normalizes the
+    // compound's leading verb ("gets"), so the second clause arrives as
+    // "gains your choice of ...". `parse_keyword_choice_grant` anchors on the
+    // bare "gain ..." form, so deconjugate the remainder here first.
+    let normalized = deconjugate_verb(remainder);
+    let (first, second, duration) = parse_keyword_choice_grant(&normalized)?;
+    let affected = static_affected_for_application(application);
+    let choice_duration = duration.clone();
+    let branches = vec![
+        keyword_choice_branch(first, affected.clone(), None, duration.clone()),
+        keyword_choice_branch(second, affected, None, duration),
+    ];
+    Some((
+        AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ChooseOneOf {
+                chooser: PlayerFilter::Controller,
+                branches,
+            },
+        ),
+        choice_duration,
+    ))
+}
+
 fn parse_keyword_choice_grant(predicate: &str) -> Option<(Keyword, Keyword, Option<Duration>)> {
     let lower = predicate.to_lowercase();
 
@@ -3187,8 +3380,8 @@ fn parse_keyword_choice_grant(predicate: &str) -> Option<(Keyword, Keyword, Opti
     {
         let (keyword_text, duration) = super::strip_trailing_duration(choice_text);
         let (_, (left, right)) = nom_primitives::split_once_on(keyword_text.trim(), " or ").ok()?;
-        let first = parse_keyword_from_oracle(left.trim())?;
-        let second = parse_keyword_from_oracle(right.trim())?;
+        let first = parse_granted_keyword_fragment(left.trim())?;
+        let second = parse_granted_keyword_fragment(right.trim())?;
         return Some((first, second, duration.or(Some(Duration::UntilEndOfTurn))));
     }
 
@@ -3216,7 +3409,7 @@ fn parse_keyword_choice_grant(predicate: &str) -> Option<(Keyword, Keyword, Opti
         nom_primitives::split_once_on(quality_text.trim(), " or from ").ok()?;
     // The halves are bare qualities (the "protection from " prefix is already
     // stripped), so map each with parse_protection_target — NOT
-    // parse_keyword_from_oracle, which expects the full "protection from …" form.
+    // parse_granted_keyword_fragment, which expects the full "protection from …" form.
     let first = Keyword::Protection(crate::types::keywords::parse_protection_target(left.trim()));
     let second = Keyword::Protection(crate::types::keywords::parse_protection_target(
         right.trim(),
@@ -4320,8 +4513,9 @@ fn try_parse_set_day_night(become_text: &str) -> Option<ParsedEffectClause> {
 ///   This creature becomes that color", Foraging Wickermaw) — the mana producer
 ///   records it as `ChosenAttribute::Color` on the source
 ///   (`produce_mana_from_ability`), and this `AddChosenColor` reads it live at
-///   Layer 5. Despite the additive-sounding `Add` prefix, `AddChosenColor` SETS
-///   the color at Layer 5 (CR 105.3 / CR 613.1e) — see its definition.
+///   Layer 5 with [`ColorChangeMode::Set`] (CR 105.3 / CR 613.1e) — "becomes
+///   that color" replaces prior colors unless an "in addition" retain-suffix
+///   selected [`ColorChangeMode::Add`].
 ///
 /// Returns `None` for any other predicate so the caller falls through to the
 /// fixed-color animation path (which already handles single named colors) and to
@@ -4347,7 +4541,9 @@ fn try_parse_become_color_modification(become_text: &str) -> Option<ContinuousMo
     .parse(lower.as_str())
     .is_ok()
     {
-        return Some(ContinuousModification::AddChosenColor);
+        return Some(ContinuousModification::AddChosenColor {
+            mode: ColorChangeMode::Set,
+        });
     }
     None
 }
@@ -4366,8 +4562,8 @@ fn ends_with_of_your_choice(lower: &str) -> bool {
 }
 
 /// CR 205.3 / CR 305.7 / CR 105.3: Parse "become the [creature type / basic land
-/// type / color] of your choice [and <keyword grant>]" into a Choose →
-/// GenericEffect(apply) chain.
+/// type / color] of your choice [in addition to its other types] [and
+/// <keyword grant>]" into a Choose → GenericEffect(apply) chain.
 ///
 /// The optional trailing "and <keyword grant>" clause (Mondo Gecko: "becomes the
 /// color of your choice and gains hexproof from that color") composes the chosen
@@ -4376,6 +4572,17 @@ fn ends_with_of_your_choice(lower: &str) -> bool {
 /// which resolves "hexproof from that color" to `HexproofFrom(ChosenColor)`
 /// (CR 702.11d) — the same `ChosenAttribute::Color` the `AddChosenColor`
 /// modification reads, so the protection tracks the chosen color.
+///
+/// The optional "in addition to its other types" retention marker (Navigator's
+/// Compass: "becomes the basic land type of your choice in addition to its
+/// other types") is peeled off via the shared `split_in_addition_tail` splitter
+/// — the same one `build_become_clause`'s fixed-value fallback already uses for
+/// the non-choice "becomes a `<type>`" form (Possessed Goat). Previously this
+/// function anchored on the choice phrase literally ending in "of your choice",
+/// so any trailing marker text made the whole predicate fall through unparsed.
+/// The land/creature choice modification (`AddChosenSubtype`) is additive by
+/// construction (CR 205.1b) regardless of the marker, so accepting it changes
+/// nothing about the emitted modification — only whether the line parses at all.
 fn try_parse_become_choice(
     become_text: &str,
     application: &SubjectApplication,
@@ -4401,6 +4608,23 @@ fn try_parse_become_choice(
         _ => (become_text.trim(), None),
     };
 
+    // CR 205.1b: the choice phrase may itself carry the "in addition to its
+    // other types" retention marker (Navigator's Compass: "becomes the basic
+    // land type of your choice in addition to its other types") — the same
+    // marker the fixed-value sibling path already recognizes via
+    // `has_in_addition_to_other_types` (see `build_become_clause`'s
+    // `parse_animation_spec` fallback). Peel it off with the shared
+    // `split_in_addition_tail` splitter before the "of your choice" anchor
+    // check below, so the choice phrase underneath is still recognized instead
+    // of the whole predicate falling through unparsed. `AddChosenSubtype` (the
+    // land/creature-type modification below) is additive by construction
+    // regardless of the marker, so no branching on the match is needed — it
+    // only needs to be accepted, not interpreted.
+    let choice_text = match split_in_addition_tail(choice_text) {
+        Some((prefix, _matched)) => prefix.trim(),
+        None => choice_text,
+    };
+
     let lower = choice_text.to_lowercase();
     if !ends_with_of_your_choice(lower.as_str()) {
         return None;
@@ -4409,6 +4633,11 @@ fn try_parse_become_choice(
     let (choice_type, modification) = if lower.contains("creature type") {
         (
             ChoiceType::creature_type(),
+            // CR 205.1b: additive by construction regardless of the marker —
+            // `AddChosenSubtype` never clears existing creature subtypes (unlike
+            // the bare "are the chosen type" static form, which pairs it with
+            // `RemoveAllSubtypes` for CR 205.1a replacement semantics). The
+            // marker (if present) is accepted, not required.
             ContinuousModification::AddChosenSubtype {
                 kind: ChosenSubtypeKind::CreatureType,
             },
@@ -4422,7 +4651,16 @@ fn try_parse_become_choice(
         )
     } else if lower.contains("color") {
         // CR 105.3: "become the color of your choice" — player chooses a color.
-        (ChoiceType::color(), ContinuousModification::AddChosenColor)
+        // No printed card pairs this with the "in addition to its other colors"
+        // marker (unlike the land/creature-type axes), so this stays the
+        // CR 105.3 replacement default; the marker-strip above still lets such a
+        // line parse instead of falling through, should one ever be printed.
+        (
+            ChoiceType::color(),
+            ContinuousModification::AddChosenColor {
+                mode: ColorChangeMode::Set,
+            },
+        )
     } else {
         return None;
     };
@@ -5718,6 +5956,14 @@ pub(crate) fn starts_with_subject_prefix(lower: &str) -> bool {
         alt((
             value((), tag::<_, _, OracleError<'_>>("its owner ")),
             value((), tag("~'s owner ")),
+            // CR 115.1 + CR 109.1: "another target X" declares a target, and
+            // the downstream Another property identifies an object distinct from
+            // the source. Without this arm, an imperative predicate on an
+            // "another target ..." subject (for example, "another target nonland
+            // permanent phases out") is not subject-stripped and falls through
+            // to first-word dispatch on "another", lowering to Unimplemented
+            // instead of reaching the existing effect.
+            value((), tag("another target ")),
             value((), tag("target ")),
             value((), tag("that ")),
             value((), tag("the chosen ")),
@@ -5951,11 +6197,15 @@ mod tests {
     fn become_that_color_maps_to_add_chosen_color() {
         assert!(matches!(
             try_parse_become_color_modification("that color"),
-            Some(ContinuousModification::AddChosenColor)
+            Some(ContinuousModification::AddChosenColor {
+                mode: ColorChangeMode::Set
+            })
         ));
         assert!(matches!(
             try_parse_become_color_modification("the chosen color"),
-            Some(ContinuousModification::AddChosenColor)
+            Some(ContinuousModification::AddChosenColor {
+                mode: ColorChangeMode::Set
+            })
         ));
         assert!(matches!(
             try_parse_become_color_modification("all colors"),

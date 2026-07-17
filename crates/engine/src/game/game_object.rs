@@ -7,8 +7,9 @@ use crate::types::ability::{
     additional_cost_instance_payment_count, additional_cost_instance_payment_count_for_ordinal,
     AbilityDefinition, AdditionalCost, AdditionalCostInstancePayment, AdditionalCostOrigin,
     BasicLandType, CastTimingPermission, CastVariantPaid, CastingPermission, CastingRestriction,
-    ChosenAttribute, ChosenSubtypeKind, CostPaidObjectSnapshot, ModalChoice, ReplacementDefinition,
-    SeatDirection, SolveCondition, SpellCastingOption, StaticDefinition, TriggerDefinition,
+    ChosenAttribute, ChosenSubtypeKind, CostPaidObjectSnapshot, ExiledSpellRider, ModalChoice,
+    ReplacementDefinition, SeatDirection, SolveCondition, SpellCastingOption, StaticDefinition,
+    TriggerDefinition,
 };
 use crate::types::card::{LayoutKind, PrintedCardRef, TokenImageRef};
 use crate::types::card_type::{CardType, CoreType};
@@ -109,7 +110,7 @@ pub struct PrototypeFormState {
 /// treatment as other command-zone leaders. Stored as a typed marker to avoid
 /// proliferating bare role booleans on `GameObject`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct SignatureSpellState;
+pub struct SignatureSpellState {}
 
 /// CR 702.148a-b + CR 612: Cleave form marker — `Some(_)` while this object's
 /// cleave text-changing effect is live (the spell was cast for its cleave cost
@@ -219,7 +220,7 @@ pub struct CaseState {
 /// truth and lets exhaustive `match` arms force every consumer to handle both
 /// variants. Equipment-only call sites use `as_object()` with a CR-cited
 /// `expect` to assert the rules invariant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum AttachTarget {
     /// CR 301.5 / CR 303.4f: attached to a permanent.
@@ -260,7 +261,7 @@ impl From<ObjectId> for AttachTarget {
 
 /// CR 709.5c: Which half, or door, of a shared-type-line split permanent is
 /// being locked or unlocked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum RoomDoor {
     Left,
     Right,
@@ -652,6 +653,14 @@ pub struct GameObject {
     /// currently resolves the count.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub convoked_creatures: Vec<ObjectId>,
+    /// CR 700.2a + CR 700.2d: The modal-mode indices chosen for this spell as it
+    /// was cast (ascending, with repeats per CR 700.2d), latched from
+    /// `SpellContext.chosen_modes` at cast finalize and surviving on the stack
+    /// object so cast-triggers resolving above it (Riku:
+    /// `QuantityRef::EventContextSourceModesChosen`) read the mode count. Empty
+    /// for non-modal spells.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen_modes: Vec<usize>,
 
     /// CR 702.103b + CR 702.103f: `Some(_)` while this object is in the
     /// "bestowed Aura" form. Set by `apply_bestow_aura_form`; cleared per
@@ -969,6 +978,18 @@ pub struct GameObject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exile_from_stack_linked_source: Option<ObjectId>,
 
+    /// CR 603.7a + CR 614.1a + CR 702.170c: While set alongside the
+    /// exile-instead rider, the stack-resolution router applies the "If you do,
+    /// ..." consequence at the moment the replacement is actually APPLIED (the
+    /// spell lands in exile), per CR 603.7a — arming Feather, the Redeemed's
+    /// return-to-hand delayed trigger, or granting Lilah, Undefeated
+    /// Slickshot's plotted permission. Set by
+    /// `Effect::ExileResolvingSpellInsteadOfGraveyard { on_exile: Some(..) }`.
+    /// Transient: cleared on any zone exit, so a spell countered or fizzled
+    /// before it would have resolved never takes the consequence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exile_from_stack_rider: Option<ExiledSpellRider>,
+
     /// CR 305.1 + CR 603.4: Transient field tracking the zone a land was played
     /// from. Consumed by ETB trigger processing for conditions like "without
     /// being played"; permanents put onto the battlefield by effects leave this
@@ -1025,6 +1046,157 @@ pub struct GameObject {
     /// all rules queries. Defaults to `PhasedIn` for replay compatibility.
     #[serde(default)]
     pub phase_status: PhaseStatus,
+}
+
+/// CR 104.4b compile-time totality guard for `objects_content_eq`/`object_content_eq`
+/// (types/game_state.rs) — the §5.2c 136-field partition. `GameObject` deliberately
+/// does NOT derive `PartialEq` (constant-depth loop detection must omit `timestamp`
+/// / `incarnation`), so the row comparator is hand-rolled and needs this no-`..`
+/// destructure: adding a field breaks the build until it is classified into a
+/// bucket (compared / omitted-safe-by-write-site / immutable / projected). Fail-
+/// closed — a new per-object accumulator cannot silently escape the partition.
+#[cfg(test)]
+fn _gameobject_partition_is_total(o: &GameObject) {
+    let GameObject {
+        id: _,
+        card_id: _,
+        owner: _,
+        base_controller: _,
+        controller: _,
+        zone: _,
+        tapped: _,
+        face_down: _,
+        flipped: _,
+        transformed: _,
+        modal_back_face: _,
+        damage_marked: _,
+        dealt_deathtouch_damage: _,
+        attached_to: _,
+        attachments: _,
+        paired_with: _,
+        pair_controller: _,
+        counters: _,
+        intensity: _,
+        perpetual_mods: _,
+        name: _,
+        power: _,
+        toughness: _,
+        loyalty: _,
+        defense: _,
+        token_rules_text: _,
+        card_types: _,
+        attraction_lights: _,
+        in_attraction_deck: _,
+        in_contraption_deck: _,
+        contraption_sprocket: _,
+        stickers: _,
+        mana_cost: _,
+        keywords: _,
+        abilities: _,
+        trigger_definitions: _,
+        replacement_definitions: _,
+        static_definitions: _,
+        cleave_variant: _,
+        color: _,
+        printed_ref: _,
+        token_image_ref: _,
+        source_related_token_ids: _,
+        spellbook: _,
+        back_face: _,
+        specialize_faces: _,
+        specialized_color: _,
+        base_power: _,
+        base_toughness: _,
+        base_name: _,
+        base_loyalty: _,
+        base_defense: _,
+        base_card_types: _,
+        base_mana_cost: _,
+        base_keywords: _,
+        base_abilities: _,
+        base_trigger_definitions: _,
+        base_replacement_definitions: _,
+        base_static_definitions: _,
+        base_color: _,
+        base_printed_ref: _,
+        base_characteristics_initialized: _,
+        timestamp: _,
+        incarnation: _,
+        entered_battlefield_turn: _,
+        discarded_turn: _,
+        summoning_sick: _,
+        echo_due: _,
+        cast_variant_paid: _,
+        cast_cost_paid_object: _,
+        entered_via_ability_source: _,
+        cast_timing_permission: _,
+        cost_x_paid: _,
+        fused_split_spell: _,
+        kickers_paid: _,
+        additional_cost_payment_count: _,
+        additional_cost_payments: _,
+        convoked_creatures: _,
+        chosen_modes: _,
+        bestow_form: _,
+        prototype_form: _,
+        mutate_form: _,
+        merged_components: _,
+        merge_kind: _,
+        merge_layer_effect_id: _,
+        pre_merge_is_token: _,
+        split_from_merge_survivor: _,
+        cleave_form: _,
+        unimplemented_mechanics: _,
+        has_summoning_sickness: _,
+        devotion: _,
+        has_mana_ability: _,
+        mana_ability_index: _,
+        available_mana_pips: _,
+        loyalty_activations_this_turn: _,
+        is_commander: _,
+        signature_spell: _,
+        commander_tax: _,
+        is_renowned: _,
+        is_emblem: _,
+        emblem_source: _,
+        is_token: _,
+        is_copy: _,
+        display_source: _,
+        modal: _,
+        additional_cost: _,
+        strive_cost: _,
+        casting_restrictions: _,
+        casting_options: _,
+        casting_permissions: _,
+        foretold: _,
+        chosen_attributes: _,
+        goaded_by: _,
+        detained_by: _,
+        is_suspected: _,
+        monstrous: _,
+        harnessed: _,
+        prepared: _,
+        is_saddled: _,
+        saddled_by: _,
+        assigns_damage_from_toughness: _,
+        assigns_damage_as_though_unblocked: _,
+        assigns_no_combat_damage: _,
+        case_state: _,
+        room_unlocks: _,
+        class_level: _,
+        cast_from_zone: _,
+        cast_controller: _,
+        cast_spell_keywords: _,
+        exile_from_stack_linked_source: _,
+        exile_from_stack_rider: _,
+        played_from_zone: _,
+        mana_spent_to_cast: _,
+        colors_spent_to_cast: _,
+        mana_spent_to_cast_amount: _,
+        phyrexian_life_paid: _,
+        mana_spent_source_snapshots: _,
+        phase_status: _,
+    } = o;
 }
 
 /// CR 205.2 + CR 205.2a: Resolve a stored card-type choice from a chosen-attribute
@@ -1184,7 +1356,7 @@ impl GameObject {
 
     /// Oathbreaker RC: mark this command-zone object as a signature spell.
     pub fn mark_signature_spell(&mut self) {
-        self.signature_spell = Some(SignatureSpellState);
+        self.signature_spell = Some(SignatureSpellState {});
     }
 
     /// CR 903 + Oathbreaker RC: command-zone cards that use commander tax and
@@ -1334,6 +1506,33 @@ impl GameObject {
                 .filter(|c| self.color.contains(c) || bf.color.contains(c))
                 .collect(),
             None => self.color.clone(),
+        }
+    }
+
+    /// CR 702.102b + CR 709.4d: Restore the combined card types and colors of
+    /// a fused split spell after a characteristic reset. The fusion marker is
+    /// cast-state, while the union is a derived stack characteristic and must
+    /// therefore be re-applied on every layer pass.
+    pub fn restore_fused_split_characteristics(&mut self) {
+        if self.zone != Zone::Stack || !self.fused_split_spell {
+            return;
+        }
+        let right_half_characteristics = self
+            .back_face
+            .as_ref()
+            .filter(|back| back.layout_kind == Some(LayoutKind::Split))
+            .map(|back| (back.card_types.core_types.clone(), back.color.clone()));
+        if let Some((core_types, colors)) = right_half_characteristics {
+            for core_type in core_types {
+                if !self.card_types.core_types.contains(&core_type) {
+                    self.card_types.core_types.push(core_type);
+                }
+            }
+            for color in colors {
+                if !self.color.contains(&color) {
+                    self.color.push(color);
+                }
+            }
         }
     }
 
@@ -1529,6 +1728,7 @@ impl GameObject {
             additional_cost_payment_count: 0,
             additional_cost_payments: Vec::new(),
             convoked_creatures: Vec::new(),
+            chosen_modes: Vec::new(),
             bestow_form: None,
             prototype_form: None,
             mutate_form: None,
@@ -1581,6 +1781,7 @@ impl GameObject {
             cast_controller: None,
             cast_spell_keywords: Vec::new(),
             exile_from_stack_linked_source: None,
+            exile_from_stack_rider: None,
             played_from_zone: None,
             mana_spent_to_cast: false,
             colors_spent_to_cast: ColoredManaCount::default(),
@@ -1624,6 +1825,15 @@ impl GameObject {
             // still on the battlefield (cost-paid snapshot precedes the sacrifice
             // zone-change that resets the flag), so `self.is_suspected` is authoritative.
             is_suspected: self.is_suspected,
+            // Empty by construction, NOT by choice: classifying an attachment as
+            // Aura/Equipment requires looking each attached object up in `GameState`
+            // (see `zones::capture_attachment_snapshot`), and this method has only
+            // `&self`. Callers that need the attachment look-back (the CR 608.2h
+            // battlefield-exit LKI) go through `apply_zone_exit_cleanup`, which does
+            // have `&GameState` and populates it. The damage-source and mana-spent
+            // snapshots that use this method never ask an attachment predicate, so an
+            // empty set here is the same fail-closed answer they got before.
+            attachments: Vec::new(),
         }
     }
 

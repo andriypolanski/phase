@@ -276,12 +276,13 @@ pub(crate) enum ContinuationAst {
     /// CR 701.19c: "It can't be regenerated" / "They can't be regenerated" — sets
     /// `cant_regenerate: true` on the preceding Destroy/DestroyAll effect.
     CantRegenerate,
-    /// CR 120.4a: "Excess damage is dealt to that creature's controller instead."
-    /// — sets `excess = Some(ExcessRecipient::TargetController)` on the preceding
-    /// `Effect::DealDamage` (Flame Spill, Gandalf's Sanction, Ravenous
-    /// Tyrannosaurus). The conditional / trample-gated form (Ram Through) is NOT
-    /// recognized and lowers to `Effect::Unimplemented` instead.
-    ExcessDamageToController,
+    /// CR 120.4a + CR 608.2c + CR 702: "Excess damage is dealt to that
+    /// creature's controller instead" patches the preceding `DealDamage`; an
+    /// optional source-keyword gate covers Ram Through's "If the creature you
+    /// control has trample" prefix without making the damage itself conditional.
+    ExcessDamageToController {
+        source_keyword_condition: Option<crate::types::keywords::KeywordKind>,
+    },
     /// "Choose one/N of them" / "An opponent chooses one/N of those cards" after a ChangeZone
     /// to exile → ChooseFromZone { count, zone: Exile, chooser }.
     ChooseFromExile {
@@ -424,7 +425,7 @@ pub(crate) enum ContinuationAst {
     /// and Destroy the Evidence where "those cards" refers to all cards revealed
     /// during the RevealUntil resolution, not only the non-matching ones.
     RevealUntilAllToZone { destination: Zone },
-    /// CR 406.3 + CR 701.16a: "[then] exile it/them [face down]" after a private
+    /// CR 406.3 + CR 701.20e: "[then] exile it/them [face down]" after a private
     /// `Dig` (the "look at the top N cards of <player>'s library" look step).
     /// Rewrites the preceding `Dig` into an `Effect::ExileTop` so the looked-at
     /// card(s) actually leave the library — the Gonti, Canny Acquisitor impulse
@@ -448,7 +449,17 @@ pub(crate) enum ContinuationAst {
     /// flow, then chains a `HideawayConceal` sub-ability to turn the chosen card
     /// face down and link it to the source. Gated on the exile-the-dug-card
     /// continuation, so genuine pure-peek Digs (Delver of Secrets) are untouched.
-    ExileOneOfThemFaceDown,
+    ExileOneOfThemFaceDown {
+        /// CR 122.1: A "... face down with <count> <type> counter(s) on it"
+        /// rider (The Dragon-Kami Reborn: "Exile one of them face down with a
+        /// hatching counter on it"). Threaded into the fused exile as a
+        /// `PutCounter { target: ParentTarget }` sub-ability chain appended
+        /// after the conceal, so the player-selected dug card — NOT the trigger
+        /// source — receives the counters. Empty for the bare "exile one of
+        /// them face down" form (Gonti, Lord of Luxury).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        enter_with_counters: Vec<(CounterType, QuantityExpr)>,
+    },
     /// CR 608.2c + CR 701.21a: absorbs the explicit/bare sacrifice-rest clause
     /// following a choose-and-sacrifice-rest effect, optionally narrowing the
     /// final sacrifice sweep ("all other nonland permanents they control").
@@ -888,7 +899,7 @@ pub(crate) enum TargetedImperativeAst {
     },
     Sacrifice {
         target: TargetFilter,
-        /// CR 701.16a: Number of permanents to sacrifice. Defaults to
+        /// CR 701.21a: Number of permanents to sacrifice. Defaults to
         /// `QuantityExpr::Fixed { value: 1 }` for the common "sacrifice a X"
         /// case; "sacrifice N X" / "sacrifice half the permanents they
         /// control" carry the parsed dynamic count.
@@ -921,6 +932,17 @@ pub(crate) enum TargetedImperativeAst {
     /// CR 701.3: Return to hand (bounce).
     Return {
         target: TargetFilter,
+        /// CR 115.1d + CR 601.2c: Variable object count for a non-targeted
+        /// "return up to N cards from your graveyard to your hand" (Ill-Gotten
+        /// Gains) or "return that many cards from your graveyard to your hand"
+        /// (dynamic count) — mirrors [`TargetedImperativeAst::Tap`]. `None` for
+        /// the common single-object "return a card from your graveyard to your
+        /// hand". Carried onto `ParsedEffectClause.multi_target` at lowering;
+        /// the runtime's `EffectZoneChoice` picker already resolves bounded
+        /// at-resolution bounce counts generically (Wrenn and Six precedent),
+        /// so no game-logic change is needed — only the parser previously
+        /// dropped the quantifier before it ever reached that machinery.
+        multi_target: Option<MultiTargetSpec>,
         /// CR 115.1 + Whitemane Lion ruling: Captured at parse time from the
         /// `TargetSyntax` discriminator. `Descriptor` Oracle text without
         /// "target" (e.g. "return a creature you control to its owner's hand")
@@ -971,6 +993,17 @@ pub(crate) enum TargetedImperativeAst {
         /// CR 107.1c: "return any number of [filter] cards" — zero-or-more
         /// resolution-time zone selection (Grave Sifter class).
         up_to: bool,
+        /// CR 115.1d + CR 601.2c: Variable object count for a non-targeted
+        /// "return up to N cards from your graveyard to your hand"
+        /// (Ill-Gotten Gains) or "return that many cards …" (dynamic count).
+        /// `None` for the common single-object "return a card from your
+        /// graveyard to your hand" and for the unrelated unbounded `up_to`
+        /// shape above (Grave Sifter class), which keeps using its own flag.
+        /// Carried onto `ParsedEffectClause.multi_target` at lowering,
+        /// mirroring `ZoneCounterImperativeAst::Exile`'s `multi_target` (#5649
+        /// / Forage precedent) — `Effect::ChangeZone` has no count slot of its
+        /// own, so the quantity rides the clause's `MultiTargetSpec` instead.
+        multi_target: Option<MultiTargetSpec>,
     },
     /// CR 400.7 + CR 608.2c: Mass return to a non-default zone. Lowers to
     /// `ChangeZoneAll` so the resolver scans every matching object instead of
@@ -1072,7 +1105,7 @@ pub(crate) enum SearchCreationImperativeAst {
     },
     Dig {
         count: QuantityExpr,
-        /// CR 701.20a vs CR 701.16a: True = revealed (public), false = looked at (private).
+        /// CR 701.20a vs CR 701.20e: True = revealed (public), false = looked at (private).
         reveal: bool,
         player: TargetFilter,
     },
@@ -1342,6 +1375,15 @@ pub(crate) enum PutImperativeAst {
         /// the rest zone. `None` for non-partition forms.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rest_destination: Option<Zone>,
+        /// CR 401.4: Library placement for the "rest" pile when the complement
+        /// returns to the library ("… and the rest on the bottom of your
+        /// library in a random order" — The Fourteenth Doctor — or "… in any
+        /// order" — Garruk, Caller of Beasts / Goblin Ringleader et al.).
+        /// Independent of `library_position` (which governs the PRIMARY move)
+        /// because the two piles may target different positions. `None` when the
+        /// rest does not go to a specific library position.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rest_library_position: Option<LibraryPosition>,
     },
     TopOfLibrary,
     BottomOfLibrary,
@@ -1775,6 +1817,21 @@ pub(crate) struct ModalHeaderAst {
     /// CR 700.2 + CR 107.3m: Dynamic max ("choose up to X —") — `Some` carries
     /// the cost {X} reference resolved live at runtime; `None` for fixed caps.
     pub(crate) dynamic_max_choices: Option<crate::types::ability::QuantityExpr>,
+    /// CR 608.2c: Triggered modal headers of the form "you may choose N"
+    /// (Shadrix Silverquill) make the entire triggered ability optional — the
+    /// controller may decline to choose any modes. Distinct from "you may choose
+    /// up to N", which only lowers `min_choices` to 0 while the trigger remains
+    /// mandatory.
+    pub(crate) optionality: ModalOptionality,
+}
+
+/// CR 608.2c: Whether a modal header makes its enclosing triggered ability
+/// optional. This remains distinct from a modal's `min_choices`, which models
+/// how many modes a mandatory ability may select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum ModalOptionality {
+    Mandatory,
+    MayDecline,
 }
 
 // --- ActivatedConstraintAst (moved from oracle.rs) ---

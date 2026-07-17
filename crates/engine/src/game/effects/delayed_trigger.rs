@@ -174,6 +174,7 @@ pub fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::CreateDelayedTrigger,
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -2417,6 +2418,7 @@ mod tests {
                 counters: lki_counters,
                 tapped: false,
                 is_suspected: false,
+                attachments: Vec::new(),
             },
         );
 
