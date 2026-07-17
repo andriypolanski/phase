@@ -5933,14 +5933,14 @@ fn parse_arrange_planar_deck_planeswalk_substitute(input: &str) -> Option<Abilit
     ))
     .parse(rest)
     .ok()?;
-    let has_then_planeswalk = rest.starts_with(", then planeswalk");
-    if has_then_planeswalk {
-        let (rest, _) = tag::<_, _, OracleError<'_>>(", then planeswalk")
-            .parse(rest)
-            .ok()?;
-        crate::parser::oracle_effect::parse_optional_period_and_end(rest)?;
-    } else if !rest.is_empty() {
+    let (rest, then_planeswalk) = opt(tag::<_, _, OracleError<'_>>(", then planeswalk"))
+        .parse(rest)
+        .ok()?;
+    if then_planeswalk.is_none() && !rest.is_empty() {
         return None;
+    }
+    if then_planeswalk.is_some() {
+        crate::parser::oracle_effect::parse_optional_period_and_end(rest)?;
     }
 
     let keep_on_top = look_count - bottom_count;
@@ -5955,7 +5955,7 @@ fn parse_arrange_planar_deck_planeswalk_substitute(input: &str) -> Option<Abilit
             keep_on_top: QuantityExpr::Fixed { value: keep_on_top },
         },
     );
-    if has_then_planeswalk {
+    if then_planeswalk.is_some() {
         execute = execute.sub_ability(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Planeswalk,
