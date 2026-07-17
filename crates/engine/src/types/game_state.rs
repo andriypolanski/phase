@@ -13860,7 +13860,7 @@ mod tests {
             mana_reduction: ManaCost::zero(),
             pending_cast: dummy_pending(),
         }));
-        assert_eq!(variants.len(), 34);
+        assert_eq!(variants.len(), 35);
     }
 
     #[test]

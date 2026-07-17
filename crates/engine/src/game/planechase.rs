@@ -447,15 +447,11 @@ pub fn check_phenomenon_planeswalk_sba(
     events: &mut Vec<GameEvent>,
     any_performed: &mut bool,
 ) -> Option<PlaneswalkResolution> {
-    let Some(controller) = state.planar_controller else {
-        return None;
-    };
+    let controller = state.planar_controller?;
     if !active_is_phenomenon(state) {
         return None;
     }
-    let Some(phenomenon_id) = active_plane(state) else {
-        return None;
-    };
+    let phenomenon_id = active_plane(state)?;
     // CR 704.6f: do not planeswalk while the phenomenon's own triggered ability
     // is still on the stack.
     let has_ability_on_stack = state
