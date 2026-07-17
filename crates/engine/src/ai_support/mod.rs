@@ -2928,6 +2928,7 @@ mod tests {
         let choices = vec![ObjectId(1), ObjectId(2), ObjectId(3)];
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: choices.clone(),
             count: 2,
             reveal: false,
@@ -2967,6 +2968,7 @@ mod tests {
         let choices = vec![ObjectId(1), ObjectId(2)];
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: choices.clone(),
             count: 2,
             reveal: false,
@@ -2997,6 +2999,7 @@ mod tests {
         let choices = vec![ObjectId(1), ObjectId(2)];
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: choices.clone(),
             count: 2,
             reveal: false,

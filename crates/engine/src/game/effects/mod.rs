@@ -16611,6 +16611,7 @@ mod tests {
         // transition" — only `installed_continuation` can fire the re-stash.
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: vec![],
             count: 0,
             reveal: false,
