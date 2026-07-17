@@ -114,3 +114,81 @@ fn over_life_bid_is_legal_and_paid_after_auction() {
         "winner pays the announced bid after the auction"
     );
 }
+
+fn scry_payoff_auction_ability(
+    controller: PlayerId,
+    source: ObjectId,
+) -> engine::types::ability::ResolvedAbility {
+    let def = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::LifeAuction {
+            participants: LifeAuctionParticipants::AllPlayers,
+            starting_bid: LifeAuctionStartingBid::Fixed(0),
+            starting_with: ControllerRef::You,
+        },
+    )
+    .sub_ability(
+        AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::LoseLife {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::WinningBidAmount,
+                },
+                target: Some(TargetFilter::WinningBidder),
+            },
+        )
+        .sub_ability(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Scry {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::WinningBidder,
+            },
+        )),
+    );
+    build_resolved_from_def(&def, source, controller)
+}
+
+#[test]
+fn auction_payoff_preserves_nested_scry_choice() {
+    let mut state = GameState::new_two_player(0);
+    let controller = PlayerId(0);
+    let opponent = PlayerId(1);
+    let source = ObjectId(900);
+    let scry_card = create_object(
+        &mut state,
+        CardId(11),
+        controller,
+        "Island".into(),
+        Zone::Library,
+    );
+
+    let ability = scry_payoff_auction_ability(controller, source);
+    let mut events = Vec::new();
+    resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+    apply(&mut state, opponent, GameAction::PassLifeAuction).expect("opponent passes");
+
+    let WaitingFor::ScryChoice { player, ref cards } = state.waiting_for else {
+        panic!(
+            "auction payoff must preserve nested ScryChoice, got {:?}",
+            state.waiting_for
+        );
+    };
+    assert_eq!(player, controller, "high bidder scries");
+    assert_eq!(cards.as_slice(), &[scry_card]);
+
+    apply(
+        &mut state,
+        controller,
+        GameAction::SelectCards {
+            cards: vec![scry_card],
+        },
+    )
+    .expect("complete scry choice");
+
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "after scry completes, resolution should return to priority, got {:?}",
+        state.waiting_for
+    );
+}

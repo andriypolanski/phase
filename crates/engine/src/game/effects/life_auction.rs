@@ -73,13 +73,15 @@ pub fn resolve(
 
     park_bid_prompt(
         state,
-        ordered,
-        opening,
-        controller,
-        ability.controller,
-        ability.source_id,
-        0,
-        1,
+        LifeAuctionRoundState {
+            participants: ordered,
+            round_index: 1,
+            high_bid: opening,
+            high_bidder: controller,
+            passes_since_raise: 0,
+            controller: ability.controller,
+            source_id: ability.source_id,
+        },
     );
     Ok(())
 }
@@ -93,13 +95,15 @@ pub fn begin_after_opening_bid(state: &mut GameState, controller: PlayerId, sour
     let opening = state.last_effect_count.unwrap_or(0).max(0) as u32;
     park_bid_prompt(
         state,
-        participants,
-        opening,
-        controller,
-        controller,
-        source_id,
-        0,
-        1,
+        LifeAuctionRoundState {
+            participants,
+            round_index: 1,
+            high_bid: opening,
+            high_bidder: controller,
+            passes_since_raise: 0,
+            controller,
+            source_id,
+        },
     );
 }
 
@@ -165,13 +169,15 @@ pub fn advance_after_pass_or_bid(
     let next_index = (round_index + 1) % n;
     park_bid_prompt(
         state,
-        participants,
-        high_bid,
-        high_bidder,
-        controller,
-        source_id,
-        passes_since_raise,
-        next_index,
+        LifeAuctionRoundState {
+            participants,
+            round_index: next_index,
+            high_bid,
+            high_bidder,
+            passes_since_raise,
+            controller,
+            source_id,
+        },
     );
     Ok(())
 }
@@ -211,16 +217,16 @@ pub struct LifeAuctionRoundState {
     pub source_id: ObjectId,
 }
 
-fn park_bid_prompt(
-    state: &mut GameState,
-    participants: Vec<PlayerId>,
-    high_bid: u32,
-    high_bidder: PlayerId,
-    controller: PlayerId,
-    source_id: ObjectId,
-    passes_since_raise: u32,
-    round_index: usize,
-) {
+fn park_bid_prompt(state: &mut GameState, round: LifeAuctionRoundState) {
+    let LifeAuctionRoundState {
+        participants,
+        round_index,
+        high_bid,
+        high_bidder,
+        passes_since_raise,
+        controller,
+        source_id,
+    } = round;
     let round_index = round_index % participants.len().max(1);
     state.waiting_for = WaitingFor::LifeAuctionBid {
         player: participants[round_index],

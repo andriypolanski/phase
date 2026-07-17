@@ -2432,13 +2432,9 @@ pub(super) fn handle_resolution_choice(
                 events,
             )
             .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
-            ResolutionChoiceOutcome::WaitingFor(
-                if matches!(state.waiting_for, WaitingFor::LifeAuctionBid { .. }) {
-                    state.waiting_for.clone()
-                } else {
-                    finish_with_continuation(state, controller, events)
-                },
-            )
+            ResolutionChoiceOutcome::WaitingFor(waiting_for_after_life_auction_action(
+                state, controller, events,
+            ))
         }
         (
             WaitingFor::LifeAuctionBid {
@@ -2474,13 +2470,9 @@ pub(super) fn handle_resolution_choice(
                 events,
             )
             .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
-            ResolutionChoiceOutcome::WaitingFor(
-                if matches!(state.waiting_for, WaitingFor::LifeAuctionBid { .. }) {
-                    state.waiting_for.clone()
-                } else {
-                    finish_with_continuation(state, controller, events)
-                },
-            )
+            ResolutionChoiceOutcome::WaitingFor(waiting_for_after_life_auction_action(
+                state, controller, events,
+            ))
         }
         // CR 608.2d + CR 700.3: Controller chose which opponent performs the
         // partition. Validate the choice and transition to SeparatePilesPartition.
@@ -6249,6 +6241,22 @@ fn finish_with_continuation(
     super::engine::resume_pending_continuation_if_priority(state, events)
         .expect("a settled resolution choice must resume its continuation");
     state.waiting_for.clone()
+}
+
+/// After a life-auction pass/raise completes the bidding, propagate the payoff
+/// chain's actual `WaitingFor` instead of unconditionally forcing priority.
+fn waiting_for_after_life_auction_action(
+    state: &mut GameState,
+    controller: crate::types::player::PlayerId,
+    events: &mut Vec<GameEvent>,
+) -> WaitingFor {
+    match &state.waiting_for {
+        WaitingFor::LifeAuctionBid { .. } => state.waiting_for.clone(),
+        WaitingFor::Priority { .. } | WaitingFor::GameOver { .. } => {
+            finish_with_continuation(state, controller, events)
+        }
+        parked => parked.clone(),
+    }
 }
 
 /// CR 701.25a / CR 616.1: Run the post-loop cleanup a rest-pile batch deferred

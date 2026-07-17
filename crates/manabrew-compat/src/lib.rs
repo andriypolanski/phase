@@ -1851,6 +1851,9 @@ pub fn convert_available_action(action: &GameAction, id: String) -> AvailableAct
         GameAction::SubmitPayAmount { .. } => {
             AvailableActionConversion::Unsupported("local.pay-amount-unsupported")
         }
+        GameAction::PassLifeAuction | GameAction::SubmitLifeAuctionBid { .. } => {
+            AvailableActionConversion::Unsupported("local.life-auction-unsupported")
+        }
         GameAction::LearnDecision { .. } => {
             AvailableActionConversion::Unsupported("local.learn-unsupported")
         }

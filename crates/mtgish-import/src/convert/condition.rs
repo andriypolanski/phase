@@ -1106,6 +1106,7 @@ fn target_filter_variant_name(f: &TargetFilter) -> &'static str {
         TargetFilter::SourceChosenPlayer => "SourceChosenPlayer",
         TargetFilter::EventTarget => "EventTarget",
         TargetFilter::PlayerWhoChoseLabel { .. } => "PlayerWhoChoseLabel",
+        TargetFilter::WinningBidder => "WinningBidder",
     }
 }
 

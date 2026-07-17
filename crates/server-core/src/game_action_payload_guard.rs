@@ -499,6 +499,8 @@ pub fn guard_game_action_payload(action: &GameAction) -> Result<(), String> {
         | GameAction::SetAutoPass { .. }
         | GameAction::CancelAutoPass
         | GameAction::SubmitPayAmount { .. }
+        | GameAction::SubmitLifeAuctionBid { .. }
+        | GameAction::PassLifeAuction
         | GameAction::LearnDecision { .. }
         | GameAction::ChooseX { .. }
         | GameAction::CastPreparedCopy { .. }
