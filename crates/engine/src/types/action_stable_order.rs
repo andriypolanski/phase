@@ -923,6 +923,18 @@ fn cmp_payload(a: &GameAction, b: &GameAction) -> Ordering {
             };
             cmp_val(a0, b0)
         }
+        GameAction::SubmitLifeAuctionBid { amount: a0 } => {
+            let GameAction::SubmitLifeAuctionBid { amount: b0 } = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            cmp_val(a0, b0)
+        }
+        GameAction::PassLifeAuction => {
+            let GameAction::PassLifeAuction = b else {
+                unreachable!("cmp_payload: same-variant invariant");
+            };
+            Ordering::Equal
+        }
         GameAction::RetargetSpell { new_targets: a0 } => {
             let GameAction::RetargetSpell { new_targets: b0 } = b else {
                 unreachable!("cmp_payload: same-variant invariant");

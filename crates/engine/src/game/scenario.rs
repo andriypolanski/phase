@@ -1736,6 +1736,7 @@ impl GameRunner {
             WaitingFor::ChooseAnnouncingOpponent { .. } => "ChooseAnnouncingOpponent",
             WaitingFor::ClashCardPlacement { .. } => "ClashCardPlacement",
             WaitingFor::VoteChoice { .. } => "VoteChoice",
+            WaitingFor::LifeAuctionBid { .. } => "LifeAuctionBid",
             WaitingFor::CategoryChoice { .. } => "CategoryChoice",
             WaitingFor::EachPlayerCopyChosenSelection { .. } => "EachPlayerCopyChosenSelection",
             WaitingFor::KeepWithinTotalPowerChoice { .. } => "KeepWithinTotalPowerChoice",

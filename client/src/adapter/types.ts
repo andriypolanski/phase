@@ -1626,6 +1626,16 @@ export type WaitingFor =
       // (index into this array) instead of `ChooseOption`.
       candidate_objects: ObjectId[];
     } }
+  | { type: "LifeAuctionBid"; data: {
+      player: PlayerId;
+      participants: PlayerId[];
+      round_index: number;
+      high_bid: number;
+      high_bidder: PlayerId;
+      passes_since_raise: number;
+      controller: PlayerId;
+      source_id: ObjectId;
+    } }
   | { type: "ChooseDungeon"; data: { player: PlayerId; options: DungeonId[] } }
   | { type: "ChooseDungeonRoom"; data: { player: PlayerId; dungeon: DungeonId; options: number[]; option_names: string[] } }
   | { type: "SpecializeColor"; data: { player: PlayerId; object_id: ObjectId; options: ManaColor[] } }
@@ -2068,6 +2078,8 @@ export type GameAction =
   | { type: "ChooseKeptCreatures"; data: { kept: ObjectId[] } }
   | { type: "ChooseKeptPermanents"; data: { kept: ObjectId[] } }
   | { type: "ChooseX"; data: { value: number } }
+  | { type: "SubmitLifeAuctionBid"; data: { amount: number } }
+  | { type: "PassLifeAuction" }
   | { type: "SubmitPayAmount"; data: { amount: number } }
   | { type: "SubmitPhyrexianChoices"; data: { choices: ShardChoice[] } }
   | { type: "ChooseManaColor"; data: { choice: ManaChoice; count?: number } }

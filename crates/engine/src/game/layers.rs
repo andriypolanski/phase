@@ -2348,6 +2348,7 @@ fn quantity_ref_reads_zone(qty: &QuantityRef, zone: Zone) -> bool {
         | QuantityRef::TokensCreatedThisTurn { .. }
         | QuantityRef::TurnsTaken
         | QuantityRef::VoteCount { .. }
+        | QuantityRef::WinningBidAmount
         | QuantityRef::ZoneChangeAggregateThisTurn { .. }
         | QuantityRef::ZoneChangeCountThisTurn { .. } => false,
     }

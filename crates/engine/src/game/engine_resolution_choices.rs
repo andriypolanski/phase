@@ -617,6 +617,7 @@ pub(super) fn handles(waiting_for: &WaitingFor) -> bool {
             | WaitingFor::ClashChooseOpponent { .. }
             | WaitingFor::ClashCardPlacement { .. }
             | WaitingFor::VoteChoice { .. }
+            | WaitingFor::LifeAuctionBid { .. }
             | WaitingFor::SeparatePilesChooseOpponent { .. }
             | WaitingFor::SeparatePilesPartition { .. }
             | WaitingFor::SeparatePilesChoice { .. }
@@ -2146,6 +2147,12 @@ pub(super) fn handle_resolution_choice(
             // damage"). `last_effect_count` is the documented fallback slot.
             let total = accumulated.saturating_add(amount);
             state.last_effect_count = Some(total as i32);
+            if state.pending_life_auction_participants.is_some() {
+                effects::life_auction::begin_after_opening_bid(state, player, source_id);
+                return Ok(ResolutionChoiceOutcome::WaitingFor(
+                    state.waiting_for.clone(),
+                ));
+            }
             let pending_starts_with_pay_amount = state
                 .pending_continuation
                 .as_ref()
@@ -2388,6 +2395,95 @@ pub(super) fn handle_resolution_choice(
                     candidate_objects,
                     outcome_template,
                     visibility,
+                },
+            )
+        }
+        // Card-defined open-bid life auction: pass or raise the standing bid.
+        (
+            WaitingFor::LifeAuctionBid {
+                participants,
+                round_index,
+                high_bid,
+                high_bidder,
+                passes_since_raise,
+                controller,
+                source_id,
+                ..
+            },
+            GameAction::PassLifeAuction,
+        ) => {
+            effects::life_auction::record_pass(
+                state,
+                effects::life_auction::LifeAuctionRoundState {
+                    participants,
+                    round_index,
+                    high_bid,
+                    high_bidder,
+                    passes_since_raise,
+                    controller,
+                    source_id,
+                },
+                events,
+            )
+            .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
+            ResolutionChoiceOutcome::WaitingFor(
+                if matches!(state.waiting_for, WaitingFor::LifeAuctionBid { .. }) {
+                    state.waiting_for.clone()
+                } else {
+                    finish_with_continuation(state, controller, events)
+                },
+            )
+        }
+        (
+            WaitingFor::LifeAuctionBid {
+                player,
+                participants,
+                round_index,
+                high_bid,
+                high_bidder,
+                passes_since_raise,
+                controller,
+                source_id,
+            },
+            GameAction::SubmitLifeAuctionBid { amount },
+        ) => {
+            if amount <= high_bid {
+                return Err(EngineError::InvalidAction(format!(
+                    "Life auction bid {amount} must exceed current high bid {high_bid}"
+                )));
+            }
+            let max_life = state
+                .players
+                .iter()
+                .find(|p| p.id == player)
+                .map(|p| p.life.max(0) as u32)
+                .unwrap_or(0);
+            if amount > max_life {
+                return Err(EngineError::InvalidAction(format!(
+                    "Life auction bid {amount} exceeds available life {max_life}"
+                )));
+            }
+            effects::life_auction::record_bid(
+                state,
+                effects::life_auction::LifeAuctionRoundState {
+                    participants,
+                    round_index,
+                    high_bid,
+                    high_bidder,
+                    passes_since_raise,
+                    controller,
+                    source_id,
+                },
+                player,
+                amount,
+                events,
+            )
+            .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
+            ResolutionChoiceOutcome::WaitingFor(
+                if matches!(state.waiting_for, WaitingFor::LifeAuctionBid { .. }) {
+                    state.waiting_for.clone()
+                } else {
+                    finish_with_continuation(state, controller, events)
                 },
             )
         }

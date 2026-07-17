@@ -8176,7 +8176,8 @@ fn quantity_ref_refs_cost_paid_object(qty: &QuantityRef) -> bool {
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::CommanderCastFromCommandZoneCount
         | QuantityRef::CommanderManaValue { .. }
-        | QuantityRef::VoteCount { .. } => false,
+        | QuantityRef::VoteCount { .. }
+        | QuantityRef::WinningBidAmount => false,
     }
 }
 

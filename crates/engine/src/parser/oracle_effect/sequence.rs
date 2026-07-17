@@ -5904,6 +5904,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::Clash
         | Effect::Behold { .. }
         | Effect::Vote { .. }
+        | Effect::LifeAuction { .. }
         | Effect::SeparateIntoPiles { .. }
         | Effect::SwitchPT { .. }
         | Effect::CopySpell { .. }

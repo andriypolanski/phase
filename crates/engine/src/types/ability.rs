@@ -4726,6 +4726,9 @@ pub enum TargetFilter {
     /// controller" can stay consolidated in `parse_target` for non-prevention
     /// callers.
     PostReplacementSourceController,
+    /// CR 608.2c: Resolves to the high bidder from the most recently completed
+    /// open-bid life auction (`state.last_life_auction`).
+    WinningBidder,
     /// CR 615.5: Resolves to the player or permanent that was the target of the
     /// prevented damage event. Used by prevention follow-up sentences such as
     /// "that player exiles that many cards" where the affected player is the
@@ -5806,6 +5809,10 @@ pub enum QuantityRef {
     /// the tally). Used by vote-tally effects ("for each X vote, do Y") whose
     /// per-choice count is bound to this ref during vote-block parsing.
     VoteCount { choice_index: u32 },
+    /// CR 608.2c: The high bid from the most recently completed open-bid life
+    /// auction (`state.last_life_auction`). Used by "loses life equal to the
+    /// high bid" payoffs (Illicit Auction, Pain's Reward, Mages' Contest).
+    WinningBidAmount,
 }
 
 /// CR 107.1a: Rounding direction for fractional Oracle-text expressions.
@@ -10288,6 +10295,16 @@ pub enum Effect {
         #[serde(default)]
         visibility: VoteVisibility,
     },
+    /// Card-defined open-bid life auction (Illicit Auction, Pain's Reward,
+    /// Mages' Contest): participants bid life in turn order until the high bid
+    /// stands, then chained sub-abilities resolve for the high bidder.
+    LifeAuction {
+        #[serde(default = "default_life_auction_participants_all")]
+        participants: LifeAuctionParticipants,
+        starting_bid: LifeAuctionStartingBid,
+        #[serde(default = "default_controller_ref_you")]
+        starting_with: ControllerRef,
+    },
     /// CR 700.3 + CR 608: Separate objects into two piles, have another player
     /// choose one of them, and apply a sub-effect to the chosen pile. The
     /// canonical "two piles" primitive — covers Make an Example (each opponent
@@ -13176,6 +13193,10 @@ fn default_voter_scope_all() -> VoterScope {
     VoterScope::AllPlayers
 }
 
+fn default_life_auction_participants_all() -> LifeAuctionParticipants {
+    LifeAuctionParticipants::AllPlayers
+}
+
 /// CR 700.3: Where the objects for a pile-separation effect originate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -13229,6 +13250,28 @@ pub enum VoterScope {
     /// Pir's Whim, Khorvath's Fury, Regna's Sanction, Virtus's Maneuver,
     /// and Zndrsplt's Judgment.
     ControllerLabels,
+}
+
+/// Parameterizes the open-bid life auction building block (Illicit Auction,
+/// Pain's Reward, Mages' Contest). No dedicated CR keyword — the procedure is
+/// card-defined ("each player may bid life", "top the high bid", "high bid stands").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum LifeAuctionParticipants {
+    /// "Each player may bid life"
+    AllPlayers,
+    /// "You and target spell's controller bid life"
+    ControllerAndTargetController,
+}
+
+/// Opening bid for a life auction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+pub enum LifeAuctionStartingBid {
+    /// "You start the bidding with a bid of N"
+    Fixed(u32),
+    /// Pain's Reward: "You start the bidding with a bid of any number"
+    ControllerChooses,
 }
 
 /// Card-defined: how a completed top-tally vote selects winners among the
@@ -13455,6 +13498,7 @@ impl TargetFilter {
                 | TargetFilter::ParentTargetOwner
                 | TargetFilter::SourceChosenPlayer
                 | TargetFilter::PostReplacementSourceController
+                | TargetFilter::WinningBidder
                 | TargetFilter::PostReplacementDamageTarget
                 | TargetFilter::PostReplacementDamageTargetOwner
                 | TargetFilter::TrackedSet { .. }
@@ -13979,6 +14023,7 @@ impl Effect {
             | Effect::EndTheTurn
             | Effect::EndCombatPhase
             | Effect::Vote { .. }
+            | Effect::LifeAuction { .. }
             | Effect::Cleanup { .. }
             | Effect::SearchOutsideGame { .. }
             | Effect::Choose { .. }
@@ -14294,6 +14339,7 @@ impl Effect {
             | Effect::OpponentGuess { .. }
             | Effect::Behold { .. }
             | Effect::Vote { .. }
+        | Effect::LifeAuction { .. }
             | Effect::SeparateIntoPiles { .. }
             | Effect::SwitchPT { .. }
             | Effect::CopySpell { .. }
@@ -14547,6 +14593,7 @@ impl Effect {
             | Effect::OpponentGuess { .. }
             | Effect::Behold { .. }
             | Effect::Vote { .. }
+        | Effect::LifeAuction { .. }
             | Effect::SeparateIntoPiles { .. }
             | Effect::SwitchPT { .. }
             | Effect::CopySpell { .. }
@@ -14753,6 +14800,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Clash => "Clash",
         Effect::Behold { .. } => "Behold",
         Effect::Vote { .. } => "Vote",
+        Effect::LifeAuction { .. } => "LifeAuction",
         Effect::SeparateIntoPiles { .. } => "SeparateIntoPiles",
         Effect::SwitchPT { .. } => "SwitchPT",
         Effect::CopySpell { .. } => "CopySpell",
@@ -15003,6 +15051,8 @@ pub enum EffectKind {
     EndCombatPhase,
     /// CR 701.38: Vote — interactive APNAP-ordered choice with per-choice tally effects.
     Vote,
+    /// Card-defined open-bid life auction (Illicit Auction class).
+    LifeAuction,
     /// CR 700.3: SeparateIntoPiles — partition objects into two piles, another player chooses one, sub-effect applies.
     SeparateIntoPiles,
     SwitchPT,
@@ -15250,6 +15300,7 @@ impl From<&Effect> for EffectKind {
             Effect::Clash => EffectKind::Clash,
             Effect::Behold { .. } => EffectKind::Behold,
             Effect::Vote { .. } => EffectKind::Vote,
+            Effect::LifeAuction { .. } => EffectKind::LifeAuction,
             Effect::SeparateIntoPiles { .. } => EffectKind::SeparateIntoPiles,
             Effect::SwitchPT { .. } => EffectKind::SwitchPT,
             Effect::CopySpell { .. } => EffectKind::CopySpell,
@@ -16724,6 +16775,12 @@ pub enum AbilityCondition {
     /// state sources. Feeds `RepeatContinuation::WhileCondition` ("repeat this
     /// process") and any cross-sentence flip-result gate.
     CoinFlipOutcome { result: CoinFlipResult },
+    /// CR 608.2c: True when the referenced player won the most recently completed
+    /// open-bid life auction (`state.last_life_auction`).
+    AuctionWinnerIs {
+        #[serde(default = "default_controller_ref_you")]
+        player: ControllerRef,
+    },
     /// CR 603.12: "When you do" — reflexive trigger that fires based on whether the
     /// parent's trigger event actually occurred. For a non-cost parent (e.g. a
     /// `BecomeCopy` reflexive or a copy/exile replacement sub-ability) the "do"

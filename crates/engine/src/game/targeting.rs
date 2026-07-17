@@ -602,6 +602,7 @@ pub fn resolve_event_context_target(
         TargetFilter::DefendingPlayer
         | TargetFilter::AttachedTo
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner => {
             resolve_event_context_target_for_event_or_state(state, filter, source_id, None)
@@ -1176,6 +1177,11 @@ pub(crate) fn resolve_event_context_target_for_event_or_state(
             let controller = state.objects.get(&source_obj_id)?.controller;
             Some(TargetRef::Player(controller))
         }
+        // CR 608.2c: "the high bidder" / auction winner from the most recently
+        // completed open-bid life auction.
+        TargetFilter::WinningBidder => state
+            .last_life_auction
+            .map(|(winner, _)| TargetRef::Player(winner)),
         TargetFilter::PostReplacementDamageTarget => state.post_replacement_event_target().cloned(),
         // CR 108.3 + CR 400.3 + CR 615.5: Owner of the prevented event's damage
         // recipient ("that creature's owner shuffles it into their library").

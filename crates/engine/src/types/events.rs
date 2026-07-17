@@ -510,6 +510,7 @@ impl EventObjectSnapshot {
             | TargetFilter::OriginalSource
             | TargetFilter::PostReplacementDamageTarget
             | TargetFilter::ChosenDamageSource { .. } => Unsupported,
+            TargetFilter::WinningBidder => Unsupported,
         }
     }
 

@@ -144,6 +144,7 @@ mod intensify_tests;
 pub mod investigate;
 pub mod learn;
 pub mod life;
+pub mod life_auction;
 pub mod mana;
 pub mod manifest;
 pub mod manifest_dread;
@@ -2075,6 +2076,7 @@ fn waits_for_resolution_choice(waiting_for: &WaitingFor) -> bool {
             // `last_effect_count`).
             | WaitingFor::RemoveCountersChoice { .. }
             | WaitingFor::PayAmountChoice { .. }
+            | WaitingFor::LifeAuctionBid { .. }
             | WaitingFor::RetargetChoice { .. }
             | WaitingFor::ChooseFromZoneChoice { .. }
             | WaitingFor::ChooseOneOfBranch { .. }
@@ -2483,6 +2485,7 @@ fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> b
             // optional-decline branch selector — it reads the flip, not the
             // declined effect.
             | AbilityCondition::CoinFlipOutcome { .. }
+            | AbilityCondition::AuctionWinnerIs { .. }
             | AbilityCondition::WhenYouDo
             | AbilityCondition::WasCast { .. }
             | AbilityCondition::CastDuringPhase { .. }
@@ -3327,6 +3330,7 @@ pub fn resolve_effect(
         Effect::Behold { .. } => behold::resolve(state, ability, events),
         // CR 701.38: Council's-dilemma voting — see effects/vote.rs.
         Effect::Vote { .. } => vote::resolve(state, ability, events),
+        Effect::LifeAuction { .. } => life_auction::resolve(state, ability, events),
         // CR 700.3 + CR 608: Pile-separation primitive — see effects/separate_piles.rs.
         Effect::SeparateIntoPiles { .. } => separate_piles::resolve(state, ability, events),
         Effect::SwitchPT { .. } => switch_pt::resolve(state, ability, events),
@@ -5234,6 +5238,14 @@ pub(crate) fn resolve_player_for_context_ref(
             return player;
         }
     }
+    // CR 608.2c: Open-bid life auction winner ("the high bidder").
+    if matches!(target_filter, TargetFilter::WinningBidder) {
+        if let Some(TargetRef::Player(winner)) =
+            crate::game::targeting::resolved_targets(ability, target_filter, state).first()
+        {
+            return *winner;
+        }
+    }
     if let Some(target_ref) = crate::game::targeting::resolve_event_context_target(
         state,
         target_filter,
@@ -6383,6 +6395,7 @@ pub fn resolve_ability_chain(
         // alongside `last_zone_changed_ids` so cross-resolution leakage is
         // impossible.
         state.last_vote_ballots = crate::im::Vector::new();
+        state.last_life_auction = None;
         state.last_effect_amount = None;
         // CR 120.10: resolution-local excess channel resets with its total twin.
         state.last_effect_excess_amount = None;
@@ -9186,6 +9199,20 @@ pub(crate) fn evaluate_condition(
         AbilityCondition::CoinFlipOutcome { result } => state
             .resolution_coin_flip
             .is_some_and(|f| f.flipper == ability.controller && f.result == *result),
+        // CR 608.2c: "If you win the auction" — compare the auction winner from
+        // `last_life_auction` against the referenced player scope.
+        AbilityCondition::AuctionWinnerIs { player } => {
+            state.last_life_auction.is_some_and(|(winner, _)| {
+                crate::game::filter::controller_ref_player(
+                    state,
+                    ability.source_id,
+                    Some(ability.controller),
+                    Some(ability),
+                    player,
+                )
+                .is_some_and(|expected| winner == expected)
+            })
+        }
         // CR 603.12: A reflexive triggered ability ("when you do") triggers
         // "based on whether the trigger event or events occurred earlier during
         // the resolution" of the parent. For a cost-payment parent

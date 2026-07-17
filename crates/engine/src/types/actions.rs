@@ -733,6 +733,13 @@ pub enum GameAction {
     ChooseCountersToRemove {
         selections: Vec<CounterRemoveChoice>,
     },
+    /// Submit a life bid for `WaitingFor::LifeAuctionBid`. Must strictly exceed
+    /// the current high bid and be payable from the bidder's life total.
+    SubmitLifeAuctionBid {
+        amount: u32,
+    },
+    /// Pass on topping the current high bid during `WaitingFor::LifeAuctionBid`.
+    PassLifeAuction,
     /// CR 107.1c + CR 107.14: Submit the chosen amount for a
     /// `WaitingFor::PayAmountChoice` prompt ("pay any amount of {E}" and
     /// similar resource-choice patterns).
@@ -1573,6 +1580,8 @@ impl GameAction {
             | GameAction::ChooseCounterMoveDistribution { .. }
             | GameAction::ChooseCountersToRemove { .. }
             | GameAction::SubmitPayAmount { .. }
+            | GameAction::SubmitLifeAuctionBid { .. }
+            | GameAction::PassLifeAuction
             | GameAction::RetargetSpell { .. }
             | GameAction::LearnDecision { .. }
             | GameAction::SelectCategoryPermanents { .. }

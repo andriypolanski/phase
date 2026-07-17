@@ -2043,6 +2043,15 @@
     "subtitleVoteRemaining": "Gib eine Stimme ab ({{count}} verbleibend)",
     "subtitleVote": "Gib deine Stimme ab"
   },
+  "lifeAuction": {
+    "title": "Lebens-Auktion",
+    "subtitle": "Höchstgebot: {{bid}} Leben ({{bidder}})",
+    "highBidder": "Spieler {{number}}",
+    "pass": "Passen",
+    "bid": "{{amount}} Leben bieten",
+    "bidLabel": "Gebot {{amount}}",
+    "maxBid": "Max. {{max}}"
+  },
   "advance": {
     "resolve": "Auflösen",
     "passPriority": "Priorität abgeben",

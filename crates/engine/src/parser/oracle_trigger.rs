@@ -551,6 +551,7 @@ fn rewrite_cost_x_in_condition(cond: &mut crate::types::ability::AbilityConditio
         | AbilityCondition::DayNightIs { .. }
         | AbilityCondition::NthResolutionThisTurn { .. }
         | AbilityCondition::SourceLacksKeyword { .. }
+        | AbilityCondition::AuctionWinnerIs { .. }
         | AbilityCondition::ScopedPlayerMatches { .. } => {}
     }
 }

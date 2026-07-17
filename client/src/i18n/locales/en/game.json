@@ -2080,6 +2080,15 @@
     "subtitleVoteRemaining": "Cast a vote ({{count}} remaining)",
     "subtitleVote": "Cast your vote"
   },
+  "lifeAuction": {
+    "title": "Life auction",
+    "subtitle": "High bid: {{bid}} life ({{bidder}})",
+    "highBidder": "Player {{number}}",
+    "pass": "Pass",
+    "bid": "Bid {{amount}} life",
+    "bidLabel": "Bid {{amount}}",
+    "maxBid": "Max {{max}}"
+  },
   "advance": {
     "resolve": "Resolve",
     "passPriority": "Pass Priority",

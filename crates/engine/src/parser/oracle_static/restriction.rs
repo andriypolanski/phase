@@ -2240,6 +2240,7 @@ fn usable_disjunctive_permission_filter(filter: &TargetFilter) -> bool {
         | TargetFilter::OriginalController
         | TargetFilter::OriginalSource
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer

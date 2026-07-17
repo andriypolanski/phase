@@ -652,6 +652,7 @@ fn fmt_target(filter: &TargetFilter) -> String {
             .join(" + "),
         TargetFilter::Typed(tf) => fmt_typed_filter(tf),
         TargetFilter::Owner => "owner".into(),
+        TargetFilter::WinningBidder => "winning bidder".into(),
     }
 }
 
@@ -1111,6 +1112,27 @@ fn fmt_type_filter(tf: &TypeFilter) -> String {
     .into()
 }
 
+fn fmt_controller_player(ctrl: &ControllerRef) -> String {
+    match ctrl {
+        ControllerRef::You => "you",
+        ControllerRef::Opponent => "opponent",
+        ControllerRef::ScopedPlayer => "scoped player",
+        ControllerRef::TargetPlayer => "target player",
+        ControllerRef::TargetOpponent => "target opponent",
+        ControllerRef::ParentTargetController => "parent target's controller",
+        ControllerRef::ParentTargetOwner => "parent target's owner",
+        ControllerRef::DefendingPlayer => "defending player",
+        ControllerRef::SourceChosenPlayer => "the chosen player",
+        ControllerRef::ChosenPlayer { .. } => "chosen player",
+        ControllerRef::TriggeringPlayer => "triggering player",
+        // CR 303.4b: Display label for enchanted-player controller scope.
+        ControllerRef::EnchantedPlayer => "enchanted player",
+        // CR 102.1: Display label for active-player controller scope.
+        ControllerRef::ActivePlayer => "the active player",
+    }
+    .into()
+}
+
 fn fmt_controller(ctrl: &ControllerRef) -> String {
     match ctrl {
         ControllerRef::You => "you control",
@@ -1555,6 +1577,7 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
             format!("# of counter kinds among {}", fmt_target(filter))
         }
         QuantityRef::VoteCount { choice_index } => format!("# of votes for choice {choice_index}"),
+        QuantityRef::WinningBidAmount => "winning bid amount".into(),
         QuantityRef::PreviousEffectAmount { .. } => "amount from preceding effect".into(),
         QuantityRef::TrackedSetSize => "cards moved".into(),
         QuantityRef::FilteredTrackedSetSize { filter, .. } => {
@@ -3577,6 +3600,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::ProcessRadCounters
         | Effect::Clash
         | Effect::Vote { .. }
+        | Effect::LifeAuction { .. }
         | Effect::SeparateIntoPiles { .. }
         | Effect::Incubate { .. }
         | Effect::TimeTravel
@@ -3857,6 +3881,9 @@ fn fmt_ability_condition(cond: &AbilityCondition) -> String {
         }
         AbilityCondition::ScopedPlayerMatches { filter } => {
             format!("scoped player is {}", fmt_player_filter(filter))
+        }
+        AbilityCondition::AuctionWinnerIs { player } => {
+            format!("{} wins the auction", fmt_controller_player(player))
         }
     }
 }
@@ -7334,6 +7361,7 @@ fn condition_feature(cond: &AbilityCondition) -> (&'static str, FeatureSupport) 
         // `evaluate_condition` (effects/mod.rs). Used by cross-scope decline-tail
         // gates (Liliana, Waker of the Dead — parent `All`, decline `Opponent`).
         AbilityCondition::ScopedPlayerMatches { .. } => ("ScopedPlayerMatches", Handled),
+        AbilityCondition::AuctionWinnerIs { .. } => ("AuctionWinnerIs", Handled),
     }
 }
 
@@ -7457,6 +7485,7 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         }
         QuantityRef::DistinctCounterKindsAmong { .. } => ("DistinctCounterKindsAmong", Handled),
         QuantityRef::VoteCount { .. } => ("VoteCount", Handled),
+        QuantityRef::WinningBidAmount => ("WinningBidAmount", Handled),
         QuantityRef::PreviousEffectAmount { .. } => ("PreviousEffectAmount", Handled),
         QuantityRef::TrackedSetSize => ("TrackedSetSize", Handled),
         QuantityRef::FilteredTrackedSetSize { .. } => ("FilteredTrackedSetSize", Handled),

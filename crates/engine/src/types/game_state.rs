@@ -6422,6 +6422,19 @@ pub enum WaitingFor {
         #[serde(default)]
         visibility: super::ability::VoteVisibility,
     },
+    /// Card-defined open-bid life auction: current bidder may pass or submit a
+    /// higher life bid. When every other participant passes consecutively, the
+    /// high bid stands and chained sub-abilities resolve.
+    LifeAuctionBid {
+        player: PlayerId,
+        participants: Vec<PlayerId>,
+        round_index: usize,
+        high_bid: u32,
+        high_bidder: PlayerId,
+        passes_since_raise: u32,
+        controller: PlayerId,
+        source_id: ObjectId,
+    },
     /// CR 608.2d + CR 700.3: "An opponent separates" — in multiplayer the
     /// controller chooses which opponent will perform the partition. With a
     /// single opponent this state is skipped (no decision). The chosen
@@ -7069,6 +7082,7 @@ impl WaitingFor {
             WaitingFor::ChooseAnnouncingOpponent { .. } => "ChooseAnnouncingOpponent",
             WaitingFor::ClashCardPlacement { .. } => "ClashCardPlacement",
             WaitingFor::VoteChoice { .. } => "VoteChoice",
+            WaitingFor::LifeAuctionBid { .. } => "LifeAuctionBid",
             WaitingFor::SeparatePilesChooseOpponent { .. } => "SeparatePilesChooseOpponent",
             WaitingFor::SeparatePilesPartition { .. } => "SeparatePilesPartition",
             WaitingFor::SeparatePilesChoice { .. } => "SeparatePilesChoice",
@@ -7244,6 +7258,7 @@ impl WaitingFor {
             // authorized submitter without the call site needing to know
             // which voting shape this is.
             WaitingFor::VoteChoice { player, actor, .. } => Some(actor.resolve(*player)),
+            WaitingFor::LifeAuctionBid { player, .. } => Some(*player),
             // CR 702.132a: the assisting (chosen) player acts on the payment step,
             // not the caster — route authorization to them.
             WaitingFor::AssistPayment { chosen, .. } => Some(*chosen),
@@ -10100,6 +10115,16 @@ pub struct GameState {
     #[serde(default)]
     pub last_vote_ballots: im::Vector<(PlayerId, u32)>,
 
+    /// CR 608.2c: Winner and high bid from the most recently completed open-bid
+    /// life auction. Cleared at chain depth 0 like `last_vote_ballots`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_life_auction: Option<(PlayerId, u32)>,
+
+    /// Pain's Reward opening-bid participant queue between PayAmountChoice and
+    /// the auction loop. Cleared once the bid round begins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_life_auction_participants: Option<Vec<PlayerId>>,
+
     /// CR 608.2c + CR 109.5: Player actions performed during the current
     /// top-level ability resolution. Distinct from turn-level trackers like
     /// `players_who_searched_library_this_turn`: this set accumulates only
@@ -11812,6 +11837,8 @@ impl GameState {
             private_look_player: None,
             last_zone_changed_ids: Vec::new(),
             last_vote_ballots: im::Vector::new(),
+            last_life_auction: None,
+            pending_life_auction_participants: None,
             player_actions_this_way: HashSet::new(),
             last_effect_amount: None,
             last_effect_excess_amount: None,
@@ -13015,6 +13042,8 @@ fn _gamestate_partition_is_total(s: &GameState) {
         //     object-growth lives in `objects` (stripped+compared by `eq_except_growable`), so
         //     excluding this single-object identity field cannot hide growth.
         resolution_source_relatch: _,
+        last_life_auction: _,
+        pending_life_auction_participants: _,
     } = s;
 }
 
@@ -15175,6 +15204,16 @@ mod tests {
             player: PlayerId(0),
             cards: vec![ObjectId(1)],
         }));
+        variants.push(Box::new(WaitingFor::LifeAuctionBid {
+            player: PlayerId(0),
+            participants: vec![PlayerId(0), PlayerId(1)],
+            round_index: 1,
+            high_bid: 0,
+            high_bidder: PlayerId(0),
+            passes_since_raise: 0,
+            controller: PlayerId(0),
+            source_id: ObjectId(1),
+        }));
         variants.push(Box::new(WaitingFor::ArrangePlanarDeckTopChoice {
             player: PlayerId(0),
             cards: vec![ObjectId(1), ObjectId(2)],
@@ -15400,7 +15439,7 @@ mod tests {
             mana_reduction: ManaCost::zero(),
             pending_cast: dummy_pending(),
         }));
-        assert_eq!(variants.len(), 35);
+        assert_eq!(variants.len(), 36);
     }
 
     #[test]

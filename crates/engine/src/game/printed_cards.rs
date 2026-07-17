@@ -1227,6 +1227,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         // CR 608.2d + CR 122.1: counter-kind choice / consume carry no conjure names.
         | Effect::ChooseCounterKind { .. }
         | Effect::PutChosenCounter { .. }
+        | Effect::LifeAuction { .. }
         | Effect::Unimplemented { .. } => {}
     }
 }

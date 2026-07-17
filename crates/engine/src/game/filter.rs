@@ -97,6 +97,7 @@ pub(crate) fn affected_filter_uses_object_population(filter: &TargetFilter) -> b
         // SpecificObject before runtime) — never whole-board population.
         | TargetFilter::OriginalSource
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
@@ -330,6 +331,7 @@ pub(crate) fn entered_object_perturbs_affected_filter(
         // SpecificObject before runtime) — never whole-board population.
         | TargetFilter::OriginalSource
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
@@ -1691,6 +1693,7 @@ fn filter_inner_for_object(
         TargetFilter::Player => false, // Players are not objects
         // CR 118.12a: unless-payer population — never matches an object.
         TargetFilter::AllPlayers => false,
+        TargetFilter::WinningBidder => false,
         TargetFilter::Controller => false, // Controller is a player, not an object
         // CR 102.3: Opponent is a player reference (used only as a slot announcer),
         // never an object.
@@ -2240,6 +2243,7 @@ fn zone_change_filter_inner(
         TargetFilter::Player => false,
         // CR 118.12a: unless-payer population — never matches an object.
         TargetFilter::AllPlayers => false,
+        TargetFilter::WinningBidder => false,
         TargetFilter::Controller => false,
         // CR 102.3: Opponent is a player reference, never an object.
         TargetFilter::Opponent => false,
@@ -2731,6 +2735,7 @@ pub fn spell_record_matches_filter(
         | TargetFilter::ParentTargetOwner
         | TargetFilter::SourceChosenPlayer
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
@@ -3043,6 +3048,7 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::ParentTargetOwner
         | TargetFilter::SourceChosenPlayer
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer

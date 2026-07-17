@@ -4785,7 +4785,8 @@ pub(crate) fn ability_condition_to_static_condition(
         | AbilityCondition::DayNightIs { .. }
         | AbilityCondition::ControllerControlsMatching { .. }
         | AbilityCondition::And { .. }
-        | AbilityCondition::Or { .. } => None,
+        | AbilityCondition::Or { .. }
+        | AbilityCondition::AuctionWinnerIs { .. } => None,
     }
 }
 

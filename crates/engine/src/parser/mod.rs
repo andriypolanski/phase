@@ -1,6 +1,7 @@
 pub(crate) mod clause_shell;
 pub mod oracle;
 pub(crate) mod oracle_attraction;
+pub(crate) mod oracle_auction;
 pub mod oracle_casting;
 pub(crate) mod oracle_class;
 pub(crate) mod oracle_classifier;

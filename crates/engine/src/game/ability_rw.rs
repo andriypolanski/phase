@@ -1373,6 +1373,7 @@ fn scope_of(target: &TargetFilter, chain_root: Option<WriteScope>) -> WriteScope
         | TargetFilter::SourceChosenPlayer
         | TargetFilter::OriginalController
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
@@ -1925,7 +1926,8 @@ fn legacy_ability_condition(x: &AbilityCondition) -> bool {
         | AbilityCondition::FirstCombatPhaseOfTurn
         | AbilityCondition::FirstEndStepOfTurn
         | AbilityCondition::DayNightIsNeither
-        | AbilityCondition::DayNightIs { .. } => false,
+        | AbilityCondition::DayNightIs { .. }
+            | AbilityCondition::AuctionWinnerIs { .. } => false,
     }
 }
 
@@ -2097,6 +2099,7 @@ fn legacy_quantity_ref(x: &QuantityRef) -> bool {
         | QuantityRef::CommanderManaValue { .. }
         | QuantityRef::Speed { .. }
         | QuantityRef::VoteCount { .. }
+        | QuantityRef::WinningBidAmount
         | QuantityRef::ZoneCardCount { .. }
         | QuantityRef::EnteredThisTurn { .. }
         | QuantityRef::SacrificedThisTurn { .. }
@@ -2231,6 +2234,7 @@ fn legacy_target_filter(f: &TargetFilter) -> bool {
         | TargetFilter::EventTarget
         | TargetFilter::TriggeringSourceController
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::ChosenDamageSource { .. }
@@ -2450,6 +2454,7 @@ fn member_bound_target_filter(f: &TargetFilter) -> bool {
         | TargetFilter::EventTarget
         | TargetFilter::TriggeringSourceController
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::ParentTargetSlot { .. }
@@ -3346,7 +3351,8 @@ fn legacy_effect(x: &Effect) -> bool {
         | Effect::ManifestDread
         | Effect::Choose { .. }
         | Effect::ApplyPostReplacementDamage { .. }
-        | Effect::Unimplemented { .. } => false,
+        | Effect::Unimplemented { .. }
+        | Effect::LifeAuction { .. } => false,
     }
 }
 
@@ -3582,6 +3588,7 @@ fn target_recipient(f: &TargetFilter) -> (bool, bool) {
         | TargetFilter::ParentTargetController
         | TargetFilter::ParentTargetOwner
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTargetOwner => (true, false),
         // "any target" and player-or-object filters ⇒ both recipients.
         TargetFilter::Any | TargetFilter::Or { .. } => (true, true),
@@ -5504,6 +5511,7 @@ fn rw_effect(
         | Effect::ReassembleContraptionOnSprocket { .. }
         | Effect::ApplySticker { .. }
         | Effect::ProcessRadCounters => (RwProfile::conservative(), None),
+        Effect::LifeAuction { .. } => (RwProfile::conservative(), None),
     }
 }
 
@@ -5716,7 +5724,8 @@ fn rw_quantity_ref(x: &QuantityRef) -> RwProfile {
         | QuantityRef::AdditionalCostPaymentCount
         | QuantityRef::AdditionalCostPaymentCountFor { .. }
         | QuantityRef::ConvokedCreatureCount
-        | QuantityRef::VoteCount { .. } => {
+        | QuantityRef::VoteCount { .. }
+        | QuantityRef::WinningBidAmount => {
             let mut p = RwProfile::empty();
             p.reads_member_bound = true;
             p
@@ -5964,7 +5973,8 @@ fn rw_ability_condition(x: &AbilityCondition) -> RwProfile {
         | AbilityCondition::FirstCombatPhaseOfTurn
         | AbilityCondition::FirstEndStepOfTurn
         | AbilityCondition::DayNightIsNeither
-        | AbilityCondition::DayNightIs { .. } => RwProfile::empty(),
+        | AbilityCondition::DayNightIs { .. }
+        | AbilityCondition::AuctionWinnerIs { .. } => RwProfile::empty(),
     }
 }
 
@@ -6212,6 +6222,7 @@ fn rw_target_filter(x: &TargetFilter) -> RwProfile {
         | TargetFilter::EventTarget
         | TargetFilter::TriggeringSourceController
         | TargetFilter::PostReplacementSourceController
+        | TargetFilter::WinningBidder
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::ChosenDamageSource { .. } => reads_event_live(),

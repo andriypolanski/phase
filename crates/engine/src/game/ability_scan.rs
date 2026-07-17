@@ -681,6 +681,7 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::EndTheTurn => Axes::NONE,
         Effect::EndCombatPhase => Axes::NONE,
         Effect::Vote { .. } => Axes::CONSERVATIVE,
+        Effect::LifeAuction { .. } => Axes::CONSERVATIVE,
         Effect::SeparateIntoPiles { .. } => Axes::CONSERVATIVE,
         Effect::SwitchPT { target } => {
             let mut acc = Axes::NONE;
@@ -2125,6 +2126,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc
         }
         QuantityRef::VoteCount { choice_index: _ } => Axes::NONE,
+        QuantityRef::WinningBidAmount => Axes::NONE,
     }
 }
 
@@ -2205,6 +2207,7 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
         AbilityCondition::EffectOutcome { signal: _ } => Axes::NONE,
         AbilityCondition::EventOutcomeWon => Axes::NONE,
         AbilityCondition::CoinFlipOutcome { result: _ } => Axes::NONE,
+        AbilityCondition::AuctionWinnerIs { player: _ } => Axes::NONE,
         AbilityCondition::WhenYouDo => Axes::NONE,
         AbilityCondition::WasCast { zone: _ } => Axes::NONE,
         AbilityCondition::CastDuringPhase { phases: _ } => Axes::NONE,
@@ -2549,6 +2552,11 @@ fn scan_target_filter(x: &TargetFilter) -> Axes {
             event: true,
             sibling: false,
             projected: false,
+        },
+        TargetFilter::WinningBidder => Axes {
+            event: false,
+            sibling: false,
+            projected: true,
         },
         TargetFilter::PostReplacementDamageTarget => Axes {
             event: true,
@@ -4255,6 +4263,7 @@ fn effect_resolution_choice_freedom(e: &Effect) -> ResolutionChoiceFreedom {
         | Effect::EndTheTurn
         | Effect::EndCombatPhase
         | Effect::Vote { .. }
+        | Effect::LifeAuction { .. }
         | Effect::SeparateIntoPiles { .. }
         | Effect::SwitchPT { .. }
         | Effect::CopySpell { .. }
@@ -4523,6 +4532,7 @@ pub(crate) fn effect_is_randomness_bearing(e: &Effect) -> bool {
         | Effect::EndTheTurn
         | Effect::EndCombatPhase
         | Effect::Vote { .. }
+        | Effect::LifeAuction { .. }
         | Effect::SeparateIntoPiles { .. }
         | Effect::SwitchPT { .. }
         | Effect::CopySpell { .. }

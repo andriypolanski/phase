@@ -770,6 +770,7 @@ pub(super) fn target_filter_matches_object(
         TargetFilter::Player => false,
         // CR 118.12a: unless-payer population — never matches an object.
         TargetFilter::AllPlayers => false,
+        TargetFilter::WinningBidder => false,
         TargetFilter::Controller => false,
         // CR 102.3: Opponent is a player reference, never an object.
         TargetFilter::Opponent => false,

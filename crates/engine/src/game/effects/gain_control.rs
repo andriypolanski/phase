@@ -249,6 +249,8 @@ pub fn resolve_give(
         }
     }) {
         pid
+    } else if matches!(recipient, TargetFilter::WinningBidder) {
+        super::resolve_player_for_context_ref(state, ability, recipient)
     } else {
         unique_recipient_from_filter(state, recipient, ability)?
     };

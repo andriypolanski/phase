@@ -36,6 +36,7 @@ import { formatCounterType } from "../../viewmodel/cardProps.ts";
 import { getBoardChoiceView } from "../../viewmodel/gameStateView.ts";
 import { NamedChoiceModal } from "./NamedChoiceModal.tsx";
 import { VoteChoiceModal } from "./VoteChoiceModal.tsx";
+import { LifeAuctionBidModal } from "./LifeAuctionBidModal.tsx";
 import { SpecializeColorModal } from "./SpecializeColorModal.tsx";
 import { RoomDoorChoiceModal } from "./RoomDoorChoiceModal.tsx";
 import {
@@ -199,6 +200,9 @@ export function CardChoiceModal() {
     case "VoteChoice":
       if (!canActForWaitingState) return null;
       return <VoteChoiceModal data={waitingFor.data} />;
+    case "LifeAuctionBid":
+      if (!canActForWaitingState) return null;
+      return <LifeAuctionBidModal data={waitingFor.data} />;
     case "SeparatePilesPartition":
       if (!canActForWaitingState) return null;
       return <SeparatePilesPartitionModal data={waitingFor.data} />;

@@ -2923,6 +2923,29 @@ pub fn candidate_actions_broad_with_probe(
         // CR 107.1c + CR 107.14: Enumerate every legal amount in [min, max].
         // AI search layer picks among these; for a damage-scaling effect like
         // Galvanic Discharge the evaluator prefers the maximum (most damage).
+        WaitingFor::LifeAuctionBid {
+            player, high_bid, ..
+        } => {
+            let mut actions = vec![candidate(
+                GameAction::PassLifeAuction,
+                TacticalClass::Selection,
+                Some(*player),
+            )];
+            let max_life = state
+                .players
+                .iter()
+                .find(|p| p.id == *player)
+                .map(|p| p.life.max(0) as u32)
+                .unwrap_or(0);
+            for amount in (high_bid.saturating_add(1))..=max_life {
+                actions.push(candidate(
+                    GameAction::SubmitLifeAuctionBid { amount },
+                    TacticalClass::Selection,
+                    Some(*player),
+                ));
+            }
+            actions
+        }
         WaitingFor::PayAmountChoice {
             player, min, max, ..
         } => (*min..=*max)

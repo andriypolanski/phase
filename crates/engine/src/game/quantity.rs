@@ -424,6 +424,7 @@ fn quantity_ref_uses_unspent_mana(qty: &QuantityRef) -> bool {
         | QuantityRef::ManaSpentToCast { .. }
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::VoteCount { .. }
+        | QuantityRef::WinningBidAmount
         | QuantityRef::DistinctColorsAmongPermanents { .. }
         | QuantityRef::DistinctCounterKindsAmong { .. }
         | QuantityRef::EnteredThisTurn { .. }
@@ -695,6 +696,7 @@ fn quantity_ref_uses_object_count(qty: &QuantityRef) -> bool {
         | QuantityRef::ManaSpentToCast { .. }
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::VoteCount { .. }
+        | QuantityRef::WinningBidAmount
         | QuantityRef::CommanderCastFromCommandZoneCount => false,
     }
 }
@@ -891,6 +893,7 @@ fn entered_object_perturbs_quantity_ref(
         | QuantityRef::ManaSpentToCast { .. }
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::VoteCount { .. }
+        | QuantityRef::WinningBidAmount
         | QuantityRef::CommanderCastFromCommandZoneCount => false,
     }
 }
@@ -2767,6 +2770,11 @@ fn resolve_ref(
                 .filter(|(_, ballot_choice)| *ballot_choice == *choice_index)
                 .count(),
         ),
+        // CR 608.2c: Winning life bid from the most recently completed auction.
+        QuantityRef::WinningBidAmount => state
+            .last_life_auction
+            .map(|(_, bid)| bid as i32)
+            .unwrap_or(0),
         // CR 305.6: Count distinct basic land types among lands controlled by
         // the referenced player. Domain counts distinct land subtypes, not
         // lands, so multiple Forests still contribute one.

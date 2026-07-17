@@ -5521,6 +5521,13 @@ pub(crate) fn parse_oracle_ir(
                     AbilityKind::Spell,
                 ) {
                 pile_def
+            } else if let Some(auction_def) =
+                crate::parser::oracle_auction::parse_life_auction_block(
+                    parse_line,
+                    AbilityKind::Spell,
+                )
+            {
+                auction_def
             } else if let Some(vote_def) =
                 crate::parser::oracle_vote::parse_vote_block(parse_line, AbilityKind::Spell)
             {

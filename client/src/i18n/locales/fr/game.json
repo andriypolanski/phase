@@ -2043,6 +2043,15 @@
     "subtitleVoteRemaining": "Votez ({{count}} restant(s))",
     "subtitleVote": "Exprimez votre vote"
   },
+  "lifeAuction": {
+    "title": "Life auction",
+    "subtitle": "High bid: {{bid}} life ({{bidder}})",
+    "highBidder": "Player {{number}}",
+    "pass": "Pass",
+    "bid": "Bid {{amount}} life",
+    "bidLabel": "Bid {{amount}}",
+    "maxBid": "Max {{max}}"
+  },
   "advance": {
     "resolve": "Résoudre",
     "passPriority": "Passer la priorité",
