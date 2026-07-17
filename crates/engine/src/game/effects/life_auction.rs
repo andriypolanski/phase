@@ -49,6 +49,10 @@ pub fn resolve(
         .into_iter()
         .filter(|pid| pool.contains(pid))
         .collect();
+    if ordered.is_empty() {
+        emit_resolved(events, ability.source_id);
+        return Ok(());
+    }
 
     if matches!(starting_bid, LifeAuctionStartingBid::ControllerChooses) {
         state.pending_life_auction_participants = Some(ordered);
@@ -395,5 +399,38 @@ mod tests {
         };
         assert_eq!(high_bid, 0);
         assert_eq!(high_bidder, PlayerId(0));
+    }
+
+    #[test]
+    fn empty_controller_and_target_auction_resolves_without_prompting() {
+        let mut state = GameState::new_two_player(0);
+        state.players.iter_mut().for_each(|player| {
+            player.is_eliminated = true;
+        });
+        let source = ObjectId(1);
+        let mut ability = ResolvedAbility::new(
+            Effect::LifeAuction {
+                participants: LifeAuctionParticipants::ControllerAndTargetController,
+                starting_bid: LifeAuctionStartingBid::Fixed(0),
+                starting_with: ControllerRef::You,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.targets = vec![crate::types::ability::TargetRef::Player(PlayerId(1))];
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
+        assert!(matches!(
+            events.as_slice(),
+            [GameEvent::EffectResolved {
+                kind: EffectKind::LifeAuction,
+                source_id: resolved_source,
+                ..
+            }] if *resolved_source == source
+        ));
     }
 }
