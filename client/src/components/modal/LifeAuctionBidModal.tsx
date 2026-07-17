@@ -28,7 +28,7 @@ export function LifeAuctionBidModal({ data }: { data: LifeAuctionBid["data"] }) 
   const legalActions = useGameStore((s) => s.legalActions);
   const bidAmounts = useMemo(() => bidAmountsFromLegalActions(legalActions), [legalActions]);
   const minBid = bidAmounts[0] ?? data.high_bid + 1;
-  const maxBid = bidAmounts.at(-1) ?? minBid;
+  const maxBid = bidAmounts[bidAmounts.length - 1] ?? minBid;
   const canPass = legalActions.some((action) => action.type === "PassLifeAuction");
   const canRaise = bidAmounts.length > 0;
   const [amount, setAmount] = useState(minBid);
@@ -66,9 +66,11 @@ export function LifeAuctionBidModal({ data }: { data: LifeAuctionBid["data"] }) 
             </button>
           ) : null}
           {canRaise ? (
-            <ConfirmButton onClick={handleBid} disabled={!bidAmounts.includes(amount)}>
-              {t("lifeAuction.bid", { amount })}
-            </ConfirmButton>
+            <ConfirmButton
+              onClick={handleBid}
+              disabled={!bidAmounts.includes(amount)}
+              label={t("lifeAuction.bid", { amount })}
+            />
           ) : null}
         </div>
       }

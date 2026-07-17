@@ -506,6 +506,9 @@ fn redundancy_delta(
         // CR 119.7 + CR 119.8: RedistributeLifeTotals is a one-time interactive life
         // permutation — no target and no static redundancy signal.
         | Effect::RedistributeLifeTotals
+        // Card-defined open-bid life auction: bid amounts are runtime choices with
+        // no static redundancy signal.
+        | Effect::LifeAuction { .. }
         // CR 103.1: ReverseTurnOrder has no target and no static redundancy signal.
         | Effect::ReverseTurnOrder
         | Effect::GrantCastingPermission { .. }

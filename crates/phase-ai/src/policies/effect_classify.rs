@@ -306,6 +306,7 @@ pub(crate) fn effect_polarity(effect: &Effect) -> EffectPolarity {
         | Effect::Incubate { .. }
         | Effect::Intensify { .. }
         | Effect::Learn
+        | Effect::LifeAuction { .. }
         | Effect::LoseAllPlayerCounters { .. }
         | Effect::MadnessCast { .. }
         | Effect::Manifest { .. }

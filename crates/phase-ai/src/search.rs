@@ -1500,6 +1500,10 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
             Some(GameAction::SubmitPayAmount { amount: *min })
         }
 
+        // Life auction: pass as the conservative default; the candidate generator
+        // still explores every legal raise amount.
+        WaitingFor::LifeAuctionBid { .. } => Some(GameAction::PassLifeAuction),
+
         // Retarget: keep current targets.
         WaitingFor::RetargetChoice {
             current_targets, ..

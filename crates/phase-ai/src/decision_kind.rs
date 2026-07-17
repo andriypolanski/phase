@@ -196,7 +196,10 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::LoopShortcut { .. }
         | WaitingFor::RespondToShortcut { .. }
         | WaitingFor::PrecastCopyShortcutOffer { .. }
-        | WaitingFor::RespondToPrecastCopyShortcut { .. } => DecisionKind::ActivateAbility,
+        | WaitingFor::RespondToPrecastCopyShortcut { .. }
+        // Card-defined open-bid life auction: pass/raise is a mid-resolution
+        // selection; route to the ability catch-all bucket.
+        | WaitingFor::LifeAuctionBid { .. } => DecisionKind::ActivateAbility,
     }
 }
 
