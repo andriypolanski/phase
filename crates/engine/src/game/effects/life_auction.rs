@@ -87,18 +87,23 @@ pub fn resolve(
 }
 
 /// Called from the PayAmountChoice handler once the controller announces Pain's
-/// Reward opening bid (`last_effect_count`).
-pub fn begin_after_opening_bid(state: &mut GameState, controller: PlayerId, source_id: ObjectId) {
+/// Reward opening bid. The amount is carried as `u32` — it must not narrow through
+/// `last_effect_count` (`i32`), which would wrap values above `i32::MAX`.
+pub fn begin_after_opening_bid(
+    state: &mut GameState,
+    controller: PlayerId,
+    source_id: ObjectId,
+    opening_bid: u32,
+) {
     let Some(participants) = state.pending_life_auction_participants.take() else {
         return;
     };
-    let opening = state.last_effect_count.unwrap_or(0).max(0) as u32;
     park_bid_prompt(
         state,
         LifeAuctionRoundState {
             participants,
             round_index: 1,
-            high_bid: opening,
+            high_bid: opening_bid,
             high_bidder: controller,
             passes_since_raise: 0,
             controller,

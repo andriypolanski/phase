@@ -2148,17 +2148,19 @@ pub(super) fn handle_resolution_choice(
                     }
                 }
             }
-            // CR 603.7c: Bind the paid amount for downstream chain steps that
-            // read `QuantityRef::EventContextAmount` (e.g. "deals that much
-            // damage"). `last_effect_count` is the documented fallback slot.
             let total = accumulated.saturating_add(amount);
-            state.last_effect_count = Some(total as i32);
             if state.pending_life_auction_participants.is_some() {
-                effects::life_auction::begin_after_opening_bid(state, player, source_id);
+                // Opening bid is announced, not paid — preserve the full `u32`
+                // without stamping `last_effect_count` (i32 wrap would corrupt it).
+                effects::life_auction::begin_after_opening_bid(state, player, source_id, total);
                 return Ok(ResolutionChoiceOutcome::WaitingFor(
                     state.waiting_for.clone(),
                 ));
             }
+            // CR 603.7c: Bind the paid amount for downstream chain steps that
+            // read `QuantityRef::EventContextAmount` (e.g. "deals that much
+            // damage"). `last_effect_count` is the documented fallback slot.
+            state.last_effect_count = Some(total as i32);
             let pending_starts_with_pay_amount = state
                 .pending_continuation
                 .as_ref()

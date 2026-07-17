@@ -149,6 +149,69 @@ fn scry_payoff_auction_ability(
 }
 
 #[test]
+fn pains_reward_opening_bid_above_i32_max_is_preserved() {
+    let mut state = GameState::new_two_player(0);
+    let controller = PlayerId(0);
+    let source = ObjectId(900);
+    let opening_bid = (i32::MAX as u32).saturating_add(1);
+
+    let def = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::LifeAuction {
+            participants: LifeAuctionParticipants::AllPlayers,
+            starting_bid: LifeAuctionStartingBid::ControllerChooses,
+            starting_with: ControllerRef::You,
+        },
+    )
+    .sub_ability(AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::LoseLife {
+            amount: QuantityExpr::Ref {
+                qty: QuantityRef::WinningBidAmount,
+            },
+            target: Some(TargetFilter::WinningBidder),
+        },
+    ));
+    let ability = build_resolved_from_def(&def, source, controller);
+    let mut events = Vec::new();
+    resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+    assert!(
+        matches!(state.waiting_for, WaitingFor::PayAmountChoice { .. }),
+        "Pain's Reward must park on PayAmountChoice, got {:?}",
+        state.waiting_for
+    );
+    assert!(
+        state.pending_life_auction_participants.is_some(),
+        "participant queue must be stashed for opening bid"
+    );
+
+    apply(
+        &mut state,
+        controller,
+        GameAction::SubmitPayAmount {
+            amount: opening_bid,
+        },
+    )
+    .expect("opening bid above i32::MAX must be accepted");
+
+    let WaitingFor::LifeAuctionBid { high_bid, .. } = state.waiting_for else {
+        panic!(
+            "opening bid must begin auction at LifeAuctionBid, got {:?}",
+            state.waiting_for
+        );
+    };
+    assert_eq!(
+        high_bid, opening_bid,
+        "opening bid must not narrow through last_effect_count i32 wrap"
+    );
+    assert_eq!(
+        state.last_effect_count, None,
+        "auction opening bid must not stamp last_effect_count"
+    );
+}
+
+#[test]
 fn auction_payoff_preserves_nested_scry_choice() {
     let mut state = GameState::new_two_player(0);
     let controller = PlayerId(0);
