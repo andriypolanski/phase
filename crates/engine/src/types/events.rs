@@ -1805,6 +1805,22 @@ mod tests {
         assert_eq!(classify(&needs_live), Unsupported);
     }
 
+    /// CR 701.15b/c: goad is a designation on the LIVE permanent, not a fact the event
+    /// snapshot / zone-change record carries — the runtime fail-closes it. The reach-gate
+    /// classifier must AGREE: a goaded event-subject filter is `Unsupported`, so a future
+    /// card that reaches it fails the gate loudly instead of silently certifying ungoaded.
+    /// Revert-probe: returning Goaded to the Supported group (its state on head e3448a3c3)
+    /// makes classify yield Supported, flipping this assertion.
+    #[test]
+    fn goaded_subject_filter_is_unsupported() {
+        let goaded = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: None,
+            properties: vec![FilterProp::Goaded],
+        });
+        assert_eq!(classify(&goaded), Unsupported);
+    }
+
     /// `Unsupported` dominates a composite: if one branch cannot be answered, the whole
     /// filter cannot be. Getting this backwards would let an unanswerable filter through
     /// the gate and be silently evaluated as `false` at runtime.
