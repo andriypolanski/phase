@@ -1,5 +1,5 @@
-//! Issue #5760 — U.S.Agent, John Walker must attach the Sturdy Shield
-//! Equipment token it creates on ETB to itself, not leave it unattached.
+//! Issue #5760 / #5986 — U.S.Agent, John Walker must attach the Sturdy Shield
+//! Equipment token it creates on ETB to itself, and the token must carry equip {2}.
 
 use engine::game::game_object::AttachTarget;
 use engine::game::scenario::{GameScenario, P0};
@@ -60,5 +60,13 @@ fn us_agent_attaches_created_sturdy_shield_on_etb() {
         token.attached_to,
         Some(AttachTarget::Object(us_agent)),
         "the Sturdy Shield token should be attached to U.S.Agent"
+    );
+
+    assert!(
+        token.abilities.iter().any(|ability| matches!(
+            *ability.effect,
+            engine::types::ability::Effect::Attach { .. }
+        )),
+        "Sturdy Shield must enter with an equip activated ability (issue #5986)"
     );
 }

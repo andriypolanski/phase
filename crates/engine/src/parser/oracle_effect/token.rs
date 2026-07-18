@@ -1115,7 +1115,68 @@ fn extract_token_static_abilities(text: &str, token_name: &str) -> Vec<StaticDef
         }
     }
 
+    // Pass 3: unquoted Equip grants in the token "with …" suffix (CR 702.6a).
+    // U.S.Agent, John Walker's Sturdy Shield: `with "Equipped creature gets
+    // +1/+2" and equip {2}` — the equip clause is a sibling of the quoted
+    // static, not inside it. Nahiri's "It has … and equip {0}" path folds a
+    // GenericEffect sibling instead; inline token descriptions need this pass.
+    append_unquoted_equip_grants(text, &mut statics);
+
     statics
+}
+
+/// Scan `text` outside double-quoted spans for standalone `equip {cost}`
+/// clauses and append `GrantAbility(Attach SelfRef → creature)` statics.
+fn append_unquoted_equip_grants(text: &str, out: &mut Vec<StaticDefinition>) {
+    let mut pos = 0;
+    while pos < text.len() {
+        if text.as_bytes().get(pos) == Some(&b'"') {
+            if let Some(end) = text[pos + 1..].find('"') {
+                pos += end + 2;
+            } else {
+                break;
+            }
+            continue;
+        }
+
+        let remaining = &text[pos..];
+        let remaining_lower = remaining.to_ascii_lowercase();
+        let Some(rel) = remaining_lower.find("equip") else {
+            break;
+        };
+        if rel > 0 && remaining.as_bytes()[rel - 1].is_ascii_alphanumeric() {
+            pos += rel + "equip".len();
+            continue;
+        }
+
+        let abs = pos + rel;
+        let Some(line) = take_unquoted_equip_line(&text[abs..]) else {
+            pos = abs + "equip".len();
+            continue;
+        };
+        if let Some(ability) = super::super::oracle::try_parse_equip(line) {
+            out.push(
+                StaticDefinition::continuous()
+                    .affected(TargetFilter::SelfRef)
+                    .modifications(vec![ContinuousModification::GrantAbility {
+                        definition: Box::new(ability),
+                    }]),
+            );
+        }
+        pos = abs + line.len();
+    }
+}
+
+fn take_unquoted_equip_line(text: &str) -> Option<&str> {
+    let trimmed = text.trim_start();
+    if !trimmed.to_ascii_lowercase().starts_with("equip") {
+        return None;
+    }
+    let end = trimmed
+        .find(|c| c == '.' || c == '"')
+        .unwrap_or(trimmed.len());
+    let line = trimmed[..end].trim();
+    super::super::oracle::try_parse_equip(line).map(|_| line)
 }
 
 fn push_parsed_statics(ability_text: &str, token_name: &str, out: &mut Vec<StaticDefinition>) {
@@ -2657,6 +2718,34 @@ mod tests {
             statics.len(),
             1,
             "expected one continuous static from single-quoted ability, got {statics:?}",
+        );
+    }
+
+    #[test]
+    fn extract_unquoted_equip_grant_from_token_with_clause() {
+        use crate::types::ability::{ContinuousModification, Effect, TargetFilter};
+
+        let statics = extract_token_static_abilities(
+            r#"with "Equipped creature gets +1/+2" and equip {2}"#,
+            "Sturdy Shield",
+        );
+        assert!(
+            statics.iter().any(|static_def| {
+                static_def.modifications.iter().any(|modification| {
+                    matches!(
+                        modification,
+                        ContinuousModification::GrantAbility { definition }
+                            if matches!(
+                                *definition.effect,
+                                Effect::Attach {
+                                    attachment: TargetFilter::SelfRef,
+                                    ..
+                                }
+                            )
+                    )
+                })
+            }),
+            "expected unquoted equip cost to grant an Attach activated ability, got {statics:?}",
         );
     }
 
