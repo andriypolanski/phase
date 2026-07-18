@@ -1831,6 +1831,80 @@ pub(crate) fn parse_cant_win_lose_compound_statics(
     )
 }
 
+/// CR 601.2f: Split "<cast-cost clause> to cast and <activate-cost clause>" into
+/// its two clauses with composed combinators. `recognize` captures the cast
+/// clause THROUGH its "to cast" tail (so the reused single-line cost parser sees a
+/// complete "… cost {N} more to cast" clause); `tag(" and ")` consumes the
+/// conjunction; the remainder is the activate clause. Mirrors the `take_until` +
+/// `tag` split idiom used by the gated-combat tail parsers — no manual slicing.
+fn parse_compound_cost_tax_clauses(input: &str) -> OracleResult<'_, (&str, &str)> {
+    let (rest, cast_clause) =
+        recognize((take_until(" to cast and "), tag(" to cast"))).parse(input)?;
+    let (activate_clause, _) = tag(" and ").parse(rest)?;
+    Ok(("", (cast_clause, activate_clause)))
+}
+
+/// CR 601.2f + CR 602.2 + CR 604.1 + CR 611.3: Compound cost-tax static that
+/// conjoins a spell-cast cost modifier and an activated-ability cost modifier in
+/// one (optionally condition-scoped) sentence — "[<timing>,] spells <scope> cast
+/// cost {N} <more|less> to cast and abilities <scope> activate cost {M}
+/// <more|less> to activate [unless they're mana abilities]". The marquee member
+/// is Tithe Taker ("During your turn, spells your opponents cast cost {1} more to
+/// cast and abilities your opponents activate cost {1} more to activate unless
+/// they're mana abilities").
+///
+/// The single-return pipeline (`parse_static_line`) can emit at most one
+/// definition, so it keeps the cast half and SILENTLY drops the "and abilities …"
+/// activate half. This splits the conjunction at the cast/activate boundary and
+/// emits BOTH halves as independent statics (CR 611.3). CR 604.1: a leading
+/// timing condition ("During your turn,") scopes the whole conjunction — the cast
+/// half already carries it (the condition precedes the conjunction in the text),
+/// so it is propagated onto the otherwise-conditionless activate half. CR 602.2:
+/// the activate half's activator scope ("you"/"your opponents") is resolved by
+/// the reused single-line handler, not here.
+///
+/// The split is adopted ONLY when the cast half resolves to a `ModifyCost` static
+/// AND the activate half to a `ReduceAbilityCost` static, so any other "… and …"
+/// line (a dual anthem, a keyword grant, …) falls through to the generic handlers
+/// untouched.
+fn parse_compound_spell_and_ability_cost_tax(text: &str) -> Option<Vec<StaticDefinition>> {
+    let lower = text.to_lowercase();
+    // Gate: a spell-cast cost clause conjoined with an activated-ability cost
+    // clause. `scan_contains` matches at word boundaries (leading whitespace is
+    // trimmed), so the probe phrases must start on a word, not a space.
+    if !(nom_primitives::scan_contains(&lower, "to cast and ")
+        && nom_primitives::scan_contains(&lower, "to activate"))
+    {
+        return None;
+    }
+
+    // Split the conjunction with composed combinators (no manual slicing): the
+    // cast clause (which retains any leading timing condition) is `recognize`d
+    // THROUGH its "to cast" tail so the reused single-line parser sees a complete
+    // clause; the " and " conjunction and the trailing activate clause follow.
+    let (_, (cast_clause, activate_clause)) = parse_compound_cost_tax_clauses(text).ok()?;
+
+    // Parse each half through the single-line pipeline; adopt only when both
+    // resolve to the expected cost-static shapes (CR 601.2f).
+    let mut cast_def = parse_static_line(cast_clause)?;
+    let mut activate_def = parse_static_line(activate_clause)?;
+    if !matches!(cast_def.mode, StaticMode::ModifyCost { .. })
+        || !matches!(activate_def.mode, StaticMode::ReduceAbilityCost { .. })
+    {
+        return None;
+    }
+
+    // CR 604.1: propagate the shared leading condition to the conditionless
+    // activate half so the tax is gated identically on both halves.
+    if activate_def.condition.is_none() {
+        activate_def.condition = cast_def.condition.clone();
+    }
+    // Preserve the full Oracle text on both emitted statics' `description`.
+    cast_def.description = Some(text.to_string());
+    activate_def.description = Some(text.to_string());
+    Some(vec![cast_def, activate_def])
+}
+
 fn parse_static_line_multi_dispatch(text: &str) -> Vec<StaticDefinition> {
     let stripped = strip_reminder_text(text);
     let lower = stripped.to_lowercase();
@@ -1927,6 +2001,16 @@ fn parse_static_line_multi_dispatch(text: &str) -> Vec<StaticDefinition> {
     // trigger per granted instance). Mirrors the exiled-object / color-conditional
     // grant handlers above (one static per listed keyword).
     if let Some(defs) = parse_spells_have_quoted_keyword_list(&stripped) {
+        return defs;
+    }
+
+    // CR 601.2f + CR 602.2 + CR 611.3: "[<timing>,] spells <scope> cast cost {N}
+    // <more|less> to cast and abilities <scope> activate cost {M} <more|less> to
+    // activate [unless they're mana abilities]" (Tithe Taker) — one cast-cost
+    // static + one activated-ability-cost static, both under the shared leading
+    // timing condition. Must precede the single-return fallback, which keeps the
+    // cast half and silently drops the "and abilities …" activate half.
+    if let Some(defs) = parse_compound_spell_and_ability_cost_tax(&stripped) {
         return defs;
     }
 
