@@ -381,8 +381,8 @@ mod tests {
     use crate::database::synthesis::KeywordTriggerInstaller;
     use crate::game::triggers::process_triggers;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, ConjureCard, Effect, QuantityExpr, TargetFilter, TargetRef,
-        TriggerDefinition, TriggerDefinitionOccurrenceRef, LibraryPosition,
+        AbilityDefinition, AbilityKind, ConjureCard, Effect, LibraryPosition, QuantityExpr,
+        TargetFilter, TargetRef, TriggerDefinition, TriggerDefinitionOccurrenceRef,
     };
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::{CardId, ObjectId};
