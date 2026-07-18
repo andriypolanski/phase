@@ -1,0 +1,962 @@
+   Compiling engine v0.28.0 (/home/beam/work/phase/crates/engine)
+   Compiling phase-ai v0.28.0 (/home/beam/work/phase/crates/phase-ai)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 28s
+T_build (cold isolated debug build) = 88s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45587ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 415 | +205 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9644 | -954 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 415 | +205 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13142 | -872 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20986 | +10461 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 415 | +205 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42880 | +13594 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12876 | -1138 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12259 | +7432 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+baseline refreshed at crates/phase-ai/baselines/perf-baseline.json
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45716ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 417 | +2 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 146 | -3 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9646 | +2 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 417 | +2 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13150 | +8 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20990 | +4 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 417 | +2 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42903 | +23 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12884 | +8 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12263 | +4 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 1 wall=280s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45703ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 417 | +2 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9646 | +2 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 417 | +2 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13150 | +8 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20990 | +4 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 417 | +2 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42903 | +23 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12884 | +8 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12263 | +4 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 2 wall=279s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45855ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 414 | -1 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9643 | -1 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 414 | -1 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13144 | +2 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20984 | -2 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 414 | -1 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42876 | -4 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12878 | +2 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12260 | +1 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 3 wall=281s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45814ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 415 | +0 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9644 | +0 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 415 | +0 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13146 | +4 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20986 | +0 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 415 | +0 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42880 | +0 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12880 | +4 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12261 | +2 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 4 wall=281s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45999ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 518 | -18 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 414 | -1 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9643 | -1 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5502 | -14 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 414 | -1 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13136 | -6 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20984 | -2 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 414 | -1 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42879 | -1 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12870 | -6 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12252 | -7 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 5 wall=284s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=46819ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 409 | -6 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 125 | -24 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9638 | -6 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5514 | -2 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 409 | -6 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13132 | -10 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20974 | -12 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 409 | -6 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42835 | -45 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12866 | -10 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12253 | -6 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 6 wall=285s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45755ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 417 | +2 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9646 | +2 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 417 | +2 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13150 | +8 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20990 | +4 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 417 | +2 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42900 | +20 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12884 | +8 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12263 | +4 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 7 wall=281s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45618ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 416 | +1 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9645 | +1 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 416 | +1 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13148 | +6 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20988 | +2 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 416 | +1 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42890 | +10 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12882 | +6 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12262 | +3 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 8 wall=279s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45994ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 414 | -1 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9643 | -1 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 414 | -1 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13144 | +2 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20984 | -2 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 414 | -1 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42873 | -7 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12878 | +2 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12260 | +1 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 9 wall=281s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45749ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 416 | +1 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9645 | +1 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 416 | +1 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13148 | +6 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20988 | +2 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 416 | +1 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42890 | +10 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12882 | +6 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12262 | +3 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 10 wall=280s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=46105ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 415 | +0 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9644 | +0 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 415 | +0 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13140 | -2 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20986 | +0 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 415 | +0 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42880 | +0 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12874 | -2 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12259 | +0 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 11 wall=281s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45913ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 536 | 536 | +0 | 626 | PASS |
+| auto_tap_source_cache_builds | 415 | 415 | +0 | 499 | PASS |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 149 | 149 | +0 | 220 | PASS |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 9644 | 9644 | +0 | 10190 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 35 | 35 | +0 | 100 | PASS |
+| layers_full_eval | 5516 | 5516 | +0 | 5855 | PASS |
+| layers_incremental | 307 | 307 | +0 | 386 | PASS |
+| legal_actions_spell_cost_sweeps | 415 | 415 | +0 | 499 | PASS |
+| legend_rule_mode_gate_scans | 13142 | 13146 | +4 | 13863 | PASS |
+| mana_aura_trigger_scans | 20986 | 20986 | +0 | 22099 | PASS |
+| mana_display_sweeps | 399 | 399 | +0 | 482 | PASS |
+| mana_display_swept_objects | 5275 | 5275 | +0 | 5602 | PASS |
+| priority_cast_probe_builds | 415 | 415 | +0 | 499 | PASS |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 42880 | 42880 | +0 | 45088 | PASS |
+| sba_battlefield_snapshot_builds | 12876 | 12880 | +4 | 13583 | PASS |
+| sba_empty_battlefield_short_circuits | 40 | 40 | +0 | 106 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 12259 | 12261 | +2 | 12935 | PASS |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 0 FAIL, 28 PASS, 0 NEW, 0 REMOVED
+run 12 wall=281s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=46428ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 413 | +203 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9642 | -956 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 413 | +203 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13142 | -872 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20982 | +10457 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 413 | +203 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42873 | +13587 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12876 | -1138 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12259 | +7432 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 13 wall=283s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45691ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 415 | +205 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9644 | -954 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 415 | +205 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13146 | -868 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20986 | +10461 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 415 | +205 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42880 | +13594 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12880 | -1134 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12261 | +7434 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 14 wall=281s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45977ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 414 | +204 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9643 | -955 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 414 | +204 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13144 | -870 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20984 | +10459 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 414 | +204 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42876 | +13590 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12878 | -1136 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12260 | +7433 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 15 wall=281s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45573ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 542 | -185 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 417 | +207 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9646 | -952 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5519 | -1014 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 417 | +207 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13155 | -859 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20990 | +10465 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 417 | +207 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42906 | +13620 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12889 | -1125 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12267 | +7440 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 16 wall=279s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45637ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 415 | +205 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9644 | -954 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 415 | +205 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13146 | -868 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20986 | +10461 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 415 | +205 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42880 | +13594 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12880 | -1134 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12261 | +7434 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 17 wall=280s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45805ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 415 | +205 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9644 | -954 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 415 | +205 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13146 | -868 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20986 | +10461 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 415 | +205 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42880 | +13594 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12880 | -1134 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12261 | +7434 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 18 wall=281s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=46031ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 414 | +204 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 146 | +121 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9643 | -955 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5515 | -1018 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 414 | +204 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13142 | -872 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20984 | +10459 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 414 | +204 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42870 | +13584 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12876 | -1138 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12259 | +7432 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 19 wall=282s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45560ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 416 | +206 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9645 | -953 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 416 | +206 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13150 | -864 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20988 | +10463 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 416 | +206 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42890 | +13604 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12884 | -1130 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12263 | +7436 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 20 wall=279s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45791ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 415 | +205 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9644 | -954 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 415 | +205 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13146 | -868 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20986 | +10461 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 415 | +205 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42880 | +13594 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12880 | -1134 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12261 | +7434 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 21 wall=280s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=46030ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 414 | +204 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9643 | -955 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 414 | +204 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13146 | -868 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20984 | +10459 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 414 | +204 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42870 | +13584 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12880 | -1134 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12261 | +7434 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 22 wall=282s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45619ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 417 | +207 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9646 | -952 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 417 | +207 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13147 | -867 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20990 | +10465 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 417 | +207 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42903 | +13617 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12881 | -1133 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12261 | +7434 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 23 wall=279s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45479ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 416 | +206 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9645 | -953 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 416 | +206 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13150 | -864 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20988 | +10463 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 416 | +206 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42890 | +13604 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12884 | -1130 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12263 | +7436 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 24 wall=280s
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45899ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 415 | +205 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 149 | +124 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9644 | -954 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 415 | +205 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13146 | -868 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20986 | +10461 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 415 | +205 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42880 | +13594 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12880 | -1134 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12261 | +7434 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
+run 25 wall=280s
+
+| counter | baseline | worst_current | ceiling (50% band) | threshold | status |
+|---------|---------:|--------------:|-------------------:|----------:|--------|
+| attackable_player_sweeps | 727 | 542 | 777 | 827 | OK |
+| auto_tap_source_cache_builds | 210 | 417 | 247 | 284 | OVER-MARGIN |
+| cached_auto_tap_source_rejects | 0 | 0 | 32 | 64 | OK |
+| cached_auto_tap_source_reuses | 25 | 149 | 57 | 90 | OVER-MARGIN |
+| combat_shadow_block_scans | 0 | 0 | 32 | 64 | OK |
+| crew_eligibility_scans | 10598 | 9646 | 10894 | 11191 | OK |
+| granted_ability_provider_scans | 0 | 0 | 32 | 64 | OK |
+| layers_escalated | 44 | 35 | 77 | 110 | OK |
+| layers_full_eval | 6533 | 5519 | 6728 | 6923 | OK |
+| layers_incremental | 198 | 307 | 234 | 271 | OVER-MARGIN |
+| legal_actions_spell_cost_sweeps | 210 | 417 | 247 | 284 | OVER-MARGIN |
+| legend_rule_mode_gate_scans | 14014 | 13155 | 14396 | 14778 | OK |
+| mana_aura_trigger_scans | 10525 | 20990 | 10820 | 11115 | OVER-MARGIN |
+| mana_display_sweeps | 400 | 399 | 442 | 484 | OK |
+| mana_display_swept_objects | 7676 | 5275 | 7899 | 8123 | OK |
+| priority_cast_probe_builds | 210 | 417 | 247 | 284 | OVER-MARGIN |
+| restriction_static_exact_scans | 0 | 0 | 32 | 64 | OK |
+| restriction_static_mode_gate_scans | 29286 | 42906 | 30050 | 30814 | OVER-MARGIN |
+| sba_battlefield_snapshot_builds | 14014 | 12889 | 14396 | 14778 | OK |
+| sba_empty_battlefield_short_circuits | 69 | 40 | 102 | 136 | OK |
+| stack_batch_candidates | 0 | 0 | 32 | 64 | OK |
+| stack_batch_observer_refusals | 0 | 0 | 32 | 64 | OK |
+| stack_batch_plans | 0 | 0 | 32 | 64 | OK |
+| stack_batched_entries | 0 | 0 | 32 | 64 | OK |
+| stack_inert_noop_batches | 0 | 0 | 32 | 64 | OK |
+| stack_inert_noop_entries | 0 | 0 | 32 | 64 | OK |
+| state_clone_for_legality | 4827 | 12267 | 4979 | 5132 | OVER-MARGIN |
+| static_full_scans | 0 | 0 | 32 | 64 | OK |
+
+repro margin: 8 OVER-MARGIN of 28 counters
+REPRO VALIDATION FAILED (band_fail=1 margin_rc=1) — DO NOT COMMIT baseline; escalate.
