@@ -317,6 +317,22 @@ pub fn resolve(
         // CR 401.7 (Unexpectedly Absent class): "just beneath the top N cards"
         // leaves exactly `depth` cards above the placed object, i.e. the 0-based
         // insertion index IS the resolved depth (no `-1`, unlike `NthFromTop`).
+        // Resolve the depth before it enters the batch request because a parked
+        // request must carry a concrete placement across CR 616.1 pauses.
+        LibraryPosition::BeneathTop { depth } => LibraryPosition::BeneathTop {
+            depth: QuantityExpr::Fixed {
+                value: resolve_quantity_with_targets(state, &depth, ability).max(0),
+            },
+        },
+        other => other,
+    };
+    // CR 701.24a + CR 401.4: Top placement is reversed at request construction so the
+    // selected order remains top-to-bottom after sequential delivery; every
+    // other position preserves selection order. `move_objects_simultaneously`
+    // owns the suffix when a Library-destination replacement pauses.
+    let placement_order: Vec<ObjectId> = match &position {
+        LibraryPosition::Top => to_place.iter().rev().copied().collect(),
+        LibraryPosition::Bottom
         | LibraryPosition::NthFromTop { .. }
         | LibraryPosition::BeneathTop { .. }
         | LibraryPosition::RandomWithinTop { .. } => to_place.to_vec(),
@@ -325,6 +341,7 @@ pub fn resolve(
         .into_iter()
         .map(|object_id| {
             ZoneMoveRequest::effect(object_id, Zone::Library, ability.source_id)
+                .at_library_position(position.clone())
         })
         .collect();
     let removed_exile_links = if target_filter.references_exiled_by_source() {

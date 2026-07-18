@@ -732,8 +732,15 @@ pub(crate) fn move_object(
                     // Digital-only Alchemy: `RandomWithinTop` only flows from the
                     // Conjure resolver (`conjure.rs`), which places the card
                     // directly and never routes through this rebuilt-tail path.
-                    // Exhaustiveness arm: default placement.
-                    LibraryPosition::RandomWithinTop { .. } => None,
+                    // Exhaustiveness arm: resolve a uniformly-random top-N slot
+                    // via the same authority conjure uses.
+                    LibraryPosition::RandomWithinTop { n } => match n {
+                        crate::types::ability::QuantityExpr::Fixed { value } => {
+                            let top_n = value.max(1) as usize;
+                            Some(zones::random_top_slot_index(&mut state.rng, top_n, top_n))
+                        }
+                        _ => None,
+                    },
                 };
                 zones::move_to_library_at_index(state, req.object_id, index, events);
                 return ZoneMoveResult::Done;
@@ -2030,8 +2037,15 @@ pub(crate) fn deliver_replaced_zone_change(
                     // Digital-only Alchemy: `RandomWithinTop` only flows from the
                     // Conjure resolver (`conjure.rs`), which places the card
                     // directly and never routes through this path. Exhaustiveness
-                    // arm: default placement.
-                    LibraryPosition::RandomWithinTop { .. } => None,
+                    // arm: resolve a uniformly-random top-N slot via the same
+                    // authority conjure uses.
+                    LibraryPosition::RandomWithinTop { n } => match n {
+                        crate::types::ability::QuantityExpr::Fixed { value } => {
+                            let top_n = (*value).max(1) as usize;
+                            Some(zones::random_top_slot_index(&mut state.rng, top_n, top_n))
+                        }
+                        _ => None,
+                    },
                 };
                 zones::move_to_library_at_index(state, object_id, index, events);
             }

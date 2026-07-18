@@ -12,7 +12,6 @@ use crate::types::game_state::GameState;
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
-use rand::Rng;
 
 /// The fully-resolved identity of a conjured card for one `ConjureCard` entry.
 enum ConjuredIdentity {
@@ -359,7 +358,10 @@ fn place_conjured_in_library(
             let tail = rest.split_off(existing_in_window.min(rest.len()));
             let mut head = rest; // the top `existing_in_window` existing cards
             for &id in conjured {
-                let slot = state.rng.random_range(0..head.len() + 1);
+                // `window` is the final top-N size; `head.len() + 1` is the
+                // slots available after this insert. Delegates to the single
+                // authority so zone-pipeline exhaustiveness arms stay identical.
+                let slot = zones::random_top_slot_index(&mut state.rng, window, head.len() + 1);
                 head.insert(slot, id);
             }
             head.extend(tail);

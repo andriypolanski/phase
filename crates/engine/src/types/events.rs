@@ -663,7 +663,15 @@ impl EventObjectSnapshot {
             // ---- unsupported: needs a live candidate lookup or an unmodeled field ----
             // Not reachable from the subject grammar today. Reaching one fails the gate,
             // which is the designed signal to extend the snapshot + evaluator together.
-            FilterProp::WasPlayed
+            // CR 701.15b/c: goad is a designation on the LIVE permanent (its `goaded_by`
+            // set, read by game/filter.rs `FilterProp::Goaded => !obj.goaded_by.is_empty()`).
+            // Neither EventObjectSnapshot nor ZoneChangeRecord carries a goaded field, and the
+            // runtime already fail-closes it (game/filter.rs zone-change-record matcher).
+            // Classify Unsupported so a future goaded event-subject filter fails the reach gate
+            // LOUDLY rather than silently reading an ungoaded snapshot. Deferred follow-up
+            // (option a): snapshot goaded onto EventObjectSnapshot + ZoneChangeRecord.
+            FilterProp::Goaded
+            | FilterProp::WasPlayed
             // CR 108.2 + CR 108.2b: event snapshots retain token status but not whether
             // a nontoken object is a copy, so card representation cannot be reconstructed.
             | FilterProp::RepresentedByCard

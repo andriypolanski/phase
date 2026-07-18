@@ -9507,16 +9507,16 @@ fn parse_conjure_zone(
 
     alt((
         value(
-            (Zone::Battlefield, None),
+            Zone::Battlefield,
             tag::<_, _, OracleError<'_>>(" onto the battlefield"),
         ),
-        value((Zone::Hand, None), tag(" into your hand")),
-        value((Zone::Graveyard, None), tag(" into your graveyard")),
-        value((Zone::Library, None), tag(" into your library")),
+        value(Zone::Hand, tag(" into your hand")),
+        value(Zone::Graveyard, tag(" into your graveyard")),
+        value(Zone::Library, tag(" into your library")),
         // Third-person variants: "into their hand/graveyard/library"
-        value((Zone::Hand, None), tag(" into their hand")),
-        value((Zone::Graveyard, None), tag(" into their graveyard")),
-        value((Zone::Library, None), tag(" into their library")),
+        value(Zone::Hand, tag(" into their hand")),
+        value(Zone::Graveyard, tag(" into their graveyard")),
+        value(Zone::Library, tag(" into their library")),
         // Digital-only Alchemy conjures can also land in exile (e.g. a random card
         // conjured from a spellbook into exile with a play-permission rider).
         value(Zone::Exile, tag(" into exile")),

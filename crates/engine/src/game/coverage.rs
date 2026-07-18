@@ -896,6 +896,8 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             }
             FilterProp::Suspected => parts.push("suspected".into()),
             FilterProp::Renowned => parts.push("renowned".into()),
+            // CR 701.15b/c
+            FilterProp::Goaded => parts.push("goaded".into()),
             // CR 700.9
             FilterProp::Modified => parts.push("modified".into()),
             // CR 700.6
