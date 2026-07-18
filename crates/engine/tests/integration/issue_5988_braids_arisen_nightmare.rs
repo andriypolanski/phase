@@ -63,7 +63,7 @@ fn braids_end_step_opponent_without_match_loses_two_and_controller_draws() {
             WaitingFor::OrderTriggers { .. } => {
                 runner
                     .act(GameAction::OrderTriggers { order: vec![0] })
-                    .ok();
+                    .expect("order end-step triggers");
             }
             WaitingFor::OptionalEffectChoice { player, .. } => {
                 let accept = player == P0;
@@ -79,7 +79,9 @@ fn braids_end_step_opponent_without_match_loses_two_and_controller_draws() {
                     .expect("controller sacrifice");
             }
             WaitingFor::Priority { .. } if !runner.state().stack.is_empty() => {
-                runner.act(GameAction::PassPriority).ok();
+                runner
+                    .act(GameAction::PassPriority)
+                    .expect("pass priority while stack resolving");
             }
             _ => runner.pass_both_players(),
         }
@@ -130,7 +132,7 @@ fn braids_end_step_opponent_declines_matching_sacrifice_loses_two_and_controller
             WaitingFor::OrderTriggers { .. } => {
                 runner
                     .act(GameAction::OrderTriggers { order: vec![0] })
-                    .ok();
+                    .expect("order end-step triggers");
             }
             WaitingFor::OptionalEffectChoice { player, .. } => {
                 let accept = player == P0;
@@ -146,7 +148,9 @@ fn braids_end_step_opponent_declines_matching_sacrifice_loses_two_and_controller
                     .expect("controller sacrifice");
             }
             WaitingFor::Priority { .. } if !runner.state().stack.is_empty() => {
-                runner.act(GameAction::PassPriority).ok();
+                runner
+                    .act(GameAction::PassPriority)
+                    .expect("pass priority while stack resolving");
             }
             _ => runner.pass_both_players(),
         }
