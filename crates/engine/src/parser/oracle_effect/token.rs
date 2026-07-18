@@ -1172,9 +1172,7 @@ fn take_unquoted_equip_line(text: &str) -> Option<&str> {
     if !trimmed.to_ascii_lowercase().starts_with("equip") {
         return None;
     }
-    let end = trimmed
-        .find(['.', '"'])
-        .unwrap_or(trimmed.len());
+    let end = trimmed.find(['.', '"']).unwrap_or(trimmed.len());
     let line = trimmed[..end].trim();
     super::super::oracle::try_parse_equip(line).map(|_| line)
 }
