@@ -1652,19 +1652,15 @@ pub(super) fn target_choice_timing_for_clause(clause_ir: &ClauseIr) -> TargetCho
         }
     }
 
-    let Effect::ChangeZone { origin, target, .. } = &clause_ir.parsed.effect else {
+    let Effect::ChangeZone { .. } = &clause_ir.parsed.effect else {
         return TargetChoiceTiming::Stack;
     };
-    let off_battlefield_origin = origin.is_some_and(|zone| zone != Zone::Battlefield)
-        || (clause_ir.multi_target.is_some() || clause_ir.parsed.multi_target.is_some())
-            && target
-                .extract_zones()
-                .iter()
-                .any(|zone| *zone != Zone::Battlefield);
-    if !off_battlefield_origin {
-        return TargetChoiceTiming::Stack;
-    }
 
+    // CR 115.1: Only Oracle text containing "target" requires stack-time
+    // selection. Battlefield-origin zone changes without the keyword (Sothera's
+    // "each opponent chooses a creature they control and exiles it", sacrifice-
+    // style edicts) choose at resolution via EffectZoneChoice — mirroring the
+    // off-battlefield branch and Whitemane Lion's Bounce carve-out.
     let lower = clause_ir
         .source
         .fragment()
