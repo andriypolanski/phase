@@ -1173,7 +1173,7 @@ fn take_unquoted_equip_line(text: &str) -> Option<&str> {
         return None;
     }
     let end = trimmed
-        .find(|c| c == '.' || c == '"')
+        .find(['.', '"'])
         .unwrap_or(trimmed.len());
     let line = trimmed[..end].trim();
     super::super::oracle::try_parse_equip(line).map(|_| line)
