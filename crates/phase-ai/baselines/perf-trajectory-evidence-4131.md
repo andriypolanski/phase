@@ -26,10 +26,11 @@ Fixed workload: seed `0x9E37_79B9`, action cap `3000`, three mirror scenarios.
 | B | `origin/main` worktree | main-parser regen `dc3c022…` | **single cold sample** |
 | C | #4131 branch | main-parser regen `dc3c022…` | **single cold sample** |
 | D | #4131 branch | feature-parser regen `4f309e…` | **single cold sample** |
-| E | #4131 branch | feature-parser regen | median-of-5 (not retained in repo) |
+| E | #4131 branch | feature-parser regen `4f309e…` | median-of-5 — see `perf-gate-pre-refresh-4131.log` |
 
-Runs B–D are not statistically validated. Run E was captured locally only; it
-was **not** checked into this repository.
+Runs B–D are not statistically validated. Run E is retained in-repo as the
+pre-refresh median-of-5 diff only; it does **not** authorize a baseline change
+without a completed `validate-ai-perf-reproducibility.sh` margin report.
 
 ## Single-sample counter snapshot (B/C/D)
 
@@ -45,7 +46,7 @@ the full refresh workflow below.
 
 ## What is required to change the protected baseline (out of scope for #4131)
 
-1. Publish median-of-5 `cargo ai-perf-gate` diff (retained artifact, not `/tmp`).
+1. Publish median-of-5 `cargo ai-perf-gate` diff (`perf-gate-pre-refresh-4131.log`).
 2. Run `scripts/validate-ai-perf-reproducibility.sh` to completion without
    mutating `perf-baseline.json` mid-run; attach margin report.
 3. Land baseline repair on `main` via `scripts/refresh-ai-perf-baseline.sh`.

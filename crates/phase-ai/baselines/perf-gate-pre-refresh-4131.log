@@ -1,0 +1,39 @@
+   Compiling engine v0.28.0 (/home/beam/work/phase/crates/engine)
+   Compiling phase-ai v0.28.0 (/home/beam/work/phase/crates/phase-ai)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 26s
+     Running `/tmp/cursor-sandbox-cache/6c40899686f7cf82b2678c7d9c633bda/cargo-target/debug/ai-perf-gate`
+perf suite: seed=2654435769 action_cap=3000 sample_count=5 scenarios=["red-mirror", "affinity-mirror", "enchantress-mirror"] wall_clock=45774ms
+
+| counter | baseline | current | delta | threshold | status |
+|---------|---------:|--------:|------:|----------:|--------|
+| attackable_player_sweeps | 727 | 536 | -191 | 827 | PASS |
+| auto_tap_source_cache_builds | 210 | 414 | +204 | 284 | FAIL |
+| cached_auto_tap_source_rejects | 0 | 0 | +0 | 64 | PASS |
+| cached_auto_tap_source_reuses | 25 | 143 | +118 | 90 | FAIL |
+| combat_shadow_block_scans | 0 | 0 | +0 | 64 | PASS |
+| crew_eligibility_scans | 10598 | 9643 | -955 | 11191 | PASS |
+| granted_ability_provider_scans | 0 | 0 | +0 | 64 | PASS |
+| layers_escalated | 44 | 35 | -9 | 110 | PASS |
+| layers_full_eval | 6533 | 5516 | -1017 | 6923 | PASS |
+| layers_incremental | 198 | 307 | +109 | 271 | FAIL |
+| legal_actions_spell_cost_sweeps | 210 | 414 | +204 | 284 | FAIL |
+| legend_rule_mode_gate_scans | 14014 | 13144 | -870 | 14778 | PASS |
+| mana_aura_trigger_scans | 10525 | 20984 | +10459 | 11115 | FAIL |
+| mana_display_sweeps | 400 | 399 | -1 | 484 | PASS |
+| mana_display_swept_objects | 7676 | 5275 | -2401 | 8123 | PASS |
+| priority_cast_probe_builds | 210 | 414 | +204 | 284 | FAIL |
+| restriction_static_exact_scans | 0 | 0 | +0 | 64 | PASS |
+| restriction_static_mode_gate_scans | 29286 | 42876 | +13590 | 30814 | FAIL |
+| sba_battlefield_snapshot_builds | 14014 | 12878 | -1136 | 14778 | PASS |
+| sba_empty_battlefield_short_circuits | 69 | 40 | -29 | 136 | PASS |
+| stack_batch_candidates | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_observer_refusals | 0 | 0 | +0 | 64 | PASS |
+| stack_batch_plans | 0 | 0 | +0 | 64 | PASS |
+| stack_batched_entries | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_batches | 0 | 0 | +0 | 64 | PASS |
+| stack_inert_noop_entries | 0 | 0 | +0 | 64 | PASS |
+| state_clone_for_legality | 4827 | 12260 | +7433 | 5132 | FAIL |
+| static_full_scans | 0 | 0 | +0 | 64 | PASS |
+
+perf compare: 8 FAIL, 20 PASS, 0 NEW, 0 REMOVED
+note: card-data hash changed (4bf63d1590ec74f596003971d718dde30d94114b→4f309e4ec241550f3efe8f781ab7537a759d1155) — likely a card-data-driven trajectory shift, not a cost-per-node regression; review and refresh if intended
