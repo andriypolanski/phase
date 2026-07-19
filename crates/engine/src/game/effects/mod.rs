@@ -3790,6 +3790,13 @@ fn effect_references_tracked_set(effect: &Effect) -> bool {
             return true;
         }
     }
+    if let Effect::SearchLibrary { filter, .. } = effect {
+        if filter_references_tracked_set(filter)
+            || filter_properties_reference_tracked_quantity(filter)
+        {
+            return true;
+        }
+    }
     if let Effect::GoadAll { target } = effect {
         if filter_references_tracked_set(target) {
             return true;
@@ -3898,6 +3905,27 @@ fn filter_references_tracked_set(filter: &TargetFilter) -> bool {
         TargetFilter::Or { filters } | TargetFilter::And { filters } => {
             filters.iter().any(filter_references_tracked_set)
         }
+        _ => false,
+    }
+}
+
+/// CR 608.2c + CR 202.3: A search filter whose typed properties carry a
+/// dynamic quantity (`FilterProp::Cmc { value: Ref(FilteredTrackedSetSize) }`,
+/// Hunger Tide Rises chapter IV) consumes the chain tracked set even when the
+/// filter itself is not a bare `TrackedSet`/`TrackedSetFiltered` reference.
+fn filter_properties_reference_tracked_quantity(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(tf) => tf.properties.iter().any(|prop| {
+            matches!(
+                prop,
+                crate::types::ability::FilterProp::Cmc { value, .. }
+                    if quantity_expr_references_tracked_set(value)
+            )
+        }),
+        TargetFilter::Not { filter } => filter_properties_reference_tracked_quantity(filter),
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => filters
+            .iter()
+            .any(filter_properties_reference_tracked_quantity),
         _ => false,
     }
 }
@@ -6107,7 +6135,18 @@ fn perform_player_scope_sacrifices(
             .expect("a game cannot announce more sacrifices than i32 can represent"),
     );
     if completion.publish_fresh_tracked_set {
-        publish_fresh_tracked_set(state, completion.sacrificed.clone());
+        let set_id = publish_fresh_tracked_set(state, completion.sacrificed.clone());
+        // CR 608.2c + CR 701.21a: an interactive sacrifice that publishes a
+        // fresh tracked set for a chained "sacrificed this way" consumer must
+        // stamp the Sacrificed cause on each member — otherwise
+        // `FilteredTrackedSetSize { caused_by: Sacrificed }` reads 0 (Hunger
+        // Tide Rises chapter IV, #5977).
+        if matches!(completion.effect_kind, Some(EffectKind::Sacrifice)) {
+            let causes = state.tracked_set_member_causes.entry(set_id).or_default();
+            for id in &completion.sacrificed {
+                causes.insert(*id, ThisWayCause::Sacrificed);
+            }
+        }
     }
     if completion.propagate_parent_context {
         if let Some(snapshot) =
