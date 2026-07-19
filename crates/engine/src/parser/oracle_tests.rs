@@ -14635,11 +14635,31 @@ fn twinflame_full_parse() {
         .expect("CreateDelayedTrigger sub-ability");
     match &*delayed.effect {
         Effect::CreateDelayedTrigger {
-            uses_tracked_set, ..
-        } => assert!(
-            *uses_tracked_set,
-            "'those tokens' must mark uses_tracked_set=true"
-        ),
+            uses_tracked_set,
+            effect: inner,
+            ..
+        } => {
+            assert!(
+                *uses_tracked_set,
+                "'those tokens' must mark uses_tracked_set=true"
+            );
+            match &*inner.effect {
+                Effect::ChangeZone {
+                    target,
+                    destination: Zone::Exile,
+                    ..
+                } => {
+                    assert_eq!(
+                        *target,
+                        TargetFilter::TrackedSet {
+                            id: crate::types::identifiers::TrackedSetId(0)
+                        },
+                        "Twinflame 'those tokens' exile must bind TrackedSet (issue #5972)"
+                    );
+                }
+                other => panic!("expected inner ChangeZone exile, got {other:?}"),
+            }
+        }
         other => panic!("expected CreateDelayedTrigger, got {other:?}"),
     }
 }
