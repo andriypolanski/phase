@@ -168,37 +168,38 @@ fn is_search_result_reveal_clause(lower: &str) -> bool {
 /// CR 701.23a + CR 701.18a: Bare "put it onto the battlefield" restatement
 /// after a search compound — library-only (Assassin's Trophy comma-split) or
 /// multi-zone (The Hunger Tide Rises: "library and/or graveyard … and put it
-/// onto the battlefield"). Shared by the bare-`and` split suppressor and the
+/// onto the battlefield"). Composed from independent verb/pronoun/tapped axes
+/// so Field-of-Ruin "puts it" and Winds-of-Abandon "those cards tapped" share
+/// one grammar instead of N! enumerated sentences.
+fn parse_search_result_put_onto_battlefield_restatement(
+    input: &str,
+) -> Result<(&str, ()), nom::Err<OracleError<'_>>> {
+    let (input, _) = alt((tag::<_, _, OracleError<'_>>("put "), tag("puts "))).parse(input)?;
+    let (input, _) = alt((
+        tag("that card "),
+        tag("it "),
+        tag("them "),
+        tag("those cards "),
+    ))
+    .parse(input)?;
+    let (input, _) = tag("onto the battlefield").parse(input)?;
+    let (input, _) = opt(tag(" tapped")).parse(input)?;
+    Ok((input, ()))
+}
+
+/// CR 701.23a + CR 701.18a: Bare "put it onto the battlefield" restatement
+/// after a search compound. Shared by the bare-`and` split suppressor and the
 /// SearchDestination follow-up absorber.
 fn is_search_result_put_onto_battlefield_restatement(lower: &str) -> bool {
     let bare = strip_search_result_subject(lower.trim().trim_end_matches('.'));
-    matches!(
-        bare,
-        "put that card onto the battlefield"
-            | "put it onto the battlefield"
-            | "puts that card onto the battlefield"
-            | "puts it onto the battlefield"
-            | "put them onto the battlefield"
-            | "put those cards onto the battlefield"
-            | "put that card onto the battlefield tapped"
-            | "put it onto the battlefield tapped"
-            | "puts that card onto the battlefield tapped"
-            | "puts it onto the battlefield tapped"
-            | "put them onto the battlefield tapped"
-            | "put those cards onto the battlefield tapped"
-    )
+    parse_search_result_put_onto_battlefield_restatement(bare)
+        .map(|(rest, _)| rest.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn has_conditional_search_result_destination(lower: &str) -> bool {
     fn parse_clause(input: &str) -> Result<(&str, ()), nom::Err<OracleError<'_>>> {
-        let (input, _) = alt((
-            tag::<_, _, OracleError<'_>>("put that card onto the battlefield"),
-            tag("put it onto the battlefield"),
-            tag("put them onto the battlefield"),
-            tag("put those cards onto the battlefield"),
-        ))
-        .parse(input)?;
-        let (input, _) = opt(tag(" tapped")).parse(input)?;
+        let (input, _) = parse_search_result_put_onto_battlefield_restatement(input)?;
         let (input, _) = alt((tag(" if it's "), tag(" if it is "))).parse(input)?;
         let (input, _) = take_until(" card").parse(input)?;
         let (input, _) = tag(" card").parse(input)?;
@@ -8183,6 +8184,67 @@ mod tests {
             "search your library and/or graveyard for a creature card with mana value less than or equal to the number of creatures sacrificed this way and put it onto the battlefield",
         );
         assert_eq!(chunks.len(), 1, "unexpected split: {chunks:?}");
+    }
+
+    #[test]
+    fn search_result_put_restatement_covers_verb_pronoun_tapped_axes() {
+        for phrase in [
+            "put that card onto the battlefield",
+            "put it onto the battlefield",
+            "puts that card onto the battlefield",
+            "puts it onto the battlefield",
+            "put them onto the battlefield",
+            "put those cards onto the battlefield",
+            "put that card onto the battlefield tapped",
+            "puts it onto the battlefield tapped",
+        ] {
+            assert!(
+                is_search_result_put_onto_battlefield_restatement(phrase),
+                "expected restatement match for {phrase:?}"
+            );
+        }
+        for phrase in [
+            "that player put it onto the battlefield",
+            "those players put those cards onto the battlefield tapped",
+            "each player puts them onto the battlefield",
+        ] {
+            assert!(
+                is_search_result_put_onto_battlefield_restatement(phrase),
+                "expected subject-stripped restatement match for {phrase:?}"
+            );
+        }
+        for phrase in [
+            "put it into your hand",
+            "put that card on top of your library",
+            "exile it",
+        ] {
+            assert!(
+                !is_search_result_put_onto_battlefield_restatement(phrase),
+                "must not match non-battlefield put restatement {phrase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_result_put_restatement_parses_independent_axes() {
+        let verbs = ["put ", "puts "];
+        let pronouns = ["that card ", "it ", "them ", "those cards "];
+        for verb in verbs {
+            for pronoun in pronouns {
+                for tapped in [false, true] {
+                    let mut phrase = format!("{verb}{pronoun}onto the battlefield");
+                    if tapped {
+                        phrase.push_str(" tapped");
+                    }
+                    let (rest, _) = parse_search_result_put_onto_battlefield_restatement(&phrase)
+                        .unwrap_or_else(|_| panic!("failed to parse {phrase:?}"));
+                    assert!(
+                        rest.is_empty(),
+                        "parser must consume full restatement for {phrase:?}, leftover {rest:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
