@@ -12214,9 +12214,7 @@ fn assassins_trophy_its_controller_may_search_chain() {
 /// ChangeZone from a bare-`and` split on "and put it onto the battlefield".
 #[test]
 fn hunger_tide_rises_chapter_iv_sacrifice_search_put_chain() {
-    use crate::types::ability::{
-        AbilityKind, Comparator, FilterProp, QuantityRef, ThisWayCause,
-    };
+    use crate::types::ability::{AbilityKind, Comparator, FilterProp, QuantityRef, ThisWayCause};
 
     let def = parse_effect_chain(
             "Sacrifice any number of creatures. Search your library and/or graveyard for a creature card with mana value less than or equal to the number of creatures sacrificed this way and put it onto the battlefield. If you search your library this way, shuffle.",
