@@ -1064,6 +1064,38 @@ pub(crate) fn scan_loss_enumeration(lower: &str) -> Vec<LossMember> {
     }
 }
 
+/// A granted ability may nest one quote level deep inside a double-quoted grant
+/// body (Koth emblem: `Mountains you control have '{T}: …'`; Roar saga chapter
+/// II: `Creatures you control have '{T}: Add {R}, {G}, or {W}.'`). Downstream
+/// grant parsers recognise only double-quoted ability bodies — single quotes are
+/// ambiguous with apostrophes — so promote the nested pair to double quotes. The
+/// opening quote is anchored on a grant verb (`have '` / `has '` / `gain '` /
+/// `gains '`) so a possessive apostrophe in the subject phrase is never
+/// mistaken for the delimiter; the closing quote is the final `'` in the body.
+/// Bodies without a nested single-quoted ability are returned unchanged.
+pub(crate) fn promote_nested_ability_quotes(body: &str) -> String {
+    const OPEN_ANCHORS: [&str; 4] = [" have '", " has '", " gain '", " gains '"];
+    // Grant verbs are mid-sentence and therefore lowercase in Oracle text, so
+    // they can be matched against `body` directly without lowercasing.
+    let open_quote = OPEN_ANCHORS
+        .iter()
+        .filter_map(|anchor| body.find(anchor).map(|pos| pos + anchor.len() - 1))
+        .min();
+    let (Some(open_quote), Some(close_quote)) = (open_quote, body.rfind('\'')) else {
+        return body.to_string();
+    };
+    if close_quote <= open_quote {
+        return body.to_string();
+    }
+    let mut promoted = String::with_capacity(body.len());
+    promoted.push_str(&body[..open_quote]);
+    promoted.push('"');
+    promoted.push_str(&body[open_quote + 1..close_quote]);
+    promoted.push('"');
+    promoted.push_str(&body[close_quote + 1..]);
+    promoted
+}
+
 pub(crate) fn strip_quoted_segments(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
     let mut in_quote = false;
@@ -1334,7 +1366,12 @@ pub(crate) fn parse_single_pt_value(text: &str) -> Option<i32> {
 pub(crate) fn parse_quoted_rule_static_modifications(
     text: &str,
 ) -> Option<Vec<ContinuousModification>> {
-    if find_cost_separator(text).is_some() {
+    // CR 602.1: A cost separator inside a double-quoted granted ability
+    // (`Creatures you control have "{T}: Add {R}."`) is part of the inner
+    // activated ability, not the outer static line — mask quoted spans before
+    // testing so the static grant path is not skipped (Roar of the Fifth People
+    // chapter II, #5978).
+    if find_cost_separator(&strip_quoted_segments(text)).is_some() {
         return None;
     }
 
