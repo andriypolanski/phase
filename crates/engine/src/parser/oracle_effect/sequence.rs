@@ -165,6 +165,30 @@ fn is_search_result_reveal_clause(lower: &str) -> bool {
     )
 }
 
+/// CR 701.23a + CR 701.18a: Bare "put it onto the battlefield" restatement
+/// after a search compound — library-only (Assassin's Trophy comma-split) or
+/// multi-zone (The Hunger Tide Rises: "library and/or graveyard … and put it
+/// onto the battlefield"). Shared by the bare-`and` split suppressor and the
+/// SearchDestination follow-up absorber.
+fn is_search_result_put_onto_battlefield_restatement(lower: &str) -> bool {
+    let bare = strip_search_result_subject(lower.trim().trim_end_matches('.'));
+    matches!(
+        bare,
+        "put that card onto the battlefield"
+            | "put it onto the battlefield"
+            | "puts that card onto the battlefield"
+            | "puts it onto the battlefield"
+            | "put them onto the battlefield"
+            | "put those cards onto the battlefield"
+            | "put that card onto the battlefield tapped"
+            | "put it onto the battlefield tapped"
+            | "puts that card onto the battlefield tapped"
+            | "puts it onto the battlefield tapped"
+            | "put them onto the battlefield tapped"
+            | "put those cards onto the battlefield tapped"
+    )
+}
+
 fn has_conditional_search_result_destination(lower: &str) -> bool {
     fn parse_clause(input: &str) -> Result<(&str, ()), nom::Err<OracleError<'_>>> {
         let (input, _) = alt((
@@ -1096,6 +1120,15 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                             && tag::<_, _, OracleError<'_>>("exile them")
                                 .parse(remainder_trimmed)
                                 .is_ok();
+                        // CR 701.23a + CR 701.18a: "search [library and/or graveyard]
+                        // for … and put it onto the battlefield" is one search
+                        // compound (The Hunger Tide Rises). Without this guard the
+                        // bare-`and` splitter peels the put-step into a sibling
+                        // ChangeZone that duplicates the SearchDestination
+                        // continuation — and multi-zone puts use `origin: None`,
+                        // so the follow-up absorber's library-only arm misses them.
+                        let search_put_destination = has_search_prefix
+                            && is_search_result_put_onto_battlefield_restatement(remainder_trimmed);
                         // CR 707.9: ", except <body> and <body> [and …]" — inside
                         // a copy-effect except clause, " and " is an internal
                         // delimiter between recognised body shapes (SetName, P/T,
@@ -1290,6 +1323,7 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                         || targeted_compound_continuation
                         || prevent_then_put_continuation
                         || search_with_that_name
+                        || search_put_destination
                         || inside_except_clause
                         || choice_partition_remainder
                         || compound_subject_each
@@ -6877,27 +6911,11 @@ pub(super) fn parse_followup_continuation_ast(
         // prefix-strip on the player-subject so all (subject × pronoun × tapped)
         // permutations match without N! enumerated arms.
         Effect::ChangeZone {
-            origin: Some(Zone::Library),
+            origin,
             destination: Zone::Battlefield,
             ..
-        } if {
-            let bare = strip_search_result_subject(lower.trim().trim_end_matches('.'));
-            matches!(
-                bare,
-                "put that card onto the battlefield"
-                    | "put it onto the battlefield"
-                    | "puts that card onto the battlefield"
-                    | "puts it onto the battlefield"
-                    | "put them onto the battlefield"
-                    | "put those cards onto the battlefield"
-                    | "put that card onto the battlefield tapped"
-                    | "put it onto the battlefield tapped"
-                    | "puts that card onto the battlefield tapped"
-                    | "puts it onto the battlefield tapped"
-                    | "put them onto the battlefield tapped"
-                    | "put those cards onto the battlefield tapped"
-            )
-        } =>
+        } if matches!(origin, None | Some(Zone::Library))
+            && is_search_result_put_onto_battlefield_restatement(&lower) =>
         {
             Some(ContinuationAst::SearchResultClauseHandled)
         }
@@ -8154,6 +8172,42 @@ mod tests {
             "search its controller's graveyard, hand, and library for any number of cards with the same name as that land and exile them",
         );
         assert_eq!(chunks.len(), 1, "unexpected split: {chunks:?}");
+    }
+
+    #[test]
+    fn bare_and_keeps_multi_zone_search_put_onto_battlefield_compound() {
+        // CR 701.23a (issue #5977): The Hunger Tide Rises — "search your library
+        // and/or graveyard for … and put it onto the battlefield" must stay one
+        // compound so SearchDestination owns the put-step (origin: None).
+        let chunks = clause_texts(
+            "search your library and/or graveyard for a creature card with mana value less than or equal to the number of creatures sacrificed this way and put it onto the battlefield",
+        );
+        assert_eq!(chunks.len(), 1, "unexpected split: {chunks:?}");
+    }
+
+    #[test]
+    fn multi_zone_search_put_restatement_absorbed_after_origin_none_destination() {
+        let previous = Effect::ChangeZone {
+            origin: None,
+            destination: Zone::Battlefield,
+            target: TargetFilter::Any,
+            owner_library: false,
+            enter_transformed: false,
+            enters_under: None,
+            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            face_down_profile: None,
+            enters_modified_if: None,
+        };
+        let result = parse_followup_continuation_ast(
+            "put it onto the battlefield",
+            &previous,
+            &mut ParseContext::default(),
+        );
+        assert_eq!(result, Some(ContinuationAst::SearchResultClauseHandled));
     }
 
     #[test]
