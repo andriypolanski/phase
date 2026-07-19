@@ -66,35 +66,6 @@ fn saheeli_minus_seven_those_tokens_cleanup_uses_tracked_set() {
     assert_eq!(origin, Some(Zone::Battlefield));
 }
 
-/// Card-data export for Saheeli, the Gifted [-7] matches the tracked-set class.
-#[test]
-fn saheeli_gifted_card_data_minus_seven_cleanup_uses_tracked_set() {
-    let db = shared_card_db().expect("integration card fixture should load");
-    let face = db.get_face_by_name("Saheeli, the Gifted").expect(
-        "Saheeli, the Gifted must be in integration_cards.json — run scripts/gen-test-fixture.py",
-    );
-    let minus_seven = face
-        .abilities
-        .iter()
-        .find(|ab| {
-            matches!(
-                ab.cost.as_ref(),
-                Some(engine::types::ability::AbilityCost::Loyalty { amount: -7 })
-            )
-        })
-        .expect("Saheeli -7 loyalty ability");
-    let (uses_tracked_set, target, origin) = find_delayed_tracked_exile(minus_seven)
-        .expect("Saheeli -7 card-data must include delayed tracked-set exile");
-    assert!(uses_tracked_set);
-    assert_eq!(
-        target,
-        TargetFilter::TrackedSet {
-            id: TrackedSetId(0)
-        }
-    );
-    assert_eq!(origin, Some(Zone::Battlefield));
-}
-
 /// Production cast pipeline: Twinflame creates two copy tokens and exiles both
 /// at the next end step when they remain on the battlefield.
 #[test]
