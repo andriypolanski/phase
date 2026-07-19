@@ -122,22 +122,21 @@ fn drive_edict_to_completion(
             runner.state().waiting_for,
             WaitingFor::EffectZoneChoice { .. }
         ) {
-            match runner.state().waiting_for.clone() {
-                WaitingFor::EffectZoneChoice { player, .. } => {
-                    assert_eq!(
-                        player, P1,
-                        "the exile choice must be offered to the opponent, not Sothera's controller; \
-                         got waiting_for {:?}",
-                        runner.state().waiting_for
-                    );
-                    saw_opponent_prompt = true;
-                    runner
-                        .act(GameAction::SelectCards {
-                            cards: vec![p1_creature],
-                        })
-                        .expect("opponent exiles their own creature");
-                }
-                _ => {}
+            if let WaitingFor::EffectZoneChoice { player, .. } = runner.state().waiting_for.clone()
+            {
+                assert_eq!(
+                    player,
+                    P1,
+                    "the exile choice must be offered to the opponent, not Sothera's controller; \
+                     got waiting_for {:?}",
+                    runner.state().waiting_for
+                );
+                saw_opponent_prompt = true;
+                runner
+                    .act(GameAction::SelectCards {
+                        cards: vec![p1_creature],
+                    })
+                    .expect("opponent exiles their own creature");
             }
             continue;
         }
