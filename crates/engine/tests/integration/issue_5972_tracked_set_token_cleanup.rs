@@ -2,7 +2,7 @@
 //! the next end step" must bind the full tracked token set with battlefield
 //! origin, not force exile-origin scanning that misses battlefield tokens.
 
-use engine::database::card_db::CardDatabase;
+use crate::support::shared_card_db;
 use engine::game::scenario::{GameScenario, P0};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::parser::oracle_effect::parse_effect_chain;
@@ -12,9 +12,6 @@ use engine::types::identifiers::TrackedSetId;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
-use std::path::Path;
-
-use crate::support::shared_card_db;
 
 const SAHEELI_MINUS_SEVEN_FRAGMENT: &str = "for each artifact you control, create a token that's a copy of it. those tokens gain haste. exile those tokens at the beginning of the next end step";
 
@@ -72,14 +69,10 @@ fn saheeli_minus_seven_those_tokens_cleanup_uses_tracked_set() {
 /// Card-data export for Saheeli, the Gifted [-7] matches the tracked-set class.
 #[test]
 fn saheeli_gifted_card_data_minus_seven_cleanup_uses_tracked_set() {
-    let export = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../client/public/card-data.json");
-    if !export.exists() {
-        return;
-    }
-    let db = CardDatabase::from_export(&export).expect("card-data export should load");
-    let face = db
-        .get_face_by_name("Saheeli, the Gifted")
-        .expect("Saheeli, the Gifted must be in card-data export");
+    let db = shared_card_db().expect("integration card fixture should load");
+    let face = db.get_face_by_name("Saheeli, the Gifted").expect(
+        "Saheeli, the Gifted must be in integration_cards.json — run scripts/gen-test-fixture.py",
+    );
     let minus_seven = face
         .abilities
         .iter()
