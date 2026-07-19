@@ -3044,6 +3044,15 @@ pub(super) fn rewrite_parent_target_to_last_created(
             // token in a multi-token batch (issue #5972).
             rewrite_change_zone_cleanup_to_last_created(target, origin);
         }
+        Effect::ChangeZone {
+            target: TargetFilter::TrackedSet { .. },
+            origin,
+            ..
+        } => {
+            // CR 603.7c: plural token cleanup stays on `TrackedSet`; stamp the
+            // battlefield as the expected origin at firing time (issue #5972).
+            origin.get_or_insert(Zone::Battlefield);
+        }
         _ => {}
     }
 }
