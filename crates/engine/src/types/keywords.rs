@@ -457,6 +457,18 @@ pub enum CompanionCondition {
     PermanentsHaveActivatedAbilities,
 }
 
+/// CR 702.174: Parameterized creature token promised by a Gift keyword whose
+/// delivery is spelled out in the reminder text (Octomancer: 8/8 blue Octopus).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GiftCreatureToken {
+    pub name: String,
+    pub power: i32,
+    pub toughness: i32,
+    pub colors: Vec<ManaColor>,
+    pub subtypes: Vec<String>,
+    pub tapped: bool,
+}
+
 /// The type of gift promised by the Gift keyword.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -469,6 +481,8 @@ pub enum GiftKind {
     Food,
     /// Opponent creates a tapped 1/1 blue Fish creature token.
     TappedFish,
+    /// Opponent creates a parameterized creature token (P/T, colors, subtypes).
+    CreatureToken(GiftCreatureToken),
 }
 
 /// CR 702.11d: What a hexproof-from keyword protects against.

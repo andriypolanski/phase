@@ -3994,7 +3994,17 @@ pub(crate) fn parse_oracle_ir(
         // and becomes an honest, exact-unit `Effect::Unimplemented`.
         let is_ability_cost_static = is_ability_activate_cost_static(&lower);
         if !is_ability_cost_static {
-            if let Some(extracted) = parse_router_keyword_list(&line, mtgjson_keyword_names) {
+            // CR 702.174: "Gift an Octopus" delivery lives in the parenthetical
+            // reminder; the loop strips reminders before this slot, so gift lines
+            // must route through the raw Oracle line.
+            let keyword_router_line = if lower.starts_with("gift ") {
+                raw_line
+            } else {
+                &line
+            };
+            if let Some(extracted) =
+                parse_router_keyword_list(keyword_router_line, mtgjson_keyword_names)
+            {
                 if let Some(cost) = parse_kicker_additional_cost_line(&line, &lower) {
                     merge_kicker_additional_cost(&mut result.additional_cost, cost);
                     additional_cost_line.get_or_insert(item_line);
@@ -5419,7 +5429,12 @@ pub(crate) fn parse_oracle_ir(
             // strictly parse — "Cycling {2} if you control an artifact" — falls
             // through to spell-effect parsing and becomes an honest, exact-unit
             // `Effect::Unimplemented` rather than vanishing.
-            if let Some(routed) = parse_router_keyword_line(&line) {
+            let keyword_router_line = if lower.starts_with("gift ") {
+                raw_line
+            } else {
+                &line
+            };
+            if let Some(routed) = parse_router_keyword_line(keyword_router_line) {
                 if let Some(keyword) = routed.keyword {
                     emitter.keyword_at(item_line, keyword);
                 }
@@ -5782,7 +5797,12 @@ pub(crate) fn parse_oracle_ir(
         // and NO `Unimplemented` — a silent swallow that rendered as full
         // support. A strict parse is now the only licence to advance; anything
         // else falls through to priority 14a/15 and stays honestly red.
-        if let Some(routed) = parse_router_keyword_line(&line) {
+        let keyword_router_line = if lower.starts_with("gift ") {
+            raw_line
+        } else {
+            &line
+        };
+        if let Some(routed) = parse_router_keyword_line(keyword_router_line) {
             if let Some(keyword) = routed.keyword {
                 emitter.keyword_at(item_line, keyword);
             }
