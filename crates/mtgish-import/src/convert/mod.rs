@@ -2287,7 +2287,7 @@ fn gift_action_to_kind(
     action: &crate::schema::types::Action,
 ) -> ConvResult<engine::types::keywords::GiftKind> {
     use crate::schema::types::{Action, CreatableToken};
-    use engine::types::keywords::GiftKind;
+    use engine::types::keywords::{GiftKind, GiftTokenSpec};
     let inner = match action {
         Action::PlayerAction(_, inner) => inner.as_ref(),
         other => {
@@ -2307,9 +2307,9 @@ fn gift_action_to_kind(
     Ok(match inner {
         Action::DrawACard => GiftKind::Card,
         Action::CreateTokens(tokens) if tokens.len() == 1 => match &tokens[0] {
-            CreatableToken::TreasureToken => GiftKind::Treasure,
-            CreatableToken::FoodToken => GiftKind::Food,
-            CreatableToken::FishToken => GiftKind::TappedFish,
+            CreatableToken::TreasureToken => GiftKind::Token(GiftTokenSpec::treasure()),
+            CreatableToken::FoodToken => GiftKind::Token(GiftTokenSpec::food()),
+            CreatableToken::FishToken => GiftKind::Token(GiftTokenSpec::tapped_fish()),
             other => {
                 return Err(ConversionGap::MalformedIdiom {
                     idiom: "Rule::SpellActions_Gift/token_kind",

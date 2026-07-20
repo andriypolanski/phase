@@ -21,7 +21,7 @@ use crate::types::ability::{
 };
 use crate::types::keywords::{
     normalize_bands_with_other_quality, BloodthirstValue, BuybackCost, CyclingCost, DisguiseCost,
-    EmbalmCost, EscapeCost, EternalizeCost, FlashbackCost, GiftCreatureToken, GiftKind, Keyword,
+    EmbalmCost, EscapeCost, EternalizeCost, FlashbackCost, GiftKind, GiftTokenSpec, Keyword,
     WardCost,
 };
 use crate::types::mana::{ManaCost, ManaCostShard};
@@ -2134,14 +2134,18 @@ fn parse_gift_creature_token_delivery_combinator(input: &str) -> OracleResult<'_
     let subtype_name = capitalize_token_name(subtype);
     Ok((
         rest,
-        GiftKind::CreatureToken(GiftCreatureToken {
-            name: subtype_name.clone(),
-            power: power as i32,
-            toughness: toughness as i32,
-            colors: color.into_iter().collect(),
-            subtypes: vec![subtype_name],
-            tapped: tapped.is_some(),
-        }),
+        GiftKind::Token(GiftTokenSpec::creature(
+            subtype_name.clone(),
+            power as i32,
+            toughness as i32,
+            color.into_iter().collect(),
+            vec![subtype_name],
+            if tapped.is_some() {
+                crate::types::zones::EtbTapState::Tapped
+            } else {
+                crate::types::zones::EtbTapState::Unspecified
+            },
+        )),
     ))
 }
 
@@ -2152,10 +2156,16 @@ fn parse_gift_delivery_from_reminder(reminder: &str) -> Option<GiftKind> {
     scan_at_word_boundaries(trimmed, |input| {
         alt((
             value(GiftKind::Card, tag("they draw a card")),
-            value(GiftKind::Treasure, tag("they create a treasure token")),
-            value(GiftKind::Food, tag("they create a food token")),
             value(
-                GiftKind::TappedFish,
+                GiftKind::Token(GiftTokenSpec::treasure()),
+                tag("they create a treasure token"),
+            ),
+            value(
+                GiftKind::Token(GiftTokenSpec::food()),
+                tag("they create a food token"),
+            ),
+            value(
+                GiftKind::Token(GiftTokenSpec::tapped_fish()),
                 tag("they create a tapped 1/1 blue fish creature token"),
             ),
             parse_gift_creature_token_delivery_combinator,
@@ -2169,9 +2179,12 @@ fn parse_gift_a_declaration(text: &str) -> Option<GiftKind> {
         tag::<_, _, OracleError<'_>>("gift a "),
         alt((
             value(GiftKind::Card, tag("card")),
-            value(GiftKind::Treasure, tag("treasure")),
-            value(GiftKind::Food, tag("food")),
-            value(GiftKind::TappedFish, tag("tapped fish")),
+            value(GiftKind::Token(GiftTokenSpec::treasure()), tag("treasure")),
+            value(GiftKind::Token(GiftTokenSpec::food()), tag("food")),
+            value(
+                GiftKind::Token(GiftTokenSpec::tapped_fish()),
+                tag("tapped fish"),
+            ),
         )),
     )
     .parse(text.trim())
@@ -3463,23 +3476,29 @@ mod tests {
 
     #[test]
     fn parse_granted_keyword_fragment_gift_a_treasure() {
-        use crate::types::keywords::GiftKind;
+        use crate::types::keywords::{GiftKind, GiftTokenSpec};
         let kw = parse_granted_keyword_fragment("gift a treasure").unwrap();
-        assert_eq!(kw, Keyword::Gift(GiftKind::Treasure));
+        assert_eq!(
+            kw,
+            Keyword::Gift(GiftKind::Token(GiftTokenSpec::treasure()))
+        );
     }
 
     #[test]
     fn parse_granted_keyword_fragment_gift_a_food() {
-        use crate::types::keywords::GiftKind;
+        use crate::types::keywords::{GiftKind, GiftTokenSpec};
         let kw = parse_granted_keyword_fragment("gift a food").unwrap();
-        assert_eq!(kw, Keyword::Gift(GiftKind::Food));
+        assert_eq!(kw, Keyword::Gift(GiftKind::Token(GiftTokenSpec::food())));
     }
 
     #[test]
     fn parse_granted_keyword_fragment_gift_a_tapped_fish() {
-        use crate::types::keywords::GiftKind;
+        use crate::types::keywords::{GiftKind, GiftTokenSpec};
         let kw = parse_granted_keyword_fragment("gift a tapped fish").unwrap();
-        assert_eq!(kw, Keyword::Gift(GiftKind::TappedFish));
+        assert_eq!(
+            kw,
+            Keyword::Gift(GiftKind::Token(GiftTokenSpec::tapped_fish()))
+        );
     }
 
     #[test]
@@ -3492,18 +3511,21 @@ mod tests {
 
     #[test]
     fn parse_gift_keyword_line_octomancer_octopus_token() {
+        use crate::types::keywords::{GiftKind, GiftTokenSpec};
+        use crate::types::zones::EtbTapState;
+
         let line = "Gift an Octopus (You may promise an opponent a gift as you cast this spell. If you do, when it enters, they create an 8/8 blue Octopus creature token.)";
         let kind = parse_gift_keyword_line(line).expect("Octomancer gift line");
         assert_eq!(
             kind,
-            GiftKind::CreatureToken(GiftCreatureToken {
-                name: "Octopus".to_string(),
-                power: 8,
-                toughness: 8,
-                colors: vec![ManaColor::Blue],
-                subtypes: vec!["Octopus".to_string()],
-                tapped: false,
-            })
+            GiftKind::Token(GiftTokenSpec::creature(
+                "Octopus",
+                8,
+                8,
+                vec![ManaColor::Blue],
+                vec!["Octopus".to_string()],
+                EtbTapState::Unspecified,
+            ))
         );
         assert!(parse_router_keyword_line(line).is_some());
     }

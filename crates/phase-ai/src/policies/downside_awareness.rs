@@ -2,7 +2,7 @@ use engine::types::ability::Effect;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::game_state::GameState;
-use engine::types::keywords::GiftKind;
+use engine::types::keywords::{GiftKind, GiftTokenSpec};
 use engine::types::player::PlayerId;
 
 use crate::eval::evaluate_creature;
@@ -16,6 +16,24 @@ use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, Tacti
 use engine::types::game_state::CastPaymentMode;
 
 pub struct DownsideAwarenessPolicy;
+
+fn gift_token_penalty(ctx: &PolicyContext<'_>, spec: &GiftTokenSpec) -> f64 {
+    if spec.subtypes.iter().any(|s| s == "Treasure") {
+        return ctx.penalties().gift_treasure_penalty;
+    }
+    if spec.subtypes.iter().any(|s| s == "Food") {
+        return ctx.penalties().gift_food_penalty;
+    }
+    if spec.subtypes.iter().any(|s| s == "Fish") {
+        return ctx.penalties().gift_fish_penalty;
+    }
+    let power = spec.power.unwrap_or(0).max(0);
+    let toughness = spec.toughness.unwrap_or(0).max(0);
+    let stat_product = (power * toughness) as f64;
+    // Scale from the tapped-Fish baseline (1×1); cap so doubled penalty stays
+    // within the policy's critical band.
+    ctx.penalties().gift_fish_penalty * stat_product.min(6.0)
+}
 
 impl DownsideAwarenessPolicy {
     pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
@@ -31,15 +49,7 @@ impl DownsideAwarenessPolicy {
             if let Effect::GiftDelivery { kind } = effect {
                 gift_penalty += match kind {
                     GiftKind::Card => ctx.penalties().gift_card_penalty,
-                    GiftKind::Treasure => ctx.penalties().gift_treasure_penalty,
-                    GiftKind::Food => ctx.penalties().gift_food_penalty,
-                    GiftKind::TappedFish => ctx.penalties().gift_fish_penalty,
-                    GiftKind::CreatureToken(spec) => {
-                        let stat_product = (spec.power.max(0) * spec.toughness.max(0)) as f64;
-                        // Scale from the tapped-Fish baseline (1×1); cap so doubled
-                        // penalty stays within the policy's critical band.
-                        ctx.penalties().gift_fish_penalty * stat_product.min(6.0)
-                    }
+                    GiftKind::Token(spec) => gift_token_penalty(ctx, spec),
                 };
             }
         }
@@ -248,7 +258,7 @@ mod tests {
                 selection: BounceSelection::Targeted,
             },
             Some(Effect::GiftDelivery {
-                kind: GiftKind::TappedFish,
+                kind: GiftKind::Token(GiftTokenSpec::tapped_fish()),
             }),
         );
         let score_fish = score_policy(&state_fish, &dec_fish, &can_fish);
@@ -286,7 +296,7 @@ mod tests {
                 selection: BounceSelection::Targeted,
             },
             Some(Effect::GiftDelivery {
-                kind: GiftKind::TappedFish,
+                kind: GiftKind::Token(GiftTokenSpec::tapped_fish()),
             }),
         );
         let base_score = score_policy(&state, &decision, &candidate);
@@ -302,7 +312,7 @@ mod tests {
                 selection: BounceSelection::Targeted,
             },
             Some(Effect::GiftDelivery {
-                kind: GiftKind::TappedFish,
+                kind: GiftKind::Token(GiftTokenSpec::tapped_fish()),
             }),
         );
         let target_score = score_policy(&state_with_creature, &decision2, &candidate2);

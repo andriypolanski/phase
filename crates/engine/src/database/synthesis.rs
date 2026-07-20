@@ -1429,7 +1429,7 @@ pub fn synthesize_gift(face: &mut CardFace) {
         return;
     }
     // Use rfind (last match) because the MTGJSON bare "Gift" keyword defaults to
-    // Gift(Card), while the Oracle-parsed keyword (e.g., Gift(TappedFish)) comes later
+    // Gift(Card), while the Oracle-parsed keyword (e.g., Gift(Token(...))) comes later
     // and is always the correct, specific kind.
     let gift_kind = face.keywords.iter().rev().find_map(|k| match k {
         Keyword::Gift(kind) => Some(kind.clone()),

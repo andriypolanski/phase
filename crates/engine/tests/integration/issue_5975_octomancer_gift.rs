@@ -16,7 +16,7 @@ use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::game_state::{CastPaymentMode, GameState, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
-use engine::types::keywords::{GiftKind, Keyword};
+use engine::types::keywords::{GiftKind, GiftTokenSpec, Keyword};
 use engine::types::mana::{ManaColor, ManaCost};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
@@ -135,7 +135,7 @@ fn octomancer_oracle_parses_gift_creature_token_and_etb_delivery_trigger() {
     assert!(
         obj.keywords
             .iter()
-            .any(|k| matches!(k, Keyword::Gift(GiftKind::CreatureToken(_)))),
+            .any(|k| matches!(k, Keyword::Gift(GiftKind::Token(_)))),
         "Octomancer must parse Gift an Octopus, got keywords: {:?}",
         obj.keywords
     );
@@ -147,12 +147,11 @@ fn octomancer_oracle_parses_gift_creature_token_and_etb_delivery_trigger() {
         obj.base_trigger_definitions.iter().any(|t| {
             matches!(
                 t.execute.as_deref(),
-                Some(a) if matches!(*a.effect, Effect::GiftDelivery { kind: GiftKind::CreatureToken(_) })
+                Some(a) if matches!(*a.effect, Effect::GiftDelivery { kind: GiftKind::Token(_) })
             )
         }),
         "permanent gift must synthesize ETB GiftDelivery trigger, got triggers: {:?}",
-        obj
-            .base_trigger_definitions
+        obj.base_trigger_definitions
             .iter()
             .map(|t| (&t.mode, t.execute.as_ref().map(|a| &a.effect)))
             .collect::<Vec<_>>()

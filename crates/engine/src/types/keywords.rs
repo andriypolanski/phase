@@ -15,8 +15,10 @@ use super::ability::{
     AbilityCost, ActivationRestriction, Comparator, CostObjectCount, CostReduction, FilterProp,
     QuantityExpr, TargetFilter, TypeFilter, TypedFilter,
 };
+use super::card_type::CoreType;
 use super::counter::{parse_counter_type, CounterType};
 use super::mana::{ManaColor, ManaCost};
+use super::zones::EtbTapState;
 
 /// CR 702.34a: Flashback cost — either a mana cost or a non-mana cost
 /// (e.g., "Tap three untapped white creatures you control").
@@ -457,32 +459,152 @@ pub enum CompanionCondition {
     PermanentsHaveActivatedAbilities,
 }
 
-/// CR 702.174: Parameterized creature token promised by a Gift keyword whose
-/// delivery is spelled out in the reminder text (Octomancer: 8/8 blue Octopus).
+/// CR 702.174: Fully-resolved token promised by a Gift keyword. Carries the
+/// same body shape as `TokenSpec`/`TokenCharacteristics` plus canonical ETB
+/// tap semantics for the replacement pipeline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GiftCreatureToken {
-    pub name: String,
-    pub power: i32,
-    pub toughness: i32,
-    pub colors: Vec<ManaColor>,
+pub struct GiftTokenSpec {
+    pub script_name: String,
+    pub display_name: String,
+    pub power: Option<i32>,
+    pub toughness: Option<i32>,
+    pub core_types: Vec<CoreType>,
     pub subtypes: Vec<String>,
-    pub tapped: bool,
+    pub colors: Vec<ManaColor>,
+    pub enter_tapped: EtbTapState,
+}
+
+impl GiftTokenSpec {
+    /// CR 702.174h: "Gift a Treasure" — opponent creates a Treasure token.
+    pub fn treasure() -> Self {
+        Self {
+            script_name: "Treasure".to_string(),
+            display_name: "Treasure".to_string(),
+            power: None,
+            toughness: None,
+            core_types: vec![CoreType::Artifact],
+            subtypes: vec!["Treasure".to_string()],
+            colors: vec![],
+            enter_tapped: EtbTapState::Unspecified,
+        }
+    }
+
+    /// CR 702.174h: "Gift a Food" — opponent creates a Food token.
+    pub fn food() -> Self {
+        Self {
+            script_name: "Food".to_string(),
+            display_name: "Food".to_string(),
+            power: None,
+            toughness: None,
+            core_types: vec![CoreType::Artifact],
+            subtypes: vec!["Food".to_string()],
+            colors: vec![],
+            enter_tapped: EtbTapState::Unspecified,
+        }
+    }
+
+    /// CR 702.174h: "Gift a tapped fish" — opponent creates a tapped 1/1 blue
+    /// Fish creature token.
+    pub fn tapped_fish() -> Self {
+        Self {
+            script_name: "Fish".to_string(),
+            display_name: "Fish".to_string(),
+            power: Some(1),
+            toughness: Some(1),
+            core_types: vec![CoreType::Creature],
+            subtypes: vec!["Fish".to_string()],
+            colors: vec![ManaColor::Blue],
+            enter_tapped: EtbTapState::Tapped,
+        }
+    }
+
+    /// CR 702.174i: Parameterized creature token from reminder text (Octomancer).
+    pub fn creature(
+        name: impl Into<String>,
+        power: i32,
+        toughness: i32,
+        colors: Vec<ManaColor>,
+        subtypes: Vec<String>,
+        enter_tapped: EtbTapState,
+    ) -> Self {
+        let name = name.into();
+        Self {
+            script_name: name.clone(),
+            display_name: name,
+            power: Some(power),
+            toughness: Some(toughness),
+            core_types: vec![CoreType::Creature],
+            subtypes,
+            colors,
+            enter_tapped,
+        }
+    }
 }
 
 /// The type of gift promised by the Gift keyword.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", content = "data")]
 pub enum GiftKind {
     /// Opponent draws a card.
     Card,
-    /// Opponent creates a Treasure token.
-    Treasure,
-    /// Opponent creates a Food token.
-    Food,
-    /// Opponent creates a tapped 1/1 blue Fish creature token.
-    TappedFish,
-    /// Opponent creates a parameterized creature token (P/T, colors, subtypes).
-    CreatureToken(GiftCreatureToken),
+    /// Opponent creates the promised token.
+    Token(GiftTokenSpec),
+}
+
+impl<'de> Deserialize<'de> for GiftKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        gift_kind_compat::deserialize(deserializer)
+    }
+}
+
+mod gift_kind_compat {
+    use super::{EtbTapState, GiftKind, GiftTokenSpec, ManaColor};
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct LegacyGiftCreatureToken {
+        name: String,
+        power: i32,
+        toughness: i32,
+        colors: Vec<ManaColor>,
+        subtypes: Vec<String>,
+        tapped: bool,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(tag = "type", content = "data")]
+    enum Surrogate {
+        Card,
+        Token(GiftTokenSpec),
+        Treasure,
+        Food,
+        TappedFish,
+        CreatureToken(LegacyGiftCreatureToken),
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<GiftKind, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match Surrogate::deserialize(deserializer)? {
+            Surrogate::Card => Ok(GiftKind::Card),
+            Surrogate::Token(spec) => Ok(GiftKind::Token(spec)),
+            Surrogate::Treasure => Ok(GiftKind::Token(GiftTokenSpec::treasure())),
+            Surrogate::Food => Ok(GiftKind::Token(GiftTokenSpec::food())),
+            Surrogate::TappedFish => Ok(GiftKind::Token(GiftTokenSpec::tapped_fish())),
+            Surrogate::CreatureToken(legacy) => Ok(GiftKind::Token(GiftTokenSpec::creature(
+                legacy.name,
+                legacy.power,
+                legacy.toughness,
+                legacy.colors,
+                legacy.subtypes,
+                EtbTapState::from_legacy_bool(legacy.tapped),
+            ))),
+        }
+    }
 }
 
 /// CR 702.11d: What a hexproof-from keyword protects against.
@@ -2676,9 +2798,9 @@ impl FromStr for Keyword {
             s if s.starts_with("gift:") => {
                 let kind = match &s["gift:".len()..] {
                     "card" => GiftKind::Card,
-                    "treasure" => GiftKind::Treasure,
-                    "food" => GiftKind::Food,
-                    "tappedfish" => GiftKind::TappedFish,
+                    "treasure" => GiftKind::Token(GiftTokenSpec::treasure()),
+                    "food" => GiftKind::Token(GiftTokenSpec::food()),
+                    "tappedfish" => GiftKind::Token(GiftTokenSpec::tapped_fish()),
                     _ => GiftKind::Card,
                 };
                 Ok(Keyword::Gift(kind))

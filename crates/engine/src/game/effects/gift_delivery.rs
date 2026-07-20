@@ -4,7 +4,7 @@ use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
-use crate::types::keywords::{GiftCreatureToken, GiftKind};
+use crate::types::keywords::{GiftKind, GiftTokenSpec};
 use crate::types::mana::ManaColor;
 use crate::types::player::PlayerId;
 use crate::types::proposed_event::{ProposedEvent, TokenCharacteristics, TokenSpec};
@@ -53,8 +53,8 @@ pub fn resolve(
         // CR 702.174h–702.174i: Gift tokens route through the canonical
         // `CreateToken` replacement pipeline so token identity, predefined
         // abilities, and token-count modifiers (Doubling Season, etc.) apply.
-        GiftKind::Treasure | GiftKind::Food | GiftKind::TappedFish | GiftKind::CreatureToken(_) => {
-            if !deliver_gift_token(state, events, opponent, ability, &kind)? {
+        GiftKind::Token(spec) => {
+            if !deliver_gift_token(state, events, opponent, ability, &spec)? {
                 return Ok(());
             }
         }
@@ -96,9 +96,9 @@ fn deliver_gift_token(
     events: &mut Vec<GameEvent>,
     owner: PlayerId,
     ability: &ResolvedAbility,
-    kind: &GiftKind,
+    gift: &GiftTokenSpec,
 ) -> Result<bool, EffectError> {
-    let (spec, enter_tapped) = gift_token_spec(kind, ability)?;
+    let (spec, enter_tapped) = token_spec_from_gift(gift, ability);
     let proposed = ProposedEvent::CreateToken {
         owner,
         spec: Box::new(spec),
@@ -124,96 +124,37 @@ fn deliver_gift_token(
     }
 }
 
-fn gift_token_spec(
-    kind: &GiftKind,
+/// CR 111.1 + CR 702.174: Single authority converting a resolved gift token payload
+/// into the `TokenSpec`/`EtbTapState` pair consumed by `CreateToken`.
+fn token_spec_from_gift(
+    gift: &GiftTokenSpec,
     ability: &ResolvedAbility,
-) -> Result<(TokenSpec, EtbTapState), EffectError> {
-    let (script_name, characteristics, tapped) = match kind {
-        GiftKind::Treasure => (
-            "Treasure".to_string(),
-            TokenCharacteristics {
-                display_name: "Treasure".to_string(),
-                power: None,
-                toughness: None,
-                core_types: vec![CoreType::Artifact],
-                subtypes: vec!["Treasure".to_string()],
-                supertypes: vec![],
-                colors: vec![],
-                keywords: vec![],
-            },
-            false,
-        ),
-        GiftKind::Food => (
-            "Food".to_string(),
-            TokenCharacteristics {
-                display_name: "Food".to_string(),
-                power: None,
-                toughness: None,
-                core_types: vec![CoreType::Artifact],
-                subtypes: vec!["Food".to_string()],
-                supertypes: vec![],
-                colors: vec![],
-                keywords: vec![],
-            },
-            false,
-        ),
-        GiftKind::TappedFish => (
-            "Fish".to_string(),
-            TokenCharacteristics {
-                display_name: "Fish".to_string(),
-                power: Some(1),
-                toughness: Some(1),
-                core_types: vec![CoreType::Creature],
-                subtypes: vec!["Fish".to_string()],
-                supertypes: vec![],
-                colors: vec![ManaColor::Blue],
-                keywords: vec![],
-            },
-            true,
-        ),
-        GiftKind::CreatureToken(GiftCreatureToken {
-            name,
-            power,
-            toughness,
-            colors,
-            subtypes,
-            tapped,
-        }) => (
-            name.clone(),
-            TokenCharacteristics {
-                display_name: name.clone(),
-                power: Some(*power),
-                toughness: Some(*toughness),
-                core_types: vec![CoreType::Creature],
-                subtypes: subtypes.clone(),
-                supertypes: vec![],
-                colors: colors.clone(),
-                keywords: vec![],
-            },
-            *tapped,
-        ),
-        GiftKind::Card => {
-            return Err(EffectError::InvalidParam(
-                "gift_token_spec called for GiftKind::Card".to_string(),
-            ))
-        }
-    };
-
-    Ok((
+) -> (TokenSpec, EtbTapState) {
+    let authored_tapped = gift.enter_tapped.resolve(false);
+    (
         TokenSpec {
-            characteristics,
-            script_name,
+            characteristics: TokenCharacteristics {
+                display_name: gift.display_name.clone(),
+                power: gift.power,
+                toughness: gift.toughness,
+                core_types: gift.core_types.clone(),
+                subtypes: gift.subtypes.clone(),
+                supertypes: vec![],
+                colors: gift.colors.clone(),
+                keywords: vec![],
+            },
+            script_name: gift.script_name.clone(),
             static_abilities: vec![],
             enter_with_counters: vec![],
-            tapped,
+            tapped: authored_tapped,
             enters_attacking: false,
             sacrifice_at: None,
             source_id: ability.source_id,
             controller: ability.controller,
             attach_to: None,
         },
-        EtbTapState::from_seeded_tapped(tapped),
-    ))
+        gift.enter_tapped,
+    )
 }
 
 #[cfg(test)]
@@ -283,7 +224,7 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         let mut events = Vec::new();
 
-        let ability = make_gift_ability(GiftKind::Treasure, true);
+        let ability = make_gift_ability(GiftKind::Token(GiftTokenSpec::treasure()), true);
         resolve(&mut state, &ability, &mut events).unwrap();
 
         let token = state
@@ -302,7 +243,7 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         let mut events = Vec::new();
 
-        let ability = make_gift_ability(GiftKind::TappedFish, true);
+        let ability = make_gift_ability(GiftKind::Token(GiftTokenSpec::tapped_fish()), true);
         resolve(&mut state, &ability, &mut events).unwrap();
 
         let token = state
@@ -323,7 +264,7 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         let mut events = Vec::new();
 
-        let ability = make_gift_ability(GiftKind::Food, true);
+        let ability = make_gift_ability(GiftKind::Token(GiftTokenSpec::food()), true);
         resolve(&mut state, &ability, &mut events).unwrap();
 
         let token = state
@@ -338,20 +279,18 @@ mod tests {
 
     #[test]
     fn gift_creature_token_creates_octopus_for_opponent() {
-        use crate::types::keywords::GiftCreatureToken;
-
         let mut state = GameState::new_two_player(42);
         let mut events = Vec::new();
 
         let ability = make_gift_ability(
-            GiftKind::CreatureToken(GiftCreatureToken {
-                name: "Octopus".to_string(),
-                power: 8,
-                toughness: 8,
-                colors: vec![ManaColor::Blue],
-                subtypes: vec!["Octopus".to_string()],
-                tapped: false,
-            }),
+            GiftKind::Token(GiftTokenSpec::creature(
+                "Octopus",
+                8,
+                8,
+                vec![ManaColor::Blue],
+                vec!["Octopus".to_string()],
+                EtbTapState::Unspecified,
+            )),
             true,
         );
         resolve(&mut state, &ability, &mut events).unwrap();
@@ -405,14 +344,14 @@ mod tests {
 
         let mut events = Vec::new();
         let ability = make_gift_ability(
-            GiftKind::CreatureToken(GiftCreatureToken {
-                name: "Octopus".to_string(),
-                power: 8,
-                toughness: 8,
-                colors: vec![ManaColor::Blue],
-                subtypes: vec!["Octopus".to_string()],
-                tapped: false,
-            }),
+            GiftKind::Token(GiftTokenSpec::creature(
+                "Octopus",
+                8,
+                8,
+                vec![ManaColor::Blue],
+                vec!["Octopus".to_string()],
+                EtbTapState::Unspecified,
+            )),
             true,
         );
         resolve(&mut state, &ability, &mut events).unwrap();
