@@ -71,8 +71,9 @@ use super::oracle_ir::relation::{DocumentRelationIr, LinkedChoiceKind, LinkedRet
 use super::oracle_ir::replacement::ReplacementIr;
 pub use super::oracle_keyword::keyword_display_name;
 use super::oracle_keyword::{
-    is_keyword_cost_line, is_kicker_family_line, parse_kicker_additional_cost_line,
-    parse_router_keyword_fragment, parse_router_keyword_line, parse_router_keyword_list,
+    gift_keyword_router_line, is_keyword_cost_line, is_kicker_family_line,
+    parse_kicker_additional_cost_line, parse_router_keyword_fragment, parse_router_keyword_line,
+    parse_router_keyword_list,
 };
 use super::oracle_level::parse_level_blocks;
 use super::oracle_modal::{
@@ -3997,11 +3998,7 @@ pub(crate) fn parse_oracle_ir(
             // CR 702.174: "Gift an Octopus" delivery lives in the parenthetical
             // reminder; the loop strips reminders before this slot, so gift lines
             // must route through the raw Oracle line.
-            let keyword_router_line = if lower.starts_with("gift ") {
-                raw_line
-            } else {
-                &line
-            };
+            let keyword_router_line = gift_keyword_router_line(raw_line, &line, &lower);
             if let Some(extracted) =
                 parse_router_keyword_list(keyword_router_line, mtgjson_keyword_names)
             {
@@ -5429,11 +5426,7 @@ pub(crate) fn parse_oracle_ir(
             // strictly parse — "Cycling {2} if you control an artifact" — falls
             // through to spell-effect parsing and becomes an honest, exact-unit
             // `Effect::Unimplemented` rather than vanishing.
-            let keyword_router_line = if lower.starts_with("gift ") {
-                raw_line
-            } else {
-                &line
-            };
+            let keyword_router_line = gift_keyword_router_line(raw_line, &line, &lower);
             if let Some(routed) = parse_router_keyword_line(keyword_router_line) {
                 if let Some(keyword) = routed.keyword {
                     emitter.keyword_at(item_line, keyword);
@@ -5797,11 +5790,7 @@ pub(crate) fn parse_oracle_ir(
         // and NO `Unimplemented` — a silent swallow that rendered as full
         // support. A strict parse is now the only licence to advance; anything
         // else falls through to priority 14a/15 and stays honestly red.
-        let keyword_router_line = if lower.starts_with("gift ") {
-            raw_line
-        } else {
-            &line
-        };
+        let keyword_router_line = gift_keyword_router_line(raw_line, &line, &lower);
         if let Some(routed) = parse_router_keyword_line(keyword_router_line) {
             if let Some(keyword) = routed.keyword {
                 emitter.keyword_at(item_line, keyword);
