@@ -8725,6 +8725,10 @@ pub enum AdditionalCostOrigin {
     /// any optional additional cost) and lets Teamwork compose with another
     /// object additional cost in the announcement queue.
     Teamwork,
+    /// CR 702.174a: Gift's optional promise to an opponent. A dedicated origin
+    /// lets gift-delivery effects read the promised recipient separately from
+    /// unrelated optional additional costs.
+    Gift,
     #[default]
     Other,
 }
@@ -17531,6 +17535,11 @@ pub struct SpellContext {
     /// `None` until that choice is made (and for the single-opponent default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub announcing_opponent: Option<PlayerId>,
+    /// CR 702.174a: When the caster promises a Gift additional cost, the opponent
+    /// they chose to receive the gift. Auto-set when only one opponent exists;
+    /// `None` until chosen in multiplayer (and when the gift was not promised).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gift_recipient: Option<PlayerId>,
     /// Whether the spell's optional additional cost was paid during casting.
     #[serde(default)]
     pub additional_cost_paid: bool,

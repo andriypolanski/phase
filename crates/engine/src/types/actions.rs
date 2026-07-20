@@ -211,6 +211,12 @@ pub enum GameAction {
     ChooseAnnouncingOpponent {
         opponent: PlayerId,
     },
+    /// CR 702.174a: The caster's answer to `WaitingFor::GiftChooseOpponent` —
+    /// which opponent receives the promised gift. `opponent` must be one of
+    /// that prompt's `candidates`.
+    ChooseGiftRecipient {
+        opponent: PlayerId,
+    },
     /// CR 702.132a: Assist — the caster's answer to `WaitingFor::AssistChoosePlayer`.
     /// `Some(p)` chooses player `p` (one of the prompt's `candidates`) to help pay
     /// the generic mana; `None` declines and proceeds to normal payment.
@@ -1558,6 +1564,7 @@ impl GameAction {
             | GameAction::ChooseClashOpponent { .. }
             | GameAction::ChoosePileOpponent { .. }
             | GameAction::ChooseAnnouncingOpponent { .. }
+            | GameAction::ChooseGiftRecipient { .. }
             | GameAction::ChooseAssistPlayer { .. }
             | GameAction::CommitAssistPayment { .. }
             | GameAction::ChooseBattleProtector { .. }

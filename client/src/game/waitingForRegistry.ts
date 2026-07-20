@@ -124,6 +124,7 @@ export const HANDLED_WAITING_FOR_TYPES: ReadonlySet<WaitingFor["type"]> =
     "ManifestDreadChoice",
     "ClashChooseOpponent",
     "ChooseAnnouncingOpponent",
+    "GiftChooseOpponent",
     "ClashCardPlacement",
     // CR 702.132a: Assist — caster picks a helper (AssistChoosePlayerModal),
     // then the helper commits generic mana (AssistPaymentUI).

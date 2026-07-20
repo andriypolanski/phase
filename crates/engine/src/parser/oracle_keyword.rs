@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
-use crate::parser::oracle_nom::error::OracleError;
+use crate::parser::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
-use nom::character::complete::{alpha1, space0, space1};
+use nom::character::complete::{alpha1, char, space0, space1};
 use nom::combinator::{all_consuming, eof, not, opt, peek, value};
 use nom::sequence::preceded;
 use nom::Parser;
@@ -2074,23 +2074,35 @@ fn apply_keyword_line_modifiers(
     Some(keyword)
 }
 
-/// Extract the first balanced parenthetical span from a Gift keyword line.
-fn gift_reminder_text(full_line: &str) -> Option<&str> {
-    let start = full_line.find('(')?;
-    let mut depth = 0usize;
-    for (offset, ch) in full_line[start..].char_indices() {
+/// Extract the first balanced parenthetical reminder span from a Gift keyword line.
+fn parse_balanced_parenthetical_contents(input: &str) -> OracleResult<'_, &str> {
+    let (rest, _) = char('(').parse(input)?;
+    let mut depth = 1usize;
+    let mut end = 0usize;
+    for (idx, ch) in rest.char_indices() {
         match ch {
             '(' => depth += 1,
             ')' => {
-                depth = depth.saturating_sub(1);
+                depth -= 1;
                 if depth == 0 {
-                    return Some(&full_line[start + 1..start + offset]);
+                    end = idx;
+                    break;
                 }
             }
             _ => {}
         }
     }
-    None
+    if depth != 0 {
+        return Err(oracle_err("unbalanced parenthetical in gift reminder"));
+    }
+    Ok((&rest[end + 1..], &rest[..end]))
+}
+
+fn gift_reminder_text(full_line: &str) -> Option<&str> {
+    let (_, (_, contents)) = (take_until("("), parse_balanced_parenthetical_contents)
+        .parse(full_line.trim())
+        .ok()?;
+    Some(contents)
 }
 
 fn capitalize_token_name(word: &str) -> String {
@@ -2103,8 +2115,7 @@ fn capitalize_token_name(word: &str) -> String {
 
 /// CR 702.174: Parse a parameterized creature-token gift delivery clause from
 /// reminder text ("they create an 8/8 blue Octopus creature token").
-fn parse_gift_creature_token_delivery(reminder_lower: &str) -> Option<GiftKind> {
-    let trimmed = reminder_lower.trim().trim_end_matches('.');
+fn parse_gift_creature_token_delivery_combinator(input: &str) -> OracleResult<'_, GiftKind> {
     let (rest, (_, _, tapped, power, _, toughness, color, subtype, _)) = (
         tag::<_, _, OracleError<'_>>("they create "),
         alt((
@@ -2119,62 +2130,38 @@ fn parse_gift_creature_token_delivery(reminder_lower: &str) -> Option<GiftKind> 
         preceded(space0, alpha1),
         tag::<_, _, OracleError<'_>>(" creature token"),
     )
-        .parse(trimmed)
-        .ok()?;
-    if !rest.trim().is_empty() {
-        return None;
-    }
+        .parse(input)?;
     let subtype_name = capitalize_token_name(subtype);
-    Some(GiftKind::CreatureToken(GiftCreatureToken {
-        name: subtype_name.clone(),
-        power: power as i32,
-        toughness: toughness as i32,
-        colors: color.into_iter().collect(),
-        subtypes: vec![subtype_name],
-        tapped: tapped.is_some(),
-    }))
+    Ok((
+        rest,
+        GiftKind::CreatureToken(GiftCreatureToken {
+            name: subtype_name.clone(),
+            power: power as i32,
+            toughness: toughness as i32,
+            colors: color.into_iter().collect(),
+            subtypes: vec![subtype_name],
+            tapped: tapped.is_some(),
+        }),
+    ))
 }
 
 /// CR 702.174: Resolve the opponent's gift payload from a Gift reminder line.
 fn parse_gift_delivery_from_reminder(reminder: &str) -> Option<GiftKind> {
     let lower = reminder.to_lowercase();
     let trimmed = lower.trim().trim_end_matches('.');
-    let delivery = [
-        "they draw a card",
-        "they create a treasure token",
-        "they create a food token",
-        "they create a tapped 1/1 blue fish creature token",
-        "they create an ",
-        "they create a ",
-    ]
-    .iter()
-    .find_map(|needle| trimmed.find(needle).map(|idx| &trimmed[idx..]))?;
-
-    if tag::<_, _, OracleError<'_>>("they draw a card")
-        .parse(delivery)
-        .is_ok()
-    {
-        return Some(GiftKind::Card);
-    }
-    if tag::<_, _, OracleError<'_>>("they create a treasure token")
-        .parse(delivery)
-        .is_ok()
-    {
-        return Some(GiftKind::Treasure);
-    }
-    if tag::<_, _, OracleError<'_>>("they create a food token")
-        .parse(delivery)
-        .is_ok()
-    {
-        return Some(GiftKind::Food);
-    }
-    if tag::<_, _, OracleError<'_>>("they create a tapped 1/1 blue fish creature token")
-        .parse(delivery)
-        .is_ok()
-    {
-        return Some(GiftKind::TappedFish);
-    }
-    parse_gift_creature_token_delivery(delivery)
+    scan_at_word_boundaries(trimmed, |input| {
+        alt((
+            value(GiftKind::Card, tag("they draw a card")),
+            value(GiftKind::Treasure, tag("they create a treasure token")),
+            value(GiftKind::Food, tag("they create a food token")),
+            value(
+                GiftKind::TappedFish,
+                tag("they create a tapped 1/1 blue fish creature token"),
+            ),
+            parse_gift_creature_token_delivery_combinator,
+        ))
+        .parse(input)
+    })
 }
 
 fn parse_gift_a_declaration(text: &str) -> Option<GiftKind> {

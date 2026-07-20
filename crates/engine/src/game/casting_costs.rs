@@ -399,6 +399,10 @@ pub(crate) fn handle_decide_additional_cost(
                         instance.origin_ordinal,
                         1,
                     );
+                } else if spell_has_gift_keyword(state, pending.object_id) {
+                    ability
+                        .context
+                        .record_additional_cost_payment(AdditionalCostOrigin::Gift, 1);
                 } else {
                     ability
                         .context
@@ -542,6 +546,24 @@ pub(crate) fn handle_decide_additional_cost(
             .is_some_and(is_exile_any_number_effect_cost)
     {
         recompute_pending_cast_cost_after_additional_cost(state, player, &mut updated_pending);
+    }
+
+    // CR 702.174a: Multiplayer Gift promises require choosing which opponent
+    // receives the gift before the cast pipeline continues.
+    if optional_cost_paid && spell_has_gift_keyword(state, updated_pending.object_id) {
+        let candidates = super::players::opponents(state, player);
+        if candidates.len() >= 2 {
+            updated_pending.additional_cost_flow = None;
+            updated_pending.additional_cost_decided = true;
+            return Ok(WaitingFor::GiftChooseOpponent {
+                player,
+                candidates,
+                pending_cast: Box::new(updated_pending),
+            });
+        }
+        if let Some(&opponent) = candidates.first() {
+            updated_pending.ability.context.gift_recipient = Some(opponent);
+        }
     }
 
     if let Some(cost) = cost_to_pay {
@@ -1336,6 +1358,25 @@ pub(crate) fn assign_next_announcing_opponent(
         node = link.sub_ability.as_deref_mut();
     }
     false
+}
+
+/// CR 702.174: Whether this spell carries a Gift keyword (promise additional cost).
+pub(crate) fn spell_has_gift_keyword(state: &GameState, object_id: ObjectId) -> bool {
+    state.objects.get(&object_id).is_some_and(|obj| {
+        obj.keywords
+            .iter()
+            .any(|keyword| matches!(keyword, Keyword::Gift(_)))
+    })
+}
+
+/// CR 702.174a: Resume the in-flight cast after the caster names the gift recipient.
+pub(crate) fn resume_cast_after_gift_recipient(
+    state: &mut GameState,
+    player: PlayerId,
+    pending: PendingCast,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    finish_pending_cost_or_cast(state, player, pending, events)
 }
 
 pub(crate) fn begin_deferred_target_selection(
@@ -8184,6 +8225,7 @@ fn finalize_cast_with_phyrexian_choices_inner(
     let additional_cost_paid = ability.context.additional_cost_paid;
     let additional_cost_payment_count = ability.context.additional_cost_payment_count;
     let additional_cost_payments = ability.context.additional_cost_payments.clone();
+    let gift_recipient = ability.context.gift_recipient;
     let convoked_creatures = state
         .pending_cast
         .as_ref()
@@ -8301,6 +8343,11 @@ fn finalize_cast_with_phyrexian_choices_inner(
             obj.additional_cost_payment_count = additional_cost_payment_count;
             obj.additional_cost_payments
                 .clone_from(&additional_cost_payments);
+        }
+    }
+    if let Some(recipient) = gift_recipient {
+        if let Some(obj) = state.objects.get_mut(&object_id) {
+            obj.gift_recipient = Some(recipient);
         }
     }
     if let Some(permission) = cast_timing_permission {

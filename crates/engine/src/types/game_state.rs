@@ -456,6 +456,9 @@ pub struct TriggerSourceContext {
     pub additional_cost_payment_count: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_cost_payments: Vec<AdditionalCostInstancePayment>,
+    /// CR 702.174a: Opponent chosen when the Gift additional cost was promised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gift_recipient: Option<PlayerId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cast_cost_paid_object: Option<CostPaidObjectSnapshot>,
 }
@@ -527,6 +530,7 @@ impl std::fmt::Debug for TriggerSourceContext {
                 &self.additional_cost_payment_count,
             )
             .field("additional_cost_payments", &self.additional_cost_payments)
+            .field("gift_recipient", &self.gift_recipient)
             .field("cast_cost_paid_object", &self.cast_cost_paid_object)
             .finish()
     }
@@ -7832,6 +7836,14 @@ pub enum WaitingFor {
         mana_reduction: ManaCost,
         pending_cast: Box<PendingCast>,
     },
+    /// CR 702.174a: Gift promise — the caster chooses which opponent receives
+    /// the promised gift. Only entered when two or more opponents exist; with
+    /// one opponent the recipient is auto-assigned.
+    GiftChooseOpponent {
+        player: PlayerId,
+        candidates: Vec<PlayerId>,
+        pending_cast: Box<PendingCast>,
+    },
     /// CR 715.3a + CR 702.94a + CR 702.35a + CR 702.85a + CR 701.57a + CR 702.xxx:
     /// A player is offered a card to cast via a special rule.
     CastOffer {
@@ -9090,6 +9102,7 @@ impl WaitingFor {
             WaitingFor::ModeChoice { .. } => "ModeChoice",
             WaitingFor::DiscardToHandSize { .. } => "DiscardToHandSize",
             WaitingFor::OptionalCostChoice { .. } => "OptionalCostChoice",
+            WaitingFor::GiftChooseOpponent { .. } => "GiftChooseOpponent",
             WaitingFor::SpliceOffer { .. } => "SpliceOffer",
             WaitingFor::DefilerPayment { .. } => "DefilerPayment",
             WaitingFor::CastOffer { .. } => "CastOffer",
@@ -9235,6 +9248,7 @@ impl WaitingFor {
             | WaitingFor::ModeChoice { player, .. }
             | WaitingFor::DiscardToHandSize { player, .. }
             | WaitingFor::OptionalCostChoice { player, .. }
+            | WaitingFor::GiftChooseOpponent { player, .. }
             | WaitingFor::SpliceOffer { player, .. }
             | WaitingFor::DefilerPayment { player, .. }
             | WaitingFor::AbilityModeChoice { player, .. }
@@ -9364,6 +9378,7 @@ impl WaitingFor {
             | WaitingFor::TargetSelection { pending_cast, .. }
             | WaitingFor::ModeChoice { pending_cast, .. }
             | WaitingFor::OptionalCostChoice { pending_cast, .. }
+            | WaitingFor::GiftChooseOpponent { pending_cast, .. }
             | WaitingFor::SpliceOffer { pending_cast, .. }
             | WaitingFor::DefilerPayment { pending_cast, .. }
             | WaitingFor::ActivationCostOneOfChoice { pending_cast, .. }
@@ -9398,6 +9413,7 @@ impl WaitingFor {
             | WaitingFor::TargetSelection { pending_cast, .. }
             | WaitingFor::ModeChoice { pending_cast, .. }
             | WaitingFor::OptionalCostChoice { pending_cast, .. }
+            | WaitingFor::GiftChooseOpponent { pending_cast, .. }
             | WaitingFor::SpliceOffer { pending_cast, .. }
             | WaitingFor::DefilerPayment { pending_cast, .. }
             | WaitingFor::ActivationCostOneOfChoice { pending_cast, .. }

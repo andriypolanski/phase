@@ -672,6 +672,10 @@ pub struct GameObject {
     /// ETB triggers such as Squad and Offspring.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_cost_payments: Vec<AdditionalCostInstancePayment>,
+    /// CR 702.174a: Opponent chosen when the Gift additional cost was promised,
+    /// copied from `SpellContext.gift_recipient` at cast resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gift_recipient: Option<PlayerId>,
     /// CR 702.51c: Creatures tapped to pay the convoke cost of the spell that
     /// produced this object. Stored as object ids so future convoke-reference
     /// classes can inspect identity; `QuantityRef::ConvokedCreatureCount`
@@ -1764,6 +1768,7 @@ impl GameObject {
                 kickers_paid: self.kickers_paid.clone(),
                 additional_cost_payment_count: self.additional_cost_payment_count,
                 additional_cost_payments: self.additional_cost_payments.clone(),
+                gift_recipient: self.gift_recipient,
                 cast_cost_paid_object: self.cast_cost_paid_object.clone(),
             }),
             power: self.power,
@@ -1961,6 +1966,7 @@ impl GameObject {
             kickers_paid: Vec::new(),
             additional_cost_payment_count: 0,
             additional_cost_payments: Vec::new(),
+            gift_recipient: None,
             convoked_creatures: Vec::new(),
             chosen_modes: Vec::new(),
             bestow_form: None,
@@ -2171,6 +2177,7 @@ impl GameObject {
         self.kickers_paid.clear();
         self.additional_cost_payment_count = 0;
         self.additional_cost_payments.clear();
+        self.gift_recipient = None;
         // CR 400.7 + CR 702.51c: convoked-creature history is tied to the
         // spell-resolution event that created this object. A re-entering
         // permanent has no memory of a prior convoke payment.

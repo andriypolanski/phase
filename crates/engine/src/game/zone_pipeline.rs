@@ -606,6 +606,7 @@ struct CastLinkSnapshot {
     kickers_paid: Vec<KickerVariant>,
     additional_cost_payment_count: u32,
     additional_cost_payments: Vec<AdditionalCostInstancePayment>,
+    gift_recipient: Option<PlayerId>,
     convoked_creatures: Vec<ObjectId>,
     // CR 400.7d: the object paid as a cost to cast the spell (e.g. the
     // emerge-sacrificed creature) is part of the cast-link family cleared on
@@ -2165,6 +2166,7 @@ pub(crate) fn deliver_replaced_zone_change(
                     kickers_paid: obj.kickers_paid.clone(),
                     additional_cost_payment_count: obj.additional_cost_payment_count,
                     additional_cost_payments: obj.additional_cost_payments.clone(),
+                    gift_recipient: obj.gift_recipient,
                     convoked_creatures: obj.convoked_creatures.clone(),
                     cast_cost_paid_object: obj.cast_cost_paid_object.clone(),
                 })
@@ -2306,6 +2308,7 @@ pub(crate) fn deliver_replaced_zone_change(
                 obj.kickers_paid = link.kickers_paid;
                 obj.additional_cost_payment_count = link.additional_cost_payment_count;
                 obj.additional_cost_payments = link.additional_cost_payments;
+                obj.gift_recipient = link.gift_recipient;
                 obj.convoked_creatures = link.convoked_creatures;
                 obj.cast_cost_paid_object = link.cast_cost_paid_object;
             }

@@ -4873,6 +4873,34 @@ fn apply_action(
             }
             casting_costs::begin_deferred_target_selection(state, caster, pending, &mut events)?
         }
+        // CR 702.174a: The caster chose which opponent receives the promised gift.
+        (
+            WaitingFor::GiftChooseOpponent {
+                player,
+                candidates,
+                pending_cast,
+                ..
+            },
+            GameAction::ChooseGiftRecipient { opponent },
+        ) => {
+            if !candidates.contains(&opponent) {
+                return Err(EngineError::InvalidAction(format!(
+                    "Player {opponent:?} is not an eligible gift recipient"
+                )));
+            }
+            let caster = *player;
+            let mut pending = (**pending_cast).clone();
+            pending.ability.context.gift_recipient = Some(opponent);
+            casting_costs::resume_cast_after_gift_recipient(state, caster, pending, &mut events)?
+        }
+        (
+            WaitingFor::GiftChooseOpponent {
+                player,
+                pending_cast,
+                ..
+            },
+            GameAction::CancelCast,
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         // CR 702.132a: Assist — caster chooses another player to help pay generic,
         // or declines. `assist_state` was set to `Offered` when the offer was made,
         // so both branches simply (re)enter the payment step from where they resume.

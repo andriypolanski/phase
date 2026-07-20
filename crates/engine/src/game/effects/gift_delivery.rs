@@ -9,7 +9,7 @@ use crate::types::mana::ManaColor;
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
-/// CR 702.174: Deliver a gift to the opponent of the ability's controller.
+/// CR 702.174: Deliver a gift to the opponent chosen when the gift was promised.
 /// Gift delivery is a no-op when the gift wasn't promised (`additional_cost_paid == false`).
 /// When promised, the opponent receives the gift before the spell's other effects resolve.
 pub fn resolve(
@@ -33,8 +33,14 @@ pub fn resolve(
         return Ok(());
     }
 
-    // In 2-player, the opponent is the next player after the controller.
-    let opponent = players::next_player(state, ability.controller);
+    // CR 702.174a: Deliver the promised gift to the opponent the caster chose
+    // when promising the gift. In two-player games the sole opponent is chosen
+    // automatically at cast time; legacy casts without a stored recipient fall
+    // back to seat order for backward compatibility.
+    let opponent = ability
+        .context
+        .gift_recipient
+        .unwrap_or_else(|| players::next_player(state, ability.controller));
 
     // CR 702.174b: On a permanent, the gift ability triggers when the permanent enters.
     // CR 702.174j: For instants/sorceries, the gift effect always happens first.

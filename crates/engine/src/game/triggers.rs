@@ -9684,6 +9684,10 @@ pub(super) fn build_triggered_ability_from_context(
                 .clone_from(&source_context.additional_cost_payments);
             resolved.context.additional_cost_paid = true;
         }
+        if let Some(recipient) = source_context.gift_recipient {
+            resolved.context.gift_recipient = Some(recipient);
+            resolved.context.additional_cost_paid = true;
+        }
         // CR 400.7d: an ability of a permanent may reference what was paid to
         // cast the spell that became it. The emerge-sacrificed creature is read
         // via `ObjectScope::CostPaidObject`. Stamp it across the trigger chain

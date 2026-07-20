@@ -990,6 +990,7 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                     obj.additional_cost_payment_count =
                         ability.context.additional_cost_payment_count;
                     obj.additional_cost_payments = ability.context.additional_cost_payments.clone();
+                    obj.gift_recipient = ability.context.gift_recipient;
                     // CR 400.7d: carry the object paid as a cost to cast this
                     // spell (e.g. the emerge-sacrificed creature) onto the stack
                     // object so the `CastLinkSnapshot` restores it onto the
