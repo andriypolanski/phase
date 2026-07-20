@@ -7,17 +7,21 @@
 //! cast → ETB gift-delivery trigger path and verifies the chosen opponent
 //! receives the promised Octopus token at runtime.
 
+use engine::game::filter::{matches_target_filter, FilterContext};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
-use engine::types::ability::Effect;
+use engine::game::zones::create_object;
+use engine::parser::oracle::parse_oracle_text;
+use engine::types::ability::{Effect, FilterProp, TargetFilter, TypedFilter};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
-use engine::types::game_state::{CastPaymentMode, WaitingFor};
+use engine::types::game_state::{CastPaymentMode, GameState, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::keywords::{GiftKind, Keyword};
 use engine::types::mana::{ManaColor, ManaCost};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
+use std::sync::Arc;
 
 const P2: PlayerId = PlayerId(2);
 
@@ -76,12 +80,45 @@ fn drive_octomancer_cast(
 fn octopus_token_for_player(runner: &GameRunner, owner: PlayerId) -> Option<ObjectId> {
     runner.state().objects.iter().find_map(|(&id, obj)| {
         (obj.owner == owner
+            && obj.is_token
             && obj.card_id == CardId(0)
             && obj.zone == Zone::Battlefield
             && obj.card_types.core_types.contains(&CoreType::Creature)
             && obj.card_types.subtypes.iter().any(|s| s == "Octopus"))
         .then_some(id)
     })
+}
+
+fn creature_token_filter() -> TargetFilter {
+    TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Token]))
+}
+
+fn install_doubling_season(state: &mut GameState, controller: PlayerId) -> ObjectId {
+    let parsed = parse_oracle_text(
+        "If one or more tokens would be created under your control, twice that \
+         many tokens are created instead.",
+        "Doubling Season",
+        &[],
+        &["Enchantment".to_string()],
+        &[],
+    );
+    assert!(
+        !parsed.replacements.is_empty(),
+        "Doubling Season token doubler must parse"
+    );
+    let id = create_object(
+        state,
+        CardId(960),
+        controller,
+        "Doubling Season".to_string(),
+        Zone::Battlefield,
+    );
+    let reps = parsed.replacements.clone();
+    let obj = state.objects.get_mut(&id).unwrap();
+    obj.card_types.core_types = vec![CoreType::Enchantment];
+    obj.replacement_definitions = reps.clone().into();
+    obj.base_replacement_definitions = Arc::new(reps);
+    id
 }
 
 #[test]
@@ -146,6 +183,7 @@ fn octomancer_promised_gift_delivers_octopus_token_on_etb() {
     let token_id =
         octopus_token_for_player(&runner, P1).expect("opponent must receive Octopus gift token");
     let token = &runner.state().objects[&token_id];
+    assert!(token.is_token, "Octomancer gift Octopus must be a token");
     assert_eq!(token.power, Some(8));
     assert_eq!(token.toughness, Some(8));
     assert!(
@@ -204,5 +242,65 @@ fn octomancer_unpromised_gift_does_not_create_octopus_token() {
     assert!(
         octopus_token_for_player(&runner, P1).is_none(),
         "declining Gift an Octopus must not create the Octopus token"
+    );
+}
+
+#[test]
+fn octomancer_gift_octopus_matches_creature_token_filter() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let octomancer = {
+        let mut builder =
+            scenario.add_creature_to_hand_from_oracle(P0, "Octomancer", 3, 3, OCTOMANCER_ORACLE);
+        builder.with_mana_cost(ManaCost::zero());
+        builder.id()
+    };
+
+    let mut runner = scenario.build();
+    drive_octomancer_cast(&mut runner, octomancer, true, None);
+
+    let token_id =
+        octopus_token_for_player(&runner, P1).expect("opponent must receive Octopus gift token");
+    let filter = creature_token_filter();
+    let ctx = FilterContext::neutral();
+    assert!(
+        matches_target_filter(runner.state(), token_id, &filter, &ctx),
+        "gifted Octopus must satisfy FilterProp::Token creature targeting"
+    );
+}
+
+#[test]
+fn octomancer_gift_octopus_doubles_under_recipient_doubling_season() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let octomancer = {
+        let mut builder =
+            scenario.add_creature_to_hand_from_oracle(P0, "Octomancer", 3, 3, OCTOMANCER_ORACLE);
+        builder.with_mana_cost(ManaCost::zero());
+        builder.id()
+    };
+
+    let mut runner = scenario.build();
+    install_doubling_season(runner.state_mut(), P1);
+    engine::types::game_state::TriggerIndex::rebuild_from_battlefield(runner.state_mut());
+
+    drive_octomancer_cast(&mut runner, octomancer, true, None);
+
+    let octopus_count = runner
+        .state()
+        .objects
+        .values()
+        .filter(|obj| {
+            obj.owner == P1
+                && obj.is_token
+                && obj.zone == Zone::Battlefield
+                && obj.card_types.subtypes.iter().any(|s| s == "Octopus")
+        })
+        .count();
+    assert_eq!(
+        octopus_count, 2,
+        "gift recipient's Doubling Season must double the promised Octopus token"
     );
 }
