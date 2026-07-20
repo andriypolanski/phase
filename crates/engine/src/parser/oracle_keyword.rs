@@ -2191,7 +2191,7 @@ fn parse_gift_delivery_from_reminder(reminder: &str) -> Option<GiftKind> {
 }
 
 fn parse_gift_a_declaration(text: &str) -> Option<GiftKind> {
-    let (rest, kind) = (
+    let (rest, kind) = preceded(
         tag::<_, _, OracleError<'_>>("gift a "),
         alt((
             value(GiftKind::Card, tag("card")),
@@ -2200,8 +2200,8 @@ fn parse_gift_a_declaration(text: &str) -> Option<GiftKind> {
             value(GiftKind::TappedFish, tag("tapped fish")),
         )),
     )
-        .parse(text.trim())
-        .ok()?;
+    .parse(text.trim())
+    .ok()?;
     if !rest.trim().is_empty() {
         return None;
     }
