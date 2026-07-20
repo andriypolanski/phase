@@ -45,6 +45,10 @@ fn accepts_reasonably_sized_action_list() {
 fn passes_scalar_only_action() {
     // Variants with no client-supplied list/string fall through unguarded.
     assert!(guard_game_action_payload(&GameAction::PassPriority).is_ok());
+    assert!(guard_game_action_payload(&GameAction::ChooseGiftRecipient {
+        opponent: PlayerId(1),
+    })
+    .is_ok());
 }
 
 #[test]
