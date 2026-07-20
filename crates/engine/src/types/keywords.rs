@@ -15,10 +15,8 @@ use super::ability::{
     AbilityCost, ActivationRestriction, Comparator, CostObjectCount, CostReduction, FilterProp,
     QuantityExpr, TargetFilter, TypeFilter, TypedFilter,
 };
-use super::card_type::CoreType;
 use super::counter::{parse_counter_type, CounterType};
 use super::mana::{ManaColor, ManaCost};
-use super::zones::EtbTapState;
 
 /// CR 702.34a: Flashback cost — either a mana cost or a non-mana cost
 /// (e.g., "Tap three untapped white creatures you control").
@@ -459,87 +457,7 @@ pub enum CompanionCondition {
     PermanentsHaveActivatedAbilities,
 }
 
-/// CR 702.174: Fully-resolved token promised by a Gift keyword. Carries the
-/// same body shape as `TokenSpec`/`TokenCharacteristics` plus canonical ETB
-/// tap semantics for the replacement pipeline.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GiftTokenSpec {
-    pub script_name: String,
-    pub display_name: String,
-    pub power: Option<i32>,
-    pub toughness: Option<i32>,
-    pub core_types: Vec<CoreType>,
-    pub subtypes: Vec<String>,
-    pub colors: Vec<ManaColor>,
-    pub enter_tapped: EtbTapState,
-}
-
-impl GiftTokenSpec {
-    /// CR 702.174h: "Gift a Treasure" — opponent creates a Treasure token.
-    pub fn treasure() -> Self {
-        Self {
-            script_name: "Treasure".to_string(),
-            display_name: "Treasure".to_string(),
-            power: None,
-            toughness: None,
-            core_types: vec![CoreType::Artifact],
-            subtypes: vec!["Treasure".to_string()],
-            colors: vec![],
-            enter_tapped: EtbTapState::Unspecified,
-        }
-    }
-
-    /// CR 702.174h: "Gift a Food" — opponent creates a Food token.
-    pub fn food() -> Self {
-        Self {
-            script_name: "Food".to_string(),
-            display_name: "Food".to_string(),
-            power: None,
-            toughness: None,
-            core_types: vec![CoreType::Artifact],
-            subtypes: vec!["Food".to_string()],
-            colors: vec![],
-            enter_tapped: EtbTapState::Unspecified,
-        }
-    }
-
-    /// CR 702.174h: "Gift a tapped fish" — opponent creates a tapped 1/1 blue
-    /// Fish creature token.
-    pub fn tapped_fish() -> Self {
-        Self {
-            script_name: "Fish".to_string(),
-            display_name: "Fish".to_string(),
-            power: Some(1),
-            toughness: Some(1),
-            core_types: vec![CoreType::Creature],
-            subtypes: vec!["Fish".to_string()],
-            colors: vec![ManaColor::Blue],
-            enter_tapped: EtbTapState::Tapped,
-        }
-    }
-
-    /// CR 702.174i: Parameterized creature token from reminder text (Octomancer).
-    pub fn creature(
-        name: impl Into<String>,
-        power: i32,
-        toughness: i32,
-        colors: Vec<ManaColor>,
-        subtypes: Vec<String>,
-        enter_tapped: EtbTapState,
-    ) -> Self {
-        let name = name.into();
-        Self {
-            script_name: name.clone(),
-            display_name: name,
-            power: Some(power),
-            toughness: Some(toughness),
-            core_types: vec![CoreType::Creature],
-            subtypes,
-            colors,
-            enter_tapped,
-        }
-    }
-}
+pub use super::proposed_event::GiftTokenSpec;
 
 /// The type of gift promised by the Gift keyword.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -561,7 +479,10 @@ impl<'de> Deserialize<'de> for GiftKind {
 }
 
 mod gift_kind_compat {
-    use super::{EtbTapState, GiftKind, GiftTokenSpec, ManaColor};
+    use super::{GiftKind, GiftTokenSpec};
+    use crate::types::mana::ManaColor;
+    use crate::types::zones::EtbTapState;
+    use serde::de;
     use serde::Deserialize;
 
     #[derive(Deserialize)]
@@ -574,34 +495,56 @@ mod gift_kind_compat {
         tapped: bool,
     }
 
+    /// Prior wire shape: `#[serde(tag = "type")]` with struct fields flattened
+    /// alongside `"type"` (no adjacent `"data"` envelope).
     #[derive(Deserialize)]
-    #[serde(tag = "type", content = "data")]
-    enum Surrogate {
+    #[serde(tag = "type")]
+    enum LegacyInternallyTagged {
         Card,
-        Token(GiftTokenSpec),
         Treasure,
         Food,
         TappedFish,
         CreatureToken(LegacyGiftCreatureToken),
     }
 
+    #[derive(Deserialize)]
+    struct NewTokenPayload {
+        data: GiftTokenSpec,
+    }
+
     pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<GiftKind, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        match Surrogate::deserialize(deserializer)? {
-            Surrogate::Card => Ok(GiftKind::Card),
-            Surrogate::Token(spec) => Ok(GiftKind::Token(spec)),
-            Surrogate::Treasure => Ok(GiftKind::Token(GiftTokenSpec::treasure())),
-            Surrogate::Food => Ok(GiftKind::Token(GiftTokenSpec::food())),
-            Surrogate::TappedFish => Ok(GiftKind::Token(GiftTokenSpec::tapped_fish())),
-            Surrogate::CreatureToken(legacy) => Ok(GiftKind::Token(GiftTokenSpec::creature(
-                legacy.name,
-                legacy.power,
-                legacy.toughness,
-                legacy.colors,
-                legacy.subtypes,
-                EtbTapState::from_legacy_bool(legacy.tapped),
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("Card") => Ok(GiftKind::Card),
+            Some("Token") => {
+                let wrapper = NewTokenPayload::deserialize(value).map_err(de::Error::custom)?;
+                Ok(GiftKind::Token(wrapper.data))
+            }
+            Some("Treasure") => Ok(GiftKind::Token(GiftTokenSpec::treasure())),
+            Some("Food") => Ok(GiftKind::Token(GiftTokenSpec::food())),
+            Some("TappedFish") => Ok(GiftKind::Token(GiftTokenSpec::tapped_fish())),
+            Some("CreatureToken") => {
+                match LegacyInternallyTagged::deserialize(value).map_err(de::Error::custom)? {
+                    LegacyInternallyTagged::CreatureToken(legacy) => {
+                        Ok(GiftKind::Token(GiftTokenSpec::creature(
+                            legacy.name,
+                            legacy.power,
+                            legacy.toughness,
+                            legacy.colors,
+                            legacy.subtypes,
+                            EtbTapState::from_legacy_bool(legacy.tapped),
+                        )))
+                    }
+                    _ => Err(de::Error::custom(
+                        "CreatureToken tag with unexpected variant shape",
+                    )),
+                }
+            }
+            other => Err(de::Error::custom(format!(
+                "unknown GiftKind type tag: {other:?}"
             ))),
         }
     }
@@ -3743,6 +3686,37 @@ mod tests {
             let back: Keyword = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(back, kw, "round-trip failed for {value:?}");
         }
+    }
+
+    #[test]
+    fn gift_kind_deserializes_legacy_internally_tagged_creature_token() {
+        use crate::types::zones::EtbTapState;
+
+        let json = r#"{"type":"CreatureToken","name":"Octopus","power":8,"toughness":8,"colors":["Blue"],"subtypes":["Octopus"],"tapped":false}"#;
+        let kind: GiftKind = serde_json::from_str(json).expect("legacy CreatureToken wire shape");
+        assert_eq!(
+            kind,
+            GiftKind::Token(GiftTokenSpec::creature(
+                "Octopus",
+                8,
+                8,
+                vec![ManaColor::Blue],
+                vec!["Octopus".to_string()],
+                EtbTapState::Unspecified,
+            ))
+        );
+    }
+
+    #[test]
+    fn gift_kind_deserializes_legacy_internally_tagged_unit_variants() {
+        assert_eq!(
+            serde_json::from_str::<GiftKind>(r#"{"type":"Treasure"}"#).unwrap(),
+            GiftKind::Token(GiftTokenSpec::treasure())
+        );
+        assert_eq!(
+            serde_json::from_str::<GiftKind>(r#"{"type":"TappedFish"}"#).unwrap(),
+            GiftKind::Token(GiftTokenSpec::tapped_fish())
+        );
     }
 
     #[test]

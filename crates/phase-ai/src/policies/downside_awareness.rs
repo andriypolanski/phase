@@ -18,17 +18,18 @@ use engine::types::game_state::CastPaymentMode;
 pub struct DownsideAwarenessPolicy;
 
 fn gift_token_penalty(ctx: &PolicyContext<'_>, spec: &GiftTokenSpec) -> f64 {
-    if spec.subtypes.iter().any(|s| s == "Treasure") {
+    let ch = &spec.characteristics;
+    if ch.subtypes.iter().any(|s| s == "Treasure") {
         return ctx.penalties().gift_treasure_penalty;
     }
-    if spec.subtypes.iter().any(|s| s == "Food") {
+    if ch.subtypes.iter().any(|s| s == "Food") {
         return ctx.penalties().gift_food_penalty;
     }
-    if spec.subtypes.iter().any(|s| s == "Fish") {
+    if ch.subtypes.iter().any(|s| s == "Fish") {
         return ctx.penalties().gift_fish_penalty;
     }
-    let power = spec.power.unwrap_or(0).max(0);
-    let toughness = spec.toughness.unwrap_or(0).max(0);
+    let power = ch.power.unwrap_or(0).max(0);
+    let toughness = ch.toughness.unwrap_or(0).max(0);
     let stat_product = (power * toughness) as f64;
     // Scale from the tapped-Fish baseline (1×1); cap so doubled penalty stays
     // within the policy's critical band.

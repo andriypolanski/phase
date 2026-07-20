@@ -280,6 +280,168 @@ pub struct TokenCharacteristics {
     pub keywords: Vec<Keyword>,
 }
 
+/// CR 702.174: Fully-resolved token promised by a Gift keyword. Reuses
+/// `TokenCharacteristics` as the canonical token body and adds only Gift-specific
+/// script/tap fields needed before `TokenSpec` assembly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GiftTokenSpec {
+    pub script_name: String,
+    pub characteristics: TokenCharacteristics,
+    pub enter_tapped: EtbTapState,
+}
+
+impl<'de> Deserialize<'de> for GiftTokenSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        gift_token_spec_compat::deserialize(deserializer)
+    }
+}
+
+impl GiftTokenSpec {
+    /// CR 702.174h: "Gift a Treasure" — opponent creates a Treasure token.
+    pub fn treasure() -> Self {
+        Self {
+            script_name: "Treasure".to_string(),
+            characteristics: TokenCharacteristics {
+                display_name: "Treasure".to_string(),
+                power: None,
+                toughness: None,
+                core_types: vec![CoreType::Artifact],
+                subtypes: vec!["Treasure".to_string()],
+                supertypes: vec![],
+                colors: vec![],
+                keywords: vec![],
+            },
+            enter_tapped: EtbTapState::Unspecified,
+        }
+    }
+
+    /// CR 702.174h: "Gift a Food" — opponent creates a Food token.
+    pub fn food() -> Self {
+        Self {
+            script_name: "Food".to_string(),
+            characteristics: TokenCharacteristics {
+                display_name: "Food".to_string(),
+                power: None,
+                toughness: None,
+                core_types: vec![CoreType::Artifact],
+                subtypes: vec!["Food".to_string()],
+                supertypes: vec![],
+                colors: vec![],
+                keywords: vec![],
+            },
+            enter_tapped: EtbTapState::Unspecified,
+        }
+    }
+
+    /// CR 702.174h: "Gift a tapped fish" — opponent creates a tapped 1/1 blue
+    /// Fish creature token.
+    pub fn tapped_fish() -> Self {
+        Self {
+            script_name: "Fish".to_string(),
+            characteristics: TokenCharacteristics {
+                display_name: "Fish".to_string(),
+                power: Some(1),
+                toughness: Some(1),
+                core_types: vec![CoreType::Creature],
+                subtypes: vec!["Fish".to_string()],
+                supertypes: vec![],
+                colors: vec![ManaColor::Blue],
+                keywords: vec![],
+            },
+            enter_tapped: EtbTapState::Tapped,
+        }
+    }
+
+    /// CR 702.174i: Parameterized creature token from reminder text (Octomancer).
+    pub fn creature(
+        name: impl Into<String>,
+        power: i32,
+        toughness: i32,
+        colors: Vec<ManaColor>,
+        subtypes: Vec<String>,
+        enter_tapped: EtbTapState,
+    ) -> Self {
+        let name = name.into();
+        Self {
+            script_name: name.clone(),
+            characteristics: TokenCharacteristics {
+                display_name: name,
+                power: Some(power),
+                toughness: Some(toughness),
+                core_types: vec![CoreType::Creature],
+                subtypes,
+                supertypes: vec![],
+                colors,
+                keywords: vec![],
+            },
+            enter_tapped,
+        }
+    }
+}
+
+mod gift_token_spec_compat {
+    use super::{EtbTapState, GiftTokenSpec, TokenCharacteristics};
+    use crate::types::card_type::CoreType;
+    use crate::types::mana::ManaColor;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct ModernGiftTokenSpec {
+        script_name: String,
+        characteristics: TokenCharacteristics,
+        enter_tapped: EtbTapState,
+    }
+
+    #[derive(Deserialize)]
+    struct LegacyFlatGiftTokenSpec {
+        script_name: String,
+        display_name: String,
+        power: Option<i32>,
+        toughness: Option<i32>,
+        core_types: Vec<CoreType>,
+        subtypes: Vec<String>,
+        colors: Vec<ManaColor>,
+        enter_tapped: EtbTapState,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Surrogate {
+        Modern(ModernGiftTokenSpec),
+        LegacyFlat(LegacyFlatGiftTokenSpec),
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<GiftTokenSpec, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match Surrogate::deserialize(deserializer)? {
+            Surrogate::Modern(modern) => Ok(GiftTokenSpec {
+                script_name: modern.script_name,
+                characteristics: modern.characteristics,
+                enter_tapped: modern.enter_tapped,
+            }),
+            Surrogate::LegacyFlat(legacy) => Ok(GiftTokenSpec {
+                script_name: legacy.script_name,
+                characteristics: TokenCharacteristics {
+                    display_name: legacy.display_name,
+                    power: legacy.power,
+                    toughness: legacy.toughness,
+                    core_types: legacy.core_types,
+                    subtypes: legacy.subtypes,
+                    supertypes: vec![],
+                    colors: legacy.colors,
+                    keywords: vec![],
+                },
+                enter_tapped: legacy.enter_tapped,
+            }),
+        }
+    }
+}
+
 /// CR 111.1 + CR 111.4 + CR 111.10: Fully-resolved token creation specification.
 ///
 /// `Effect::Token` carries authoring-time fields (`PtValue`, `QuantityExpr`,

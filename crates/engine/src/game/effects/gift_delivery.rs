@@ -1,13 +1,11 @@
 use crate::game::players;
 use crate::game::replacement::{self, ReplacementResult};
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
-use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::keywords::{GiftKind, GiftTokenSpec};
-use crate::types::mana::ManaColor;
 use crate::types::player::PlayerId;
-use crate::types::proposed_event::{ProposedEvent, TokenCharacteristics, TokenSpec};
+use crate::types::proposed_event::{ProposedEvent, TokenSpec};
 use crate::types::zones::EtbTapState;
 
 /// CR 702.174: Deliver a gift to the opponent chosen when the gift was promised.
@@ -133,16 +131,7 @@ fn token_spec_from_gift(
     let authored_tapped = gift.enter_tapped.resolve(false);
     (
         TokenSpec {
-            characteristics: TokenCharacteristics {
-                display_name: gift.display_name.clone(),
-                power: gift.power,
-                toughness: gift.toughness,
-                core_types: gift.core_types.clone(),
-                subtypes: gift.subtypes.clone(),
-                supertypes: vec![],
-                colors: gift.colors.clone(),
-                keywords: vec![],
-            },
+            characteristics: gift.characteristics.clone(),
             script_name: gift.script_name.clone(),
             static_abilities: vec![],
             enter_with_counters: vec![],
@@ -162,7 +151,9 @@ mod tests {
     use super::*;
     use crate::game::zones;
     use crate::types::ability::ResolvedAbility;
+    use crate::types::card_type::CoreType;
     use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::mana::ManaColor;
     use crate::types::zones::Zone;
 
     fn make_gift_ability(kind: GiftKind, promised: bool) -> ResolvedAbility {
