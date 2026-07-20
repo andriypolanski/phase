@@ -24187,9 +24187,9 @@ fn strip_unless_entered_suffix_strips_correctly() {
     );
     assert_eq!(
         strip,
-        UnlessSuffixStrip::Parsed(AbilityCondition::Not {
+        UnlessSuffixStrip::Parsed(Box::new(AbilityCondition::Not {
             condition: Box::new(AbilityCondition::SourceEnteredThisTurn),
-        }),
+        })),
         "Should produce Not(SourceEnteredThisTurn) condition"
     );
     assert_eq!(text, "discard a card");
@@ -24211,9 +24211,9 @@ fn strip_unless_general_your_turn() {
     );
     assert_eq!(
         strip,
-        UnlessSuffixStrip::Parsed(AbilityCondition::Not {
+        UnlessSuffixStrip::Parsed(Box::new(AbilityCondition::Not {
             condition: Box::new(AbilityCondition::IsYourTurn)
-        }),
+        })),
     );
     assert_eq!(text, "draw a card");
 }
@@ -24226,11 +24226,15 @@ fn strip_unless_you_control_a_creature() {
         &mut ParseContext::default(),
     );
     match strip {
-        UnlessSuffixStrip::Parsed(AbilityCondition::QuantityCheck {
-            comparator: Comparator::EQ,
-            rhs: QuantityExpr::Fixed { value: 0 },
-            ..
-        }) => {}
+        UnlessSuffixStrip::Parsed(cond)
+            if matches!(
+                *cond,
+                AbilityCondition::QuantityCheck {
+                    comparator: Comparator::EQ,
+                    rhs: QuantityExpr::Fixed { value: 0 },
+                    ..
+                }
+            ) => {}
         other => panic!("expected ObjectCount EQ 0, got {:?}", other),
     }
     assert_eq!(text, "sacrifice this enchantment");
@@ -24247,7 +24251,7 @@ fn strip_unless_opponent_poison_counters() {
     let UnlessSuffixStrip::Parsed(cond) = strip else {
         panic!("expected parsed unless poison gate, got {strip:?}");
     };
-    let AbilityCondition::Not { condition } = cond else {
+    let AbilityCondition::Not { condition } = *cond else {
         panic!("expected Not-wrapped unless gate, got {cond:?}");
     };
     let AbilityCondition::QuantityCheck {
@@ -33873,9 +33877,9 @@ fn leading_conditional_threads_condition_through_ast() {
         matches!(
             ast,
             ClauseAst::Conditional {
-                condition: Some(_),
+                ref condition,
                 ..
-            }
+            } if condition.as_ref().is_some()
         ),
         "expected Conditional with Some condition, got: {ast:?}"
     );
@@ -33903,9 +33907,9 @@ fn leading_conditional_unrecognized_produces_none() {
         matches!(
             ast,
             ClauseAst::Conditional {
-                condition: None,
+                ref condition,
                 ..
-            }
+            } if condition.as_ref().is_none()
         ),
         "expected Conditional with None condition for unrecognized text, got: {ast:?}"
     );

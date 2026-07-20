@@ -6269,7 +6269,7 @@ pub(crate) fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedE
     let mut unless_pay_deferred = None;
     let (unless_condition, text) = match unless_strip {
         UnlessSuffixStrip::Absent => (None, clause_text),
-        UnlessSuffixStrip::Parsed(c) => (Some(c), clause_text),
+        UnlessSuffixStrip::Parsed(c) => (Some(*c), clause_text),
         UnlessSuffixStrip::Unrecognized { rider } => {
             let (stripped, unless_pay) = extract_resolution_unless_pay_modifier(&clause_text, None);
             if unless_pay.is_some() {
@@ -13837,7 +13837,7 @@ fn parse_clause_ast(text: &str, ctx: &mut ParseContext) -> ClauseAst {
         .trim();
         let condition = try_nom_condition_as_ability_condition(cond_body, ctx);
         return ClauseAst::Conditional {
-            condition,
+            condition: Box::new(condition),
             clause: Box::new(parse_clause_ast(&remainder, ctx)),
         };
     }
@@ -14037,7 +14037,7 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &mut ParseContext) -> ParsedEffectClaus
         ClauseAst::Conditional { condition, clause } => {
             // CR 608.2c: Thread the leading conditional into the lowered clause's condition field.
             let mut result = lower_clause_ast(*clause, ctx);
-            if let Some(cond) = condition {
+            if let Some(cond) = *condition {
                 result.condition = Some(cond);
             }
             result
@@ -27765,7 +27765,7 @@ pub(crate) fn parse_effect_chain_ir(
         // is redundant when the parent is optional (optional already gates the sub).
         let (unless_strip, text) = strip_unless_entered_suffix(&text, ctx);
         let condition = match unless_strip {
-            UnlessSuffixStrip::Parsed(c) => Some(c),
+            UnlessSuffixStrip::Parsed(c) => Some(*c),
             _ => condition,
         };
         // CR 608.2c: Strip leading "instead " when a condition was extracted.

@@ -1788,7 +1788,7 @@ fn resolve_all_inner(
             let config =
                 create_config_for_players(ai_difficulty, Platform::Wasm, state.players.len() as u8);
             match choose_action_with_session(state, actor, &config, rng, &session) {
-                Some(action) => ResolveAllCallbackDecision::Action(action),
+                Some(action) => ResolveAllCallbackDecision::Action(Box::new(action)),
                 None => ResolveAllCallbackDecision::Stop,
             }
         } else {

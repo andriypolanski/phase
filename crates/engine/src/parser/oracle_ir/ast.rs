@@ -172,7 +172,7 @@ pub(crate) enum ClauseAst {
     },
     Conditional {
         /// CR 608.2c: Parsed leading "if" guard, when recognized by the condition pipeline.
-        condition: Option<AbilityCondition>,
+        condition: Box<Option<AbilityCondition>>,
         clause: Box<ClauseAst>,
     },
 }

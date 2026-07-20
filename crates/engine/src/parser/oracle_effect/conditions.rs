@@ -956,7 +956,7 @@ pub(super) fn strip_if_you_do_conditional(text: &str) -> (Option<AbilityConditio
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum UnlessSuffixStrip {
     Absent,
-    Parsed(AbilityCondition),
+    Parsed(Box<AbilityCondition>),
     Unrecognized { rider: String },
 }
 
@@ -972,9 +972,9 @@ pub(super) fn strip_unless_entered_suffix(
     ] {
         if let Some((before, _)) = tp.split_around(pattern) {
             return (
-                UnlessSuffixStrip::Parsed(AbilityCondition::Not {
+                UnlessSuffixStrip::Parsed(Box::new(AbilityCondition::Not {
                     condition: Box::new(AbilityCondition::SourceEnteredThisTurn),
-                }),
+                })),
                 before.original.trim_end_matches('.').trim().to_string(),
             );
         }
@@ -983,7 +983,7 @@ pub(super) fn strip_unless_entered_suffix(
         let condition_text = condition_part.trim_end_matches('.');
         if let Some(cond) = try_nom_condition_as_unless(condition_text, ctx) {
             let effect_text = text[..effect_part.len()].trim().to_string();
-            return (UnlessSuffixStrip::Parsed(cond), effect_text);
+            return (UnlessSuffixStrip::Parsed(Box::new(cond)), effect_text);
         }
         return (
             UnlessSuffixStrip::Unrecognized {

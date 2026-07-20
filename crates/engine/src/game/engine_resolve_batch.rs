@@ -34,7 +34,7 @@ pub struct ResolveAllFastForwardResult {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolveAllCallbackDecision {
-    Action(GameAction),
+    Action(Box<GameAction>),
     Stop,
 }
 
@@ -96,13 +96,17 @@ where
                 deferred_display_pending = false;
             }
             match choose_non_requester_action(state, actor) {
-                ResolveAllCallbackDecision::Action(GameAction::PassPriority) => (
-                    GameAction::PassPriority,
-                    PublicFinalizeMode::DeferredDisplay,
-                    false,
-                ),
+                ResolveAllCallbackDecision::Action(action)
+                    if *action == GameAction::PassPriority =>
+                {
+                    (
+                        GameAction::PassPriority,
+                        PublicFinalizeMode::DeferredDisplay,
+                        false,
+                    )
+                }
                 ResolveAllCallbackDecision::Action(action) => {
-                    (action, PublicFinalizeMode::Immediate, true)
+                    (*action, PublicFinalizeMode::Immediate, true)
                 }
                 ResolveAllCallbackDecision::Stop => break,
             }
@@ -208,7 +212,8 @@ where
             let actor = turn_control::authorized_submitter_for_player(state, representative);
             if actor != requester {
                 match choose_non_requester_action(state, actor) {
-                    ResolveAllCallbackDecision::Action(GameAction::PassPriority) => {}
+                    ResolveAllCallbackDecision::Action(action)
+                        if *action == GameAction::PassPriority => {}
                     ResolveAllCallbackDecision::Action(_) => {
                         return PriorityCycleFastForward::CannotSeed;
                     }
@@ -405,7 +410,7 @@ mod tests {
 
         let result = resolve_all_fast_forward(&mut state, PlayerId(0), 0, |_, _| {
             calls.set(calls.get() + 1);
-            ResolveAllCallbackDecision::Action(GameAction::PassPriority)
+            ResolveAllCallbackDecision::Action(Box::new(GameAction::PassPriority))
         });
 
         assert_eq!(calls.get(), 1);
@@ -450,7 +455,7 @@ mod tests {
                 PlayerId(2),
                 "callback should be for the opposing team representative, not active teammate"
             );
-            ResolveAllCallbackDecision::Action(GameAction::PassPriority)
+            ResolveAllCallbackDecision::Action(Box::new(GameAction::PassPriority))
         });
 
         assert_eq!(calls.get(), 1);
@@ -472,12 +477,12 @@ mod tests {
 
         let result = resolve_all_fast_forward(&mut state, PlayerId(0), 0, |_, _| {
             calls.set(calls.get() + 1);
-            ResolveAllCallbackDecision::Action(GameAction::SetPhaseStops {
+            ResolveAllCallbackDecision::Action(Box::new(GameAction::SetPhaseStops {
                 stops: vec![PhaseStop {
                     phase: Phase::PreCombatMain,
                     scope: PhaseStopScope::AllTurns,
                 }],
-            })
+            }))
         });
 
         assert_eq!(calls.get(), 2);
@@ -544,12 +549,12 @@ mod tests {
 
         let result = resolve_all_fast_forward(&mut state, PlayerId(0), 0, |_, _| {
             calls.set(calls.get() + 1);
-            ResolveAllCallbackDecision::Action(GameAction::SetPhaseStops {
+            ResolveAllCallbackDecision::Action(Box::new(GameAction::SetPhaseStops {
                 stops: vec![PhaseStop {
                     phase: Phase::PreCombatMain,
                     scope: PhaseStopScope::AllTurns,
                 }],
-            })
+            }))
         });
 
         assert_eq!(calls.get(), 1);

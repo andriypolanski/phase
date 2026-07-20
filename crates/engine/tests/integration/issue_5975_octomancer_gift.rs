@@ -16,7 +16,7 @@ use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::game_state::{CastPaymentMode, GameState, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
-use engine::types::keywords::{GiftKind, GiftTokenSpec, Keyword};
+use engine::types::keywords::{GiftKind, Keyword};
 use engine::types::mana::{ManaColor, ManaCost};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
