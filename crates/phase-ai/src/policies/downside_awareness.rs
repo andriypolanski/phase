@@ -34,6 +34,12 @@ impl DownsideAwarenessPolicy {
                     GiftKind::Treasure => ctx.penalties().gift_treasure_penalty,
                     GiftKind::Food => ctx.penalties().gift_food_penalty,
                     GiftKind::TappedFish => ctx.penalties().gift_fish_penalty,
+                    GiftKind::CreatureToken(spec) => {
+                        let stat_product = (spec.power.max(0) * spec.toughness.max(0)) as f64;
+                        // Scale from the tapped-Fish baseline (1×1); cap so doubled
+                        // penalty stays within the policy's critical band.
+                        ctx.penalties().gift_fish_penalty * stat_product.min(6.0)
+                    }
                 };
             }
         }

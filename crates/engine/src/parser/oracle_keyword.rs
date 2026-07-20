@@ -21,7 +21,8 @@ use crate::types::ability::{
 };
 use crate::types::keywords::{
     normalize_bands_with_other_quality, BloodthirstValue, BuybackCost, CyclingCost, DisguiseCost,
-    EmbalmCost, EscapeCost, EternalizeCost, FlashbackCost, Keyword, WardCost,
+    EmbalmCost, EscapeCost, EternalizeCost, FlashbackCost, GiftCreatureToken, GiftKind, Keyword,
+    WardCost,
 };
 use crate::types::mana::{ManaCost, ManaCostShard};
 use crate::types::zones::Zone;
@@ -1643,7 +1644,6 @@ pub(crate) fn parse_keyword_line_core(text: &str) -> Option<(Keyword, &str)> {
 
     // Gift keyword: "gift a card", "gift a treasure", "gift a food", "gift a tapped fish"
     if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("gift a ").parse(text) {
-        use crate::types::keywords::GiftKind;
         let kind = match rest.trim() {
             "card" => GiftKind::Card,
             "treasure" => GiftKind::Treasure,
@@ -1652,6 +1652,12 @@ pub(crate) fn parse_keyword_line_core(text: &str) -> Option<(Keyword, &str)> {
             _ => return None,
         };
         return Some((Keyword::Gift(kind), ""));
+    }
+
+    // CR 702.174: "gift an <noun>" declarations (Octomancer) resolve delivery from
+    // the parenthetical reminder on the full keyword line via `parse_gift_keyword_line`.
+    if tag::<_, _, OracleError<'_>>("gift an ").parse(text).is_ok() {
+        return None;
     }
 
     // CR 702.49d: Commander ninjutsu — multi-word keyword name (like "level up").
@@ -2088,6 +2094,134 @@ fn apply_keyword_line_modifiers(
     Some(keyword)
 }
 
+/// Extract the first balanced parenthetical span from a Gift keyword line.
+fn gift_reminder_text(full_line: &str) -> Option<&str> {
+    let start = full_line.find('(')?;
+    let mut depth = 0usize;
+    for (offset, ch) in full_line[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&full_line[start + 1..start + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn capitalize_token_name(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+/// CR 702.174: Parse a parameterized creature-token gift delivery clause from
+/// reminder text ("they create an 8/8 blue Octopus creature token").
+fn parse_gift_creature_token_delivery(reminder_lower: &str) -> Option<GiftKind> {
+    let trimmed = reminder_lower.trim().trim_end_matches('.');
+    let (rest, (_, _, tapped, power, _, toughness, color, subtype, _)) = (
+        tag::<_, _, OracleError<'_>>("they create "),
+        alt((
+            tag::<_, _, OracleError<'_>>("a "),
+            tag::<_, _, OracleError<'_>>("an "),
+        )),
+        opt(tag::<_, _, OracleError<'_>>("tapped ")),
+        nom_primitives::parse_number,
+        tag::<_, _, OracleError<'_>>("/"),
+        nom_primitives::parse_number,
+        opt(preceded(space1, nom_primitives::parse_color)),
+        preceded(space0, alpha1),
+        tag::<_, _, OracleError<'_>>(" creature token"),
+    )
+        .parse(trimmed)
+        .ok()?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+    let subtype_name = capitalize_token_name(subtype);
+    Some(GiftKind::CreatureToken(GiftCreatureToken {
+        name: subtype_name.clone(),
+        power: power as i32,
+        toughness: toughness as i32,
+        colors: color.into_iter().collect(),
+        subtypes: vec![subtype_name],
+        tapped: tapped.is_some(),
+    }))
+}
+
+/// CR 702.174: Resolve the opponent's gift payload from a Gift reminder line.
+fn parse_gift_delivery_from_reminder(reminder: &str) -> Option<GiftKind> {
+    let lower = reminder.to_lowercase();
+    let trimmed = lower.trim().trim_end_matches('.');
+    let delivery = [
+        "they draw a card",
+        "they create a treasure token",
+        "they create a food token",
+        "they create a tapped 1/1 blue fish creature token",
+        "they create an ",
+        "they create a ",
+    ]
+    .iter()
+    .find_map(|needle| trimmed.find(needle).map(|idx| &trimmed[idx..]))?;
+
+    if tag::<_, _, OracleError<'_>>("they draw a card")
+        .parse(delivery)
+        .is_ok()
+    {
+        return Some(GiftKind::Card);
+    }
+    if tag::<_, _, OracleError<'_>>("they create a treasure token")
+        .parse(delivery)
+        .is_ok()
+    {
+        return Some(GiftKind::Treasure);
+    }
+    if tag::<_, _, OracleError<'_>>("they create a food token")
+        .parse(delivery)
+        .is_ok()
+    {
+        return Some(GiftKind::Food);
+    }
+    if tag::<_, _, OracleError<'_>>("they create a tapped 1/1 blue fish creature token")
+        .parse(delivery)
+        .is_ok()
+    {
+        return Some(GiftKind::TappedFish);
+    }
+    parse_gift_creature_token_delivery(delivery)
+}
+
+fn parse_gift_keyword_declaration(declaration_lower: &str) -> Option<GiftKind> {
+    let trimmed = declaration_lower.trim();
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("gift a ").parse(trimmed) {
+        return match rest.trim() {
+            "card" => Some(GiftKind::Card),
+            "treasure" => Some(GiftKind::Treasure),
+            "food" => Some(GiftKind::Food),
+            "tapped fish" => Some(GiftKind::TappedFish),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// CR 702.174: Parse a whole Gift keyword line including reminder-driven delivery
+/// for non-standard gifts ("Gift an Octopus (… they create an 8/8 blue Octopus …)").
+pub(crate) fn parse_gift_keyword_line(full_line: &str) -> Option<GiftKind> {
+    let declaration = strip_reminder_text(full_line);
+    if let Some(kind) = parse_gift_keyword_declaration(&declaration.to_lowercase()) {
+        return Some(kind);
+    }
+    let reminder = gift_reminder_text(full_line)?;
+    parse_gift_delivery_from_reminder(reminder)
+}
+
 /// The SINGLE router-facing keyword-line parser. Returns `Some` only when the
 /// ENTIRE line is a keyword declaration plus a permitted tail (`P/R/M`).
 ///
@@ -2121,6 +2255,18 @@ pub(crate) fn parse_router_keyword_line(line: &str) -> Option<RoutedKeywordLine>
         (false, true) => PermittedKeywordRemainder::ReminderText,
         (true, true) => PermittedKeywordRemainder::TerminalPunctuationAndReminderText,
     };
+
+    // CR 702.174: Gift lines must parse completely (including reminder-driven
+    // delivery for "Gift an Octopus") before the generic keyword core runs.
+    if lower.starts_with("gift ") {
+        return parse_gift_keyword_line(trimmed).map(|kind| RoutedKeywordLine {
+            keyword: Some(Keyword::Gift(kind)),
+            tail: KeywordLineTail {
+                modifiers: Vec::new(),
+                permitted_remainder: permitted_remainder_of(false),
+            },
+        });
+    }
 
     // 2b. MTGJSON-authoritative declarations: fully accounted for, nothing to emit.
     if is_partner_declaration_line(&lower) {
@@ -2803,7 +2949,7 @@ pub(crate) fn is_keyword_cost_line(lower: &str) -> bool {
 mod tests {
     use super::*;
     use crate::types::ability::{AbilityCost, SacrificeCost};
-    use crate::types::mana::ManaCost;
+    use crate::types::mana::{ManaColor, ManaCost};
 
     #[test]
     fn parse_granted_keyword_fragment_cascade() {
@@ -3357,6 +3503,31 @@ mod tests {
         assert!(is_keyword_cost_line("gift a card"));
         assert!(is_keyword_cost_line("gift a treasure"));
         assert!(is_keyword_cost_line("gift a tapped fish"));
+        assert!(is_keyword_cost_line("gift an octopus"));
+    }
+
+    #[test]
+    fn parse_gift_keyword_line_octomancer_octopus_token() {
+        let line = "Gift an Octopus (You may promise an opponent a gift as you cast this spell. If you do, when it enters, they create an 8/8 blue Octopus creature token.)";
+        let kind = parse_gift_keyword_line(line).expect("Octomancer gift line");
+        assert_eq!(
+            kind,
+            GiftKind::CreatureToken(GiftCreatureToken {
+                name: "Octopus".to_string(),
+                power: 8,
+                toughness: 8,
+                colors: vec![ManaColor::Blue],
+                subtypes: vec!["Octopus".to_string()],
+                tapped: false,
+            })
+        );
+        assert!(parse_router_keyword_line(line).is_some());
+    }
+
+    #[test]
+    fn parse_gift_keyword_line_permanent_draw_reminder() {
+        let line = "Gift a card (You may promise an opponent a gift as you cast this spell. If you do, when it enters, they draw a card.)";
+        assert_eq!(parse_gift_keyword_line(line), Some(GiftKind::Card));
     }
 
     #[test]
