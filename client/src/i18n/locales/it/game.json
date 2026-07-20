@@ -2176,5 +2176,9 @@
       "priority": "Priority",
       "thinking": "Thinking"
     }
+  },
+  "giftRecipient": {
+    "title": "Scegli il destinatario del dono",
+    "subtitle": "Scegli quale avversario riceve il dono promesso."
   }
 }

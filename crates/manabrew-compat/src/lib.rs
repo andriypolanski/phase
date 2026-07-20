@@ -1714,6 +1714,9 @@ pub fn convert_available_action(action: &GameAction, id: String) -> AvailableAct
         GameAction::ChooseAnnouncingOpponent { .. } => {
             AvailableActionConversion::Unsupported("local.announcing-opponent-unsupported")
         }
+        GameAction::ChooseGiftRecipient { .. } => {
+            AvailableActionConversion::Unsupported("local.gift-recipient-unsupported")
+        }
         GameAction::ChoosePileOpponent { .. } => {
             AvailableActionConversion::Unsupported("local.pile-opponent-unsupported")
         }
@@ -3610,6 +3613,20 @@ mod tests {
             AvailableActionConversion::Unsupported("local.announcing-opponent-unsupported")
         ));
         assert!(available_actions(&[GameAction::ChooseAnnouncingOpponent {
+            opponent: PlayerId(1),
+        }])
+        .is_empty());
+
+        assert!(matches!(
+            convert_available_action(
+                &GameAction::ChooseGiftRecipient {
+                    opponent: PlayerId(1),
+                },
+                "action-2".to_string(),
+            ),
+            AvailableActionConversion::Unsupported("local.gift-recipient-unsupported")
+        ));
+        assert!(available_actions(&[GameAction::ChooseGiftRecipient {
             opponent: PlayerId(1),
         }])
         .is_empty());

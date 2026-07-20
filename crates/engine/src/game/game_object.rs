@@ -1176,6 +1176,7 @@ fn _gameobject_partition_is_total(o: &GameObject) {
         kickers_paid: _,
         additional_cost_payment_count: _,
         additional_cost_payments: _,
+        gift_recipient: _,
         convoked_creatures: _,
         chosen_modes: _,
         bestow_form: _,
