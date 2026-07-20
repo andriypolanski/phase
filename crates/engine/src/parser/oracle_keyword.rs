@@ -1643,14 +1643,7 @@ pub(crate) fn parse_keyword_line_core(text: &str) -> Option<(Keyword, &str)> {
     }
 
     // Gift keyword: "gift a card", "gift a treasure", "gift a food", "gift a tapped fish"
-    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("gift a ").parse(text) {
-        let kind = match rest.trim() {
-            "card" => GiftKind::Card,
-            "treasure" => GiftKind::Treasure,
-            "food" => GiftKind::Food,
-            "tapped fish" => GiftKind::TappedFish,
-            _ => return None,
-        };
+    if let Some(kind) = parse_gift_a_declaration(text) {
         return Some((Keyword::Gift(kind), ""));
     }
 
@@ -2197,18 +2190,47 @@ fn parse_gift_delivery_from_reminder(reminder: &str) -> Option<GiftKind> {
     parse_gift_creature_token_delivery(delivery)
 }
 
-fn parse_gift_keyword_declaration(declaration_lower: &str) -> Option<GiftKind> {
-    let trimmed = declaration_lower.trim();
-    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("gift a ").parse(trimmed) {
-        return match rest.trim() {
-            "card" => Some(GiftKind::Card),
-            "treasure" => Some(GiftKind::Treasure),
-            "food" => Some(GiftKind::Food),
-            "tapped fish" => Some(GiftKind::TappedFish),
-            _ => None,
-        };
+fn parse_gift_a_declaration(text: &str) -> Option<GiftKind> {
+    let (rest, kind) = (
+        tag::<_, _, OracleError<'_>>("gift a "),
+        alt((
+            value(GiftKind::Card, tag("card")),
+            value(GiftKind::Treasure, tag("treasure")),
+            value(GiftKind::Food, tag("food")),
+            value(GiftKind::TappedFish, tag("tapped fish")),
+        )),
+    )
+        .parse(text.trim())
+        .ok()?;
+    if !rest.trim().is_empty() {
+        return None;
     }
-    None
+    Some(kind)
+}
+
+/// Whether a lowercase keyword-router line opens with the Gift keyword prefix.
+pub(crate) fn is_gift_keyword_router_line(lower: &str) -> bool {
+    tag::<_, _, OracleError<'_>>("gift ")
+        .parse(lower.trim())
+        .is_ok()
+}
+
+/// CR 702.174: Gift lines carry delivery in parenthetical reminder text; route
+/// through the raw Oracle line when the stripped line is a Gift declaration.
+pub(crate) fn gift_keyword_router_line<'a>(
+    raw_line: &'a str,
+    stripped_line: &'a str,
+    lower: &str,
+) -> &'a str {
+    if is_gift_keyword_router_line(lower) {
+        raw_line
+    } else {
+        stripped_line
+    }
+}
+
+fn parse_gift_keyword_declaration(declaration_lower: &str) -> Option<GiftKind> {
+    parse_gift_a_declaration(declaration_lower)
 }
 
 /// CR 702.174: Parse a whole Gift keyword line including reminder-driven delivery
@@ -2258,7 +2280,7 @@ pub(crate) fn parse_router_keyword_line(line: &str) -> Option<RoutedKeywordLine>
 
     // CR 702.174: Gift lines must parse completely (including reminder-driven
     // delivery for "Gift an Octopus") before the generic keyword core runs.
-    if lower.starts_with("gift ") {
+    if is_gift_keyword_router_line(&lower) {
         return parse_gift_keyword_line(trimmed).map(|kind| RoutedKeywordLine {
             keyword: Some(Keyword::Gift(kind)),
             tail: KeywordLineTail {
