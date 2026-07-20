@@ -62,37 +62,91 @@ expression: result
                       "definition": {
                         "kind": "Activated",
                         "effect": {
-                          "type": "Unimplemented",
-                          "name": "add",
-                          "description": "Add {G}{G}' and '{1}, {T}"
+                          "type": "Mana",
+                          "produced": {
+                            "type": "Fixed",
+                            "colors": [
+                              "Green",
+                              "Green"
+                            ]
+                          }
                         },
                         "cost": {
                           "type": "Tap"
                         },
-                        "sub_ability": {
-                          "kind": "Spell",
-                          "effect": {
-                            "type": "Sacrifice",
-                            "target": {
-                              "type": "SelfRef"
-                            },
-                            "count": {
-                              "type": "Fixed",
-                              "value": 1
-                            }
-                          },
-                          "cost": null,
-                          "sub_ability": null,
-                          "duration": null,
-                          "description": null,
-                          "target_prompt": null,
-                          "condition": null,
-                          "optional_targeting": false,
-                          "optional": false,
-                          "forward_result": false
-                        },
+                        "sub_ability": null,
                         "duration": null,
-                        "description": "{T}: Add {G}{G}' and '{1}, {T}, Sacrifice ~: Create a tapped 4/4 green Troll Warrior creature token with trample.",
+                        "description": "{T}: Add {G}{G}",
+                        "target_prompt": null,
+                        "condition": null,
+                        "optional_targeting": false,
+                        "optional": false,
+                        "forward_result": false,
+                        "is_mana_ability": true
+                      }
+                    },
+                    {
+                      "type": "GrantAbility",
+                      "definition": {
+                        "kind": "Activated",
+                        "effect": {
+                          "type": "Token",
+                          "name": "Troll Warrior",
+                          "power": {
+                            "type": "Fixed",
+                            "value": 4
+                          },
+                          "toughness": {
+                            "type": "Fixed",
+                            "value": 4
+                          },
+                          "types": [
+                            "Creature",
+                            "Troll",
+                            "Warrior"
+                          ],
+                          "colors": [
+                            "Green"
+                          ],
+                          "keywords": [
+                            "Trample"
+                          ],
+                          "tapped": true,
+                          "count": {
+                            "type": "Fixed",
+                            "value": 1
+                          },
+                          "owner": {
+                            "type": "Controller"
+                          },
+                          "enters_attacking": false
+                        },
+                        "cost": {
+                          "type": "Composite",
+                          "costs": [
+                            {
+                              "type": "Mana",
+                              "cost": {
+                                "type": "Cost",
+                                "shards": [],
+                                "generic": 1
+                              }
+                            },
+                            {
+                              "type": "Tap"
+                            },
+                            {
+                              "type": "Sacrifice",
+                              "target": {
+                                "type": "SelfRef"
+                              },
+                              "count": 1
+                            }
+                          ]
+                        },
+                        "sub_ability": null,
+                        "duration": null,
+                        "description": "{1}, {T}, Sacrifice ~: Create a tapped 4/4 green Troll Warrior creature token with trample.",
                         "target_prompt": null,
                         "condition": null,
                         "optional_targeting": false,
@@ -106,7 +160,7 @@ expression: result
                   "effect_zone": null,
                   "active_zones": [],
                   "characteristic_defining": false,
-                  "description": "Enchanted Forest has \"{T}: Add {G}{G}' and '{1}, {T}, Sacrifice ~: Create a tapped 4/4 green Troll Warrior creature token with trample.\""
+                  "description": "Enchanted Forest has \"{T}: Add {G}{G}\" and \"{1}, {T}, Sacrifice ~: Create a tapped 4/4 green Troll Warrior creature token with trample.\""
                 }
               }
             ]
