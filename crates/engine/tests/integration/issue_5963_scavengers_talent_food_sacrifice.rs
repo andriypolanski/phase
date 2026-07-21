@@ -16,8 +16,8 @@ use engine::types::ability::{
     TypedFilter,
 };
 use engine::types::actions::GameAction;
-use engine::types::game_state::{ManaChoice, ManaChoicePrompt, WaitingFor};
-use engine::types::mana::{ManaColor, ManaType};
+use engine::types::game_state::{CastPaymentMode, ManaChoice, ManaChoicePrompt, WaitingFor};
+use engine::types::mana::{ManaColor, ManaCost, ManaType};
 use engine::types::phase::Phase;
 use engine::types::triggers::TriggerMode;
 use engine::types::zones::Zone;
@@ -443,9 +443,6 @@ fn faithful_scavengers_talent_and_ygra_food_sacrifice() {
 /// sacrifice (L2) triggers once the spell finishes being cast.
 #[test]
 fn food_sacrifice_during_mana_payment_fires_triggers() {
-    use engine::types::game_state::CastPaymentMode;
-    use engine::types::mana::ManaCost;
-
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_library_top(P0, &["Filler A", "Filler B", "Filler C"]);
@@ -655,9 +652,6 @@ fn drive_payment_to_priority(
 /// +7) sum to 57. A double-collected L2 would read 64, a dropped batch 7/50.
 #[test]
 fn food_sacrifice_during_payment_fires_both_triggers_exactly_once() {
-    use engine::types::game_state::CastPaymentMode;
-    use engine::types::mana::ManaCost;
-
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_library_top(P0, &["Filler A", "Filler B", "Filler C"]);
@@ -731,9 +725,6 @@ fn food_sacrifice_during_payment_fires_both_triggers_exactly_once() {
 /// logical-zone-settlement gap that sacrifice-cost + color-prompt exposes).
 #[test]
 fn tap_another_creature_for_mana_during_payment_fires_becomes_tapped_once() {
-    use engine::types::game_state::CastPaymentMode;
-    use engine::types::mana::ManaCost;
-
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_library_top(P0, &["Filler A", "Filler B", "Filler C"]);
