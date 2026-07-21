@@ -4154,12 +4154,46 @@ pub(super) fn handle_resolution_choice(
             }
 
             if chosen.is_empty() && matches!(effect_kind, EffectKind::CastFromZone) {
-                // CR 609.1 / CR 601.2a: Declining an optional
-                // Electrodominance-style hand cast consumes the stashed
-                // CastFromZone continuation without granting a permission. Do
-                // not call the generic resume path here; the pending ability
-                // would re-open the same optional prompt.
-                state.pending_continuation.take();
+                // CR 608.2c: An empty selection at a hand-pick cast's
+                // `EffectZoneChoice` means the player did not cast ("you may cast
+                // a permanent spell … from your hand"). A Kellan-class ability
+                // carries a `Not(OptionalEffectPerformed)` decline fallback ("If
+                // you don't, put a land onto the battlefield"): re-stash it with
+                // the performed flag reset and drain it via resume, rather than
+                // discarding the continuation (issue #5945).
+                // `stash_declined_cast_fallback` takes the sub only when it is a
+                // genuine decline branch, so a subless Electrodominance-style
+                // decline (helper returns false) still falls through to the
+                // consume-and-no-op path below.
+                if let Some(cont) = state.pending_continuation.take() {
+                    let ability = *cont.chain;
+                    if effects::cast_from_zone::stash_declined_cast_fallback(state, &ability) {
+                        state.last_effect_count = Some(0);
+                        events.push(GameEvent::EffectResolved {
+                            kind: effect_kind,
+                            source_id,
+                            subject: None,
+                        });
+                        set_priority(state, player);
+                        // CR 608.2c: drain the re-stashed land-drop fallback.
+                        // `resume_with_error_propagation` only drains under
+                        // `WaitingFor::Priority` (set just above) and reads
+                        // `state.pending_continuation`, so ordering `set_priority`
+                        // before resume is required and correct.
+                        resume_with_error_propagation(state, events)?;
+                        return Ok(ResolutionChoiceOutcome::WaitingFor(
+                            state.waiting_for.clone(),
+                        ));
+                    }
+                    // No decline fallback: the taken continuation is discarded —
+                    // the subless decline consumes it without granting a
+                    // permission (below).
+                }
+                // CR 609.1 / CR 601.2a: Declining an optional Electrodominance-
+                // style hand cast consumes the stashed CastFromZone continuation
+                // without granting a permission. Do not call the generic resume
+                // path here; the pending ability would re-open the same optional
+                // prompt.
                 state.last_effect_count = Some(0);
                 events.push(GameEvent::EffectResolved {
                     kind: effect_kind,

@@ -2390,6 +2390,15 @@ pub(super) fn resolve_optional_effect_decision(
                 // chain context carries `optional_effect_performed = true` —
                 // but each opponent's own decline must read `false`).
                 resolved.context.optional_effect_performed = false;
+                // CR 608.2c: The `Not(OptionalEffectPerformed)` gate's role — run
+                // this branch only because the PARENT optional was declined — is
+                // now fulfilled by the selection above. If the branch is ITSELF an
+                // optional ("If you don't, you MAY put a land" — Kellan, the Kid),
+                // accepting its own "may" latches `optional_effect_performed = true`,
+                // which would re-trip this same gate on the accept re-entry and
+                // silently skip the branch's effect. Strip the consumed gate so the
+                // branch resolves on its own optional decision.
+                strip_consumed_decline_performed_gate(&mut resolved);
                 resolve_ability_chain(state, &resolved, events, depth)?;
             }
         }
@@ -2613,6 +2622,28 @@ fn nested_optional_decline_clause(ability: &ResolvedAbility) -> Option<&Resolved
         current = node.sub_ability.as_deref();
     }
     None
+}
+
+/// CR 608.2c: Remove a `Not(OptionalEffectPerformed)` condition from a decline
+/// branch that has already been *selected* to run because its parent optional was
+/// declined. The gate's sole purpose is that selection; leaving it on a branch
+/// that is itself optional (Kellan, the Kid — "If you don't, you may put a land")
+/// is a latent bug: accepting the branch's own "may" latches
+/// `optional_effect_performed = true`, so the branch's fresh
+/// `resolve_ability_chain` re-entry re-evaluates the same `Not` gate as false and
+/// silently drops the effect. Only strips when the branch is optional (a
+/// non-optional branch never re-enters through an accept, so its gate is
+/// harmless) and the gate is exactly the performed `Not`-wrapper.
+fn strip_consumed_decline_performed_gate(ability: &mut ResolvedAbility) {
+    if ability.optional
+        && matches!(
+            &ability.condition,
+            Some(AbilityCondition::Not { condition })
+                if condition.is_optional_effect_performed()
+        )
+    {
+        ability.condition = None;
+    }
 }
 
 fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> bool {
@@ -5045,6 +5076,26 @@ fn optional_effect_is_infeasible(state: &GameState, ability: &ResolvedAbility) -
             // retains the original whole-ability dry-run, which keeps successful
             // zone-selection fallbacks feasible while preserving other errors.
             if matches!(mode, CardPlayMode::Cast) {
+                // CR 608.2d: An optional hand-pick cast ("you may cast a permanent
+                // spell … from your hand") with no eligible card is impossible.
+                // This only needs to be treated as infeasible up front when the
+                // ability carries a `Not(OptionalEffectPerformed)` decline fallback
+                // (Kellan's "If you don't, put a land"): declining routes that
+                // fallback through the decline authority instead of offering a cast
+                // prompt that can select nothing (issue #5945). A subless hand cast
+                // (Electrodominance) has no fallback to route to and must remain
+                // offerable — its empty pick simply resolves as a no-op — so the
+                // whole-ability dry-run below still governs it. The predicate
+                // returns `None` for pre-bound / non-hand `CastFromZone` classes.
+                if ability
+                    .sub_ability
+                    .as_deref()
+                    .is_some_and(should_resolve_subability_on_optional_decline)
+                {
+                    if let Some(true) = cast_from_zone::hand_pick_eligible_is_empty(state, ability) {
+                        return true;
+                    }
+                }
                 let bound_objects: Vec<_> = ability
                     .targets
                     .iter()
@@ -8602,6 +8653,29 @@ fn resolve_chain_body(
         // so skip it (Osteomancer Adept, The Tomb of Aclazotz).
         if matches!(&ability.effect, Effect::CastFromZone { .. })
             && cast_from_zone::is_enters_with_counter_rider_subability(sub)
+        {
+            return Ok(());
+        }
+
+        // CR 608.2c + CR 608.2g: A hand-pick `CastFromZone` (Kellan, the Kid —
+        // "you may cast a permanent spell … from your hand without paying its
+        // mana cost") installs its own resolution-time continuation: the full
+        // granting ability (INCLUDING this `sub_ability`) is stashed by
+        // `open_private_zone_cast_selection`, which raises an `EffectZoneChoice`
+        // so the chosen spell is cast during resolution once the player selects
+        // it. The generic sub-stash below would `prepend_to_pending_continuation`
+        // this ability's `sub_ability` (the "If you don't, put a land" clause)
+        // AHEAD of that head, making the sub the continuation head — the resume
+        // then feeds the wrong ability into `complete_hand_pick_cast_from_zone`
+        // and errors ("ability doesn't exist", issue #5945). Skip it, like the
+        // sibling `CastFromZone` rider skips above and the PayCost/Explore
+        // install-detection below. Fires only when `sub_ability.is_some()`, so
+        // subless hand-pick casters (Electrodominance, Baral's Expertise) are
+        // unaffected.
+        if matches!(&ability.effect, Effect::CastFromZone { .. })
+            && waits_for_resolution_choice(&state.waiting_for)
+            && state.pending_continuation.is_some()
+            && state.pending_continuation != pending_continuation_before
         {
             return Ok(());
         }
