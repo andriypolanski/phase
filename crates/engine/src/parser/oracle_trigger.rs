@@ -9229,7 +9229,7 @@ fn parse_object_recipient_filter(after_verb: &str) -> OracleResult<'_, TargetFil
     let (rest, ()) =
         value((), tag::<_, _, OracleError<'_>>("to ")).parse(after_verb.trim_start())?;
     let (rest, _) = alt((tag("a "), tag("an "))).parse(rest)?;
-    // CR 509.1a + CR 509.1h: optional state/combat-status adjective prefix on the
+    // CR 509.1g + CR 120.3: optional state/combat-status adjective prefix on the
     // damage recipient — "a blocking creature" (Kusari-Gama), "an attacking
     // creature", "a tapped creature". `parse_type_phrase_nom` only handles
     // type/color/supertype words, so without this the whole recipient failed to
@@ -9261,7 +9261,7 @@ fn parse_object_recipient_filter(after_verb: &str) -> OracleResult<'_, TargetFil
             nom::error::ErrorKind::Eof,
         )));
     }
-    // CR 509.1a: merge the consumed combat-status prefixes onto the typed
+    // CR 509.1g: merge the consumed combat-status prefixes onto the typed
     // recipient so the trigger matcher gates on them.
     if !prefix_props.is_empty() {
         if let TargetFilter::Typed(ref mut tf) = filter {

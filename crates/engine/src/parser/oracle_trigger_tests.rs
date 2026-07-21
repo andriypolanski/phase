@@ -216,7 +216,7 @@ fn glory_of_battle_trigger_gates_on_creature_recipient() {
 
 #[test]
 fn damage_done_recipient_gates_on_blocking_creature() {
-    // CR 509.1a + CR 120.3 (issue #5951): "Whenever equipped creature deals
+    // CR 509.1g + CR 120.3 (issue #5951): "Whenever equipped creature deals
     // damage to a blocking creature, ..." (Kusari-Gama) must set a typed
     // `valid_target` carrying `FilterProp::Blocking` so the trigger fires ONLY
     // when the damaged object is a blocker — not when the equipped creature
