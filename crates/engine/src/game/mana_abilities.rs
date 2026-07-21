@@ -2393,9 +2393,28 @@ fn finish_mana_ability_cost_payment(
         );
     }
 
-    // A direct (non-paused) mana-ability action reaches the ordinary action
-    // trigger pipeline, which remains its settlement authority.  Only a
-    // replacement-paused root lacks that pipeline and therefore settles above.
+    // CR 603.2 + CR 603.3b + CR 605.3b: A direct (non-paused) mana-ability
+    // action normally reaches the ordinary post-action trigger pipeline, which
+    // remains its settlement authority. But that pipeline only runs for a
+    // `Priority` resume (it is guarded by `waiting_for == Priority`). A mana
+    // ability activated during mana payment or an unless-cost payment resumes
+    // to `ManaPayment`/`UnlessPayment`, which the pipeline skips — so its
+    // already-paid cost events (sacrifice, discard, exile) would never be
+    // scanned and every observer would be dropped (Scavenger's Talent, Korvold,
+    // Mayhem Devil, ...; #5963). Scan them here, the single settlement
+    // authority, exactly as the `ChooseManaColor` branch above already does for
+    // an interrupted mana-color choice. A `Priority` resume stays EXCLUDED so
+    // the pipeline remains the sole scan site and nothing double-fires (e.g.
+    // Kilo's becomes-tapped proliferate under a standalone Relic activation).
+    if !matches!(resume, WaitingFor::Priority { .. }) && events.len() > cost_event_start {
+        let cost_events = events[cost_event_start..].to_vec();
+        super::triggers::process_triggers(state, &cost_events);
+        return Ok(
+            super::triggers::preserve_order_triggers_resume(state, resume.clone())
+                .unwrap_or(resume),
+        );
+    }
+
     Ok(resume)
 }
 
