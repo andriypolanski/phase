@@ -8457,7 +8457,14 @@ mod tests {
             "Attacker".to_string(),
             Zone::Battlefield,
         );
-        for id in [source, blocker, attacker] {
+        let nonblocking_creature = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(1),
+            "Nonblocking Creature".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [source, blocker, attacker, nonblocking_creature] {
             state
                 .objects
                 .get_mut(&id)
@@ -8490,6 +8497,13 @@ mod tests {
             is_combat: true,
             excess: 0,
         };
+        let nonblocking_creature_damage = GameEvent::DamageDealt {
+            source_id: source,
+            target: TargetRef::Object(nonblocking_creature),
+            amount: 1,
+            is_combat: true,
+            excess: 0,
+        };
 
         assert!(
             !match_damage_done(&player_damage, &trigger, &context, &state),
@@ -8498,6 +8512,10 @@ mod tests {
         assert!(
             match_damage_done(&blocker_damage, &trigger, &context, &state),
             "a blocking creature must satisfy the parsed recipient filter"
+        );
+        assert!(
+            !match_damage_done(&nonblocking_creature_damage, &trigger, &context, &state),
+            "a nonblocking creature must not satisfy the parsed recipient filter"
         );
     }
 
