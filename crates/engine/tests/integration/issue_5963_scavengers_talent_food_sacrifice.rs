@@ -11,11 +11,13 @@
 use engine::game::scenario::{GameScenario, P0};
 use engine::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, ContinuousModification, ControllerRef, Effect,
-    FilterProp, ManaProduction, QuantityExpr, SacrificeCost, StaticDefinition, TargetFilter,
-    TriggerConstraint, TriggerDefinition, TypeFilter, TypedFilter,
+    FilterProp, ManaContribution, ManaProduction, QuantityExpr, SacrificeCost, StaticDefinition,
+    TapCreaturesRequirement, TargetFilter, TriggerConstraint, TriggerDefinition, TypeFilter,
+    TypedFilter,
 };
 use engine::types::actions::GameAction;
-use engine::types::game_state::WaitingFor;
+use engine::types::game_state::{ManaChoice, ManaChoicePrompt, WaitingFor};
+use engine::types::mana::{ManaColor, ManaType};
 use engine::types::phase::Phase;
 use engine::types::triggers::TriggerMode;
 use engine::types::zones::Zone;
@@ -83,6 +85,54 @@ fn goose_mana_ability() -> AbilityDefinition {
                 TargetFilter::Typed(TypedFilter::new(TypeFilter::Subtype("Food".to_string()))),
                 1,
             )),
+        ],
+    })
+}
+
+const TAP_GAIN: i32 = 11;
+
+/// Five real colors — an `AnyOneColor` production over more than one option
+/// forces the `WaitingFor::ChooseManaColor` prompt (the path the prior
+/// double-collection defect lived on), unlike the colorless `Add {C}` form.
+fn any_color_options() -> Vec<ManaColor> {
+    vec![
+        ManaColor::White,
+        ManaColor::Blue,
+        ManaColor::Black,
+        ManaColor::Red,
+        ManaColor::Green,
+    ]
+}
+
+/// `{T}, Tap another creature you control: Add one mana of any color.` (Coalition
+/// Relic / Kilo shape). The tapped creature's becomes-tapped observer must fire
+/// exactly once through the `ChooseManaColor` settlement boundary.
+fn tap_another_mana_ability_any_color() -> AbilityDefinition {
+    AbilityDefinition::new(
+        AbilityKind::Activated,
+        Effect::Mana {
+            produced: ManaProduction::AnyOneColor {
+                count: QuantityExpr::Fixed { value: 1 },
+                color_options: any_color_options(),
+                contribution: ManaContribution::Base,
+            },
+            restrictions: vec![],
+            grants: vec![],
+            expiry: None,
+            target: None,
+        },
+    )
+    .cost(AbilityCost::Composite {
+        costs: vec![
+            AbilityCost::Tap,
+            AbilityCost::TapCreatures {
+                requirement: TapCreaturesRequirement::count(1),
+                filter: TargetFilter::Typed(
+                    TypedFilter::new(TypeFilter::Creature)
+                        .controller(ControllerRef::You)
+                        .properties(vec![FilterProp::Another]),
+                ),
+            },
         ],
     })
 }
@@ -524,4 +574,232 @@ fn count_food_tokens(runner: &engine::game::scenario::GameRunner) -> usize {
             o.is_token && o.card_types.subtypes.iter().any(|s| s == "Food")
         })
         .count()
+}
+
+/// Drive an in-flight cast to completion, answering the mana-ability cost
+/// selection with `cost_target`, choosing the first offered color for every
+/// `ChooseManaColor` prompt, and recording whether any color prompt was seen.
+/// Panics if the cost target is ever illegal (guards a silently-skipped cost).
+fn drive_payment_to_priority(
+    runner: &mut engine::game::scenario::GameRunner,
+    cost_target: engine::types::identifiers::ObjectId,
+) -> bool {
+    let mut saw_color_choice = false;
+    for _ in 0..128 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::PayCost { choices, .. } => {
+                assert!(
+                    choices.contains(&cost_target),
+                    "mana-ability cost must offer the intended target; choices={choices:?}"
+                );
+                runner
+                    .act(GameAction::SelectCards {
+                        cards: vec![cost_target],
+                    })
+                    .expect("pay the mana-ability cost");
+            }
+            WaitingFor::ChooseManaColor {
+                choice: ManaChoicePrompt::SingleColor { options },
+                ..
+            } => {
+                saw_color_choice = true;
+                assert!(
+                    options.len() > 1,
+                    "an any-color prompt must offer more than one color; options={options:?}"
+                );
+                let picked = options[0];
+                assert!(
+                    picked == ManaType::White
+                        || picked == ManaType::Blue
+                        || picked == ManaType::Black
+                        || picked == ManaType::Red
+                        || picked == ManaType::Green,
+                    "expected a colored option, got {picked:?}"
+                );
+                runner
+                    .act(GameAction::ChooseManaColor {
+                        choice: ManaChoice::SingleColor(picked),
+                        count: 1,
+                    })
+                    .expect("choose a color for the any-color mana ability");
+            }
+            WaitingFor::TriggerTargetSelection { .. } | WaitingFor::TargetSelection { .. } => {
+                runner
+                    .choose_first_legal_target()
+                    .expect("choose trigger target");
+            }
+            WaitingFor::OrderTriggers { .. } => {
+                engine::game::triggers::drain_order_triggers_with_identity(runner.state_mut());
+            }
+            WaitingFor::Priority { .. } => {
+                if runner.state().stack.is_empty() && runner.state().deferred_triggers.is_empty() {
+                    break;
+                }
+                runner.act(GameAction::PassPriority).unwrap();
+            }
+            _ => {
+                if runner.act(GameAction::PassPriority).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    saw_color_choice
+}
+
+/// Reviewer follow-up (MED): prove EXACTLY-once cost-event trigger collection on
+/// the actual #5963 fix path (colorless `Add {C}`, resolved through the
+/// non-`Priority` fall-through scan of `finish_mana_ability_cost_payment`). Uses
+/// the synthetic distinct-amount triggers so the life delta pins each trigger to
+/// a single resolution: L1 (creature died, +50) and L2 (permanent sacrificed,
+/// +7) sum to 57. A double-collected L2 would read 64, a dropped batch 7/50.
+#[test]
+fn food_sacrifice_during_payment_fires_both_triggers_exactly_once() {
+    use engine::types::game_state::CastPaymentMode;
+    use engine::types::mana::ManaCost;
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_library_top(P0, &["Filler A", "Filler B", "Filler C"]);
+
+    let (l1, l2) = talent_triggers();
+    scenario
+        .add_creature(P0, "Scavenger's Talent", 0, 0)
+        .as_enchantment()
+        .with_trigger_definition(l1)
+        .with_trigger_definition(l2);
+
+    let goose = scenario
+        .add_creature(P0, "Gilded Goose", 0, 2)
+        .as_artifact()
+        .with_ability_definition(goose_mana_ability())
+        .id();
+
+    // Cauldron Familiar is both a creature (its death fires L1) and a Food (a
+    // legal "Sacrifice a Food" target for the mana-ability cost).
+    let familiar = scenario
+        .add_creature(P0, "Cauldron Familiar", 1, 1)
+        .with_subtypes(vec!["Food"])
+        .id();
+
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Draw", false, "Draw a card.")
+        .with_mana_cost(ManaCost::generic(1))
+        .id();
+
+    let mut runner = scenario.build();
+    let life_before = runner.state().players[0].life;
+    let card_id = runner.state().objects[&spell].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Manual,
+        })
+        .expect("announce spell cast");
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: goose,
+            ability_index: 0,
+        })
+        .expect("activate the colorless mana ability during payment");
+
+    drive_payment_to_priority(&mut runner, familiar);
+
+    assert_eq!(
+        runner.state().objects[&familiar].zone,
+        Zone::Graveyard,
+        "familiar sacrificed for the mana-ability cost"
+    );
+    assert_eq!(
+        runner.state().players[0].life - life_before,
+        L1_GAIN + L2_GAIN,
+        "L1 (creature died) and L2 (permanent sacrificed) must each resolve EXACTLY once \
+         when the sacrifice pays a mana-ability cost during mana payment"
+    );
+}
+
+/// Reviewer follow-up (MED): the crux of the prior blocker was the any-color
+/// prompt path collecting the cost batch TWICE. Drive an `AnyOneColor` mana
+/// ability through `WaitingFor::ChooseManaColor` DURING mana payment and assert
+/// its cost-event observer fires EXACTLY once. The cost taps a becomes-tapped
+/// observer (`TriggerMode::Taps`); a double scan of the `ChooseManaColor` branch
+/// would read 22 instead of 11. This is the exact-once tap-another-creature
+/// case the reviewer asked to retain, exercising the color-choice ownership
+/// boundary directly (a state-change cost, so it is unaffected by the separate
+/// logical-zone-settlement gap that sacrifice-cost + color-prompt exposes).
+#[test]
+fn tap_another_creature_for_mana_during_payment_fires_becomes_tapped_once() {
+    use engine::types::game_state::CastPaymentMode;
+    use engine::types::mana::ManaCost;
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_library_top(P0, &["Filler A", "Filler B", "Filler C"]);
+
+    let relic = scenario
+        .add_creature(P0, "Mana Relic", 0, 3)
+        .as_artifact()
+        .with_ability_definition(tap_another_mana_ability_any_color())
+        .id();
+
+    // "Whenever ~ becomes tapped, you gain TAP_GAIN life." Self-referential so
+    // only the observer's own tap fires it (the source's own {T} does not).
+    let observer_trigger = TriggerDefinition::new(TriggerMode::Taps)
+        .valid_card(TargetFilter::SelfRef)
+        .trigger_zones(vec![Zone::Battlefield])
+        .execute(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: TAP_GAIN },
+                player: TargetFilter::Controller,
+            },
+        ));
+    let observer = scenario
+        .add_creature(P0, "Tap Observer", 2, 2)
+        .with_trigger_definition(observer_trigger)
+        .id();
+    let _ = relic;
+
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Draw", false, "Draw a card.")
+        .with_mana_cost(ManaCost::generic(1))
+        .id();
+
+    let mut runner = scenario.build();
+    let life_before = runner.state().players[0].life;
+    let card_id = runner.state().objects[&spell].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Manual,
+        })
+        .expect("announce spell cast");
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: relic,
+            ability_index: 0,
+        })
+        .expect("activate the tap-another-creature mana ability during payment");
+
+    let saw_color_choice = drive_payment_to_priority(&mut runner, observer);
+
+    assert!(
+        saw_color_choice,
+        "the AnyOneColor mana ability must route through the ChooseManaColor prompt"
+    );
+    assert!(
+        runner.state().objects[&observer].tapped,
+        "the observer creature was tapped to pay the mana-ability cost"
+    );
+    assert_eq!(
+        runner.state().players[0].life - life_before,
+        TAP_GAIN,
+        "the becomes-tapped observer must fire EXACTLY once through the ChooseManaColor \
+         settlement boundary during mana payment (double-scan would read {})",
+        TAP_GAIN * 2
+    );
 }
