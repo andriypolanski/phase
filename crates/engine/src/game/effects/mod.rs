@@ -8580,8 +8580,25 @@ fn resolve_chain_body(
             let initial_waiting_for = state.waiting_for.clone();
             let initial_continuation_present = state.active_ability_continuation().is_some();
             let mut iteration = 0usize;
-            let repeated_full_chain =
-                ability.repeat_for.is_some() && effective.sub_ability.is_some();
+            // CR 608.2c: A `repeat_for` count scopes only the instructions that
+            // are part of the repeated process. A member-/kind-driven loop ("For
+            // each non-Saga permanent, choose a counter on it. You may put an
+            // additional counter of that kind on that permanent." — Caves of
+            // Chaos Adventurer) applies its whole chain per member, even across a
+            // sentence boundary, because the trailing clause refers back to the
+            // current iteration's binding ("that kind", "that permanent"). So the
+            // full chain repeats regardless of the sub's link. A PLAIN NUMERIC
+            // repeat is different: a `ContinuationStep` sub is part of the process
+            // ("Exile any number of creatures, then return them. Then repeat this
+            // process X more times." — Another Round) and repeats, but a
+            // `SequentialSibling` sub is an INDEPENDENT following instruction
+            // printed as its own sentence ("…investigate X times. Return the
+            // exiled cards…" — Disorder in the Court) and runs exactly once AFTER
+            // the loop — it falls through to the generic sub tail below.
+            let repeated_full_chain = ability.repeat_for.is_some()
+                && effective.sub_ability.as_deref().is_some_and(|sub| {
+                    member_driven || kind_driven || sub.sub_link == SubAbilityLink::ContinuationStep
+                });
             while iteration < iterations {
                 // Snapshot per-iteration ability with parent-target rebinding when
                 // applicable. CR 109.5: the rebind is SINGLE-slot — every reachable
