@@ -4999,7 +4999,9 @@ fn apply_action(
             }
             CostResume::ManaAbility {
                 mana_ability: pending_mana_ability,
-            } => match kind {
+            } => {
+                let mana_cost_events_before = events.len();
+                let wf = match kind {
                 // CR 605.1a: mana-ability tap costs are always fixed-count; the
                 // aggregate form never resumes a mana ability.
                 PayCostKind::TapCreatures { .. } => {
@@ -5093,7 +5095,45 @@ fn apply_action(
                         "Cost kind cannot resume a mana ability".into(),
                     ));
                 }
-            },
+                };
+                // CR 605.3b + CR 603.2 + CR 603.3b: A mana ability activated
+                // during mana payment (or another non-Priority resume) pays
+                // its cost — sacrifice, discard, exile, tap — here, when the
+                // player supplies the cost-payment selection. The post-action
+                // trigger scan only runs for `Priority` resumes (it is guarded
+                // by `waiting_for == Priority`), so a `ManaPayment` /
+                // `UnlessPayment` resume would otherwise drop every observer of
+                // this cost (Scavenger's Talent, Korvold, Mayhem Devil, ...).
+                // Scan the just-produced cost events now, mirroring the inline
+                // scans in the `ChooseManaColor` and mid-payment
+                // `ActivateAbility` arms. `process_triggers` records these
+                // events as consumed, so a `Priority` resume's pipeline does not
+                // double-fire them.
+                if events.len() > mana_cost_events_before
+                    && !casting::mana_ability_cost_payment_is_paused(state)
+                {
+                    let cost_events: Vec<_> = events[mana_cost_events_before..].to_vec();
+                    super::triggers::process_triggers(state, &cost_events);
+                    if let Some(order_wf) =
+                        super::triggers::preserve_order_triggers_resume(state, wf.clone())
+                    {
+                        return Ok(ActionResult {
+                            events,
+                            waiting_for: order_wf,
+                            log_entries: vec![],
+                        });
+                    }
+                    // CR 603.2c: For a standalone (`Priority`-resume) mana
+                    // ability the post-action pipeline would otherwise re-scan
+                    // these same cost events. Claim the scan so the pipeline
+                    // still runs SBAs/delayed triggers/layers but does not
+                    // double-fire the sacrifice/death observers we just queued.
+                    if matches!(wf, WaitingFor::Priority { .. }) {
+                        triggers_processed_inline = true;
+                    }
+                }
+                wf
+            }
             CostResume::Resolution => match kind {
                 PayCostKind::TapCreatures { aggregate } => {
                     casting_costs::pay_tap_creatures_selection(
