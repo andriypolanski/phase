@@ -1031,6 +1031,22 @@ pub struct SpellCastRecord {
     /// cast-time for per-turn spell-history filters ("first kicked spell each turn").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub was_kicked: bool,
+    /// CR 400.7: Storage id of the spell object this record was created for. The
+    /// engine keeps ObjectId STABLE across zone changes — `zones::move_to_zone`
+    /// never reallocates ids; instead `reset_for_battlefield_entry` bumps the
+    /// object's incarnation at the same storage id (CR 400.7 "new object"). A
+    /// same-id record is therefore NOT necessarily the same CR-object: a card
+    /// cast, dying, and recast this turn leaves TWO same-id records, and the
+    /// earlier one denotes a distinct prior object that DOES count as "another"
+    /// spell. Consumers must identify "this object's own cast" positionally: the
+    /// LAST same-id record in the caster's chronological turn history (a spell
+    /// pending on the stack cannot be cast again, so the most recent same-id
+    /// record is always the pending cast). incarnation is deliberately NOT
+    /// recorded — it bumps only on battlefield entry, so it cannot discriminate a
+    /// counter-and-recast, while positional identity is exact there too. `None`
+    /// for records built by Default / legacy deserialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spell_object_id: Option<ObjectId>,
 }
 
 /// Snapshot of a land play's cast-capable origin for per-turn history queries.
@@ -1063,6 +1079,7 @@ impl Default for SpellCastRecord {
             from_zone: Zone::Hand,
             cast_variant: CastingVariant::Normal,
             was_kicked: false,
+            spell_object_id: None,
         }
     }
 }
@@ -3385,7 +3402,13 @@ pub struct PendingCopyTokenBatch {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PersistentAxisMaterialization {
     /// CR 707.2 + CR 111.1: mint N tapped copy-tokens of this fodder profile
-    /// (the `TokensCreated` axis).
+    /// (the `TokensCreated` axis). Carries NO per-cycle count because the per-cycle
+    /// fodder count k is STRUCTURALLY ≡ 1: this stash is only registered when
+    /// `materialize_object_growth_shortcut`'s `derived_fodder_class`
+    /// (engine.rs:1991-2005) found EXACTLY one new battlefield object per period
+    /// (a two+-object period returns `None` ⇒ no `Tokens` stash), so the boundary
+    /// mint of `count: amount` == k·amount is EXACT. (Contrast `Counters`/`Life`,
+    /// which carry a measured `per_cycle_delta` to handle k>1.)
     Tokens(Box<CopiableValues>),
     /// CR 122.1 / CR 701.34a: apply `per_cycle_delta × N` counters to each captured
     /// target (the beneficial-growable counter axis: Generic / +1/+1 / loyalty / defense).
@@ -5722,6 +5745,17 @@ pub enum PendingCostMoveResume {
     ManaAbilityPayment {
         pending: Box<PendingManaAbility>,
         cursor: ManaAbilityCostCursor,
+    },
+    /// CR 606.4 + CR 614.1a + CR 616.1: A loyalty activation paused on a
+    /// counter-cost replacement-ordering choice (e.g. Doubling Season vs an
+    /// opponent's Vorinclex halving the loyalty counters). The counter is
+    /// applied by the replacement pipeline before resume; the tail only
+    /// finishes the activation (pushes the ability, records the activation).
+    LoyaltyActivation {
+        player: PlayerId,
+        pw_id: ObjectId,
+        resolved: Box<ResolvedAbility>,
+        ability_index: usize,
     },
 }
 
@@ -20629,6 +20663,30 @@ mod tests {
         }"#;
         let record: SpellCastRecord = serde_json::from_str(no_field_json).unwrap();
         assert_eq!(record.from_zone, Zone::Hand);
+        // CR 400.7: an absent `spell_object_id` field (legacy / pre-migration
+        // snapshot) deserializes to `None` — the record has no provenance.
+        assert_eq!(record.spell_object_id, None);
+    }
+
+    /// CR 400.7: `spell_object_id` provenance survives a serde round trip when
+    /// present (`Some(id)`), and `None` is omitted from the serialized form
+    /// (`skip_serializing_if = "Option::is_none"`) so it never bloats snapshots.
+    #[test]
+    fn spell_cast_record_spell_object_id_round_trips() {
+        let original = SpellCastRecord {
+            spell_object_id: Some(ObjectId(42)),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("spell_object_id"));
+        let round_tripped: SpellCastRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, original);
+        assert_eq!(round_tripped.spell_object_id, Some(ObjectId(42)));
+
+        // `None` provenance is omitted from the serialized form.
+        let none_record = SpellCastRecord::default();
+        let none_json = serde_json::to_string(&none_record).unwrap();
+        assert!(!none_json.contains("spell_object_id"));
     }
 
     /// CR 601.2a: A snapshot with a real `from_zone` value (the modern non-Option
@@ -20648,6 +20706,7 @@ mod tests {
             from_zone: Zone::Graveyard,
             cast_variant: CastingVariant::Normal,
             was_kicked: false,
+            spell_object_id: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let round_tripped: SpellCastRecord = serde_json::from_str(&json).unwrap();

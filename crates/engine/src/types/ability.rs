@@ -13579,6 +13579,112 @@ impl TargetFilter {
         }
     }
 
+    /// CR 109.1: Inject the own-cast exclusion marker (`FilterProp::Another`)
+    /// into a spell-history filter so the `SpellsCastThisTurn` resolver can
+    /// exclude the source's *own* pending cast when counting "another spell".
+    /// The marker is identity-only and is consumed by the `SpellsCastThisTurn`
+    /// own-cast exclusion arm (via `peel_own_cast_exclusion`). This constructor
+    /// is the ETB "enters with … unless you've cast another spell" emitter, but
+    /// it is NOT the only producer of an `Another`-bearing spell-history filter:
+    /// the pre-existing "number of OTHER spells you've cast this turn" EFFECT
+    /// quantity (Thunder Salvo, Lock and Load) stamps `Another` onto its
+    /// spell-history filter directly via the parser's `"other"` article. Both
+    /// carry the SAME unified semantics — "excluding this object's own cast
+    /// event" — and both resolve through that one arm. `inner` is the parsed
+    /// spell-type filter
+    /// (`None` = any spell). A `Typed` inner gets the marker prepended; a
+    /// non-`Typed` inner (e.g. an `Or` of colors) is AND-wrapped with a bare
+    /// marker leg; `None` yields a bare card+marker filter.
+    pub fn with_own_cast_exclusion(inner: Option<TargetFilter>) -> TargetFilter {
+        match inner {
+            None => TargetFilter::Typed(TypedFilter::card().properties(vec![FilterProp::Another])),
+            Some(TargetFilter::Typed(mut typed)) => {
+                if !typed.properties.contains(&FilterProp::Another) {
+                    typed.properties.insert(0, FilterProp::Another);
+                }
+                TargetFilter::Typed(typed)
+            }
+            Some(other) => TargetFilter::And {
+                filters: vec![
+                    TargetFilter::Typed(TypedFilter::card().properties(vec![FilterProp::Another])),
+                    other,
+                ],
+            },
+        }
+    }
+
+    /// CR 109.1: Dual of `with_own_cast_exclusion`. If this filter carries the
+    /// own-cast exclusion marker, return `Some(peeled)` where `peeled` is the
+    /// filter to match records against with the marker removed (`None` = match
+    /// every spell). Returns the outer `None` when the marker is absent. The
+    /// peel MUST precede record matching because `spell_record_matches_filter`
+    /// fail-closes on `FilterProp::Another`.
+    ///
+    /// Three marker-bearing shapes are recognized, covering both emitters:
+    ///   - `Typed` with the marker among its properties (ETB "another red spell",
+    ///     Thunder Salvo's `Typed[Card, Another]` → residual `None`);
+    ///   - `And` with a bare-marker leg (`with_own_cast_exclusion` on a non-Typed
+    ///     inner);
+    ///   - `Or` whose EVERY disjunct is a `Typed` carrying the marker (Lock and
+    ///     Load's "other instant and sorcery spell you've cast this turn", where
+    ///     the `"other"` article stamps `Another` onto each leg) → residual `Or`
+    ///     of the leg type filters.
+    pub fn peel_own_cast_exclusion(&self) -> Option<Option<TargetFilter>> {
+        let bare_marker =
+            TargetFilter::Typed(TypedFilter::card().properties(vec![FilterProp::Another]));
+        match self {
+            TargetFilter::Typed(typed) if typed.properties.contains(&FilterProp::Another) => {
+                let mut peeled = typed.clone();
+                peeled.properties.retain(|p| p != &FilterProp::Another);
+                if peeled.properties.is_empty()
+                    && peeled.controller.is_none()
+                    && peeled.type_filters == vec![TypeFilter::Card]
+                {
+                    Some(None)
+                } else {
+                    Some(Some(TargetFilter::Typed(peeled)))
+                }
+            }
+            TargetFilter::And { filters } => {
+                let marker_pos = filters.iter().position(|filter| filter == &bare_marker)?;
+                let mut rest = filters.clone();
+                rest.remove(marker_pos);
+                match rest.len() {
+                    0 => Some(None),
+                    1 => Some(Some(rest.into_iter().next().expect("len checked"))),
+                    _ => Some(Some(TargetFilter::And { filters: rest })),
+                }
+            }
+            // "other [A] and [B] spells you've cast this turn" (Lock and Load):
+            // the `"other"` article stamps `FilterProp::Another` onto EVERY
+            // disjunct rather than producing a single bare-marker leg. Peel the
+            // marker from each leg and return the residual `Or` of type filters.
+            TargetFilter::Or { filters }
+                if !filters.is_empty()
+                    && filters.iter().all(|f| {
+                        matches!(f, TargetFilter::Typed(t)
+                            if t.properties.contains(&FilterProp::Another))
+                    }) =>
+            {
+                let peeled_legs = filters
+                    .iter()
+                    .map(|f| {
+                        let TargetFilter::Typed(t) = f else {
+                            unreachable!("all-Typed legs checked in guard")
+                        };
+                        let mut t = t.clone();
+                        t.properties.retain(|p| p != &FilterProp::Another);
+                        TargetFilter::Typed(t)
+                    })
+                    .collect();
+                Some(Some(TargetFilter::Or {
+                    filters: peeled_legs,
+                }))
+            }
+            _ => None,
+        }
+    }
+
     pub fn normalized(self) -> Self {
         match self {
             TargetFilter::Typed(filter) => TargetFilter::Typed(filter.normalized()),
@@ -19822,6 +19928,26 @@ pub enum ReplacementPlayerScope {
     AnyPlayer,
 }
 
+/// CR 614.1a: For `AddCounter` replacements, which player `valid_player` refers
+/// to. Vorinclex/Halving Season scope by the player *putting* the counters
+/// (`Actor`, per the official Vorinclex ruling). Every other counter replacement
+/// — prevention (Solemnity) and affected-controller doublers gated through
+/// `valid_card` (Doubling Season) — scopes by the recipient.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CounterReplacementSubject {
+    /// `valid_player` matches the affected player / affected permanent's controller.
+    #[default]
+    Recipient,
+    /// `valid_player` matches `CounterPlacement::actor` (who puts the counters).
+    Actor,
+}
+
+impl CounterReplacementSubject {
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Recipient)
+    }
+}
+
 /// Whether a replacement effect is mandatory or offers the affected player a choice.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -20039,6 +20165,12 @@ pub struct ReplacementDefinition {
     /// as before (every object-attached replacement; unchanged).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_controller: Option<crate::types::player::PlayerId>,
+    /// CR 614.1a: For `AddCounter` replacements, whether `valid_player` scopes by
+    /// the counter *recipient* (default — prevention/affected-controller doublers)
+    /// or by the *actor* putting the counters (Vorinclex/Halving Season, per the
+    /// official Vorinclex ruling). Ignored by every non-`AddCounter` event.
+    #[serde(default, skip_serializing_if = "CounterReplacementSubject::is_default")]
+    pub counter_replacement_subject: CounterReplacementSubject,
 }
 
 impl ReplacementDefinition {
@@ -20138,6 +20270,7 @@ impl ReplacementDefinition {
             counter_match: None,
             enters_under: None,
             source_controller: None,
+            counter_replacement_subject: CounterReplacementSubject::Recipient,
         }
     }
 
@@ -20283,6 +20416,13 @@ impl ReplacementDefinition {
 
     pub fn mana_replacement_scope(mut self, scope: ManaReplacementScope) -> Self {
         self.mana_replacement_scope = scope;
+        self
+    }
+
+    /// CR 614.1a: Set the counter-replacement subject axis (actor vs recipient)
+    /// for `AddCounter` replacements (Vorinclex/Halving Season → `Actor`).
+    pub fn counter_subject(mut self, subject: CounterReplacementSubject) -> Self {
+        self.counter_replacement_subject = subject;
         self
     }
 
@@ -21752,6 +21892,86 @@ mod tests {
     use crate::types::mana::ZoneSpendPolarity;
     use crate::types::zones::Zone;
 
+    /// CR 109.1: `with_own_cast_exclusion` injects the `Another` marker and
+    /// `peel_own_cast_exclusion` is its exact dual across the three inner shapes
+    /// (Typed, non-Typed, None). The peel MUST remove the marker so downstream
+    /// record matching (which fail-closes on `Another`) sees the residual filter.
+    #[test]
+    fn own_cast_exclusion_roundtrips_across_inner_shapes() {
+        // Typed inner: marker prepended; peel yields the red-only residual.
+        let red = TargetFilter::Typed(TypedFilter::card().properties(vec![FilterProp::HasColor {
+            color: crate::types::mana::ManaColor::Red,
+        }]));
+        let wrapped = TargetFilter::with_own_cast_exclusion(Some(red.clone()));
+        assert!(matches!(
+            &wrapped,
+            TargetFilter::Typed(t) if t.properties.contains(&FilterProp::Another)
+        ));
+        assert_eq!(
+            wrapped.peel_own_cast_exclusion(),
+            Some(Some(red)),
+            "Typed inner peels back to the residual red filter"
+        );
+
+        // None inner: bare marker; peel yields None (matches every spell).
+        let any = TargetFilter::with_own_cast_exclusion(None);
+        assert_eq!(any.peel_own_cast_exclusion(), Some(None));
+
+        // Non-Typed inner (Or): AND-wrapped with a marker leg; peel yields the Or.
+        let or_inner = TargetFilter::Or {
+            filters: vec![
+                TargetFilter::Typed(TypedFilter::new(TypeFilter::Instant)),
+                TargetFilter::Typed(TypedFilter::new(TypeFilter::Sorcery)),
+            ],
+        };
+        let wrapped_or = TargetFilter::with_own_cast_exclusion(Some(or_inner.clone()));
+        assert_eq!(wrapped_or.peel_own_cast_exclusion(), Some(Some(or_inner)));
+
+        // No marker → peel returns None (outer).
+        assert_eq!(
+            TargetFilter::Typed(TypedFilter::creature()).peel_own_cast_exclusion(),
+            None
+        );
+    }
+
+    /// CR 109.1: the EFFECT-quantity emitter ("number of OTHER instant and
+    /// sorcery spell you've cast this turn", Lock and Load) stamps `Another` onto
+    /// EVERY `Or` leg rather than producing a bare-marker leg. `peel` must strip
+    /// the marker from each leg and return the residual `Or` so the resolver
+    /// counts instant/sorcery records (which fail-close on `Another`). Without the
+    /// `Or` arm this filter peels to `None` and the count stays fail-closed at 0.
+    #[test]
+    fn own_cast_exclusion_peels_or_of_marked_legs() {
+        let marked =
+            |ty| TargetFilter::Typed(TypedFilter::new(ty).properties(vec![FilterProp::Another]));
+        let filter = TargetFilter::Or {
+            filters: vec![marked(TypeFilter::Instant), marked(TypeFilter::Sorcery)],
+        };
+        assert_eq!(
+            filter.peel_own_cast_exclusion(),
+            Some(Some(TargetFilter::Or {
+                filters: vec![
+                    TargetFilter::Typed(TypedFilter::new(TypeFilter::Instant)),
+                    TargetFilter::Typed(TypedFilter::new(TypeFilter::Sorcery)),
+                ],
+            })),
+            "each Or leg's Another marker is peeled, leaving the residual type Or"
+        );
+
+        // A mixed Or (only one leg marked) is NOT a unified own-cast filter and
+        // must not be peeled — leave it to fail-close, avoiding a false exclusion.
+        let mixed = TargetFilter::Or {
+            filters: vec![
+                marked(TypeFilter::Instant),
+                TargetFilter::Typed(TypedFilter::new(TypeFilter::Sorcery)),
+            ],
+        };
+        assert_eq!(mixed.peel_own_cast_exclusion(), None);
+    }
+
+    /// CR 106.6: `ManaSpendRestriction::has_payable_branch` must classify each
+    /// leaf by whether its lowered runtime gate can return `true` at a reachable
+    /// production payment site today, and short-circuit `Any` in both directions.
     /// CR 609.4b + CR 106.1a + CR 106.1b: the two spend permissions are distinct wire
     /// discriminants even though both project the colored-payment relaxation.
     #[test]

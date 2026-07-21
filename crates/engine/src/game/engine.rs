@@ -2932,8 +2932,13 @@ pub(crate) fn drain_pending_cost_move_resume(
                     | PendingCostMoveResume::UnlessBouncePayment { .. }
                     | PendingCostMoveResume::DelveManaPayment { .. }
                     | PendingCostMoveResume::ManaAbilityPayment { .. }
+                    | PendingCostMoveResume::LoyaltyActivation { .. }
             )
         ),
+        // CR 606.4 + CR 616.1: a fully-prevented loyalty counter add (e.g. an
+        // opponent's Solemnity would prevent the counters) must still complete the
+        // parked activation instead of wedging, so `LoyaltyActivation` is eligible
+        // at the Prevented boundary as well.
         CostMoveDrainBoundary::ReplacementPrevented { .. } => matches!(
             state.pending_cost_move_resume,
             Some(
@@ -2946,6 +2951,7 @@ pub(crate) fn drain_pending_cost_move_resume(
                     | PendingCostMoveResume::UnlessBouncePayment { .. }
                     | PendingCostMoveResume::DelveManaPayment { .. }
                     | PendingCostMoveResume::ManaAbilityPayment { .. }
+                    | PendingCostMoveResume::LoyaltyActivation { .. }
             )
         ),
         CostMoveDrainBoundary::PriorityBoundary => matches!(
@@ -3007,6 +3013,11 @@ pub(crate) fn drain_pending_cost_move_resume(
         Some(PendingCostMoveResume::ManaAbilityPayment { .. })
     ) {
         mana_abilities::resume_mana_ability_cost_move(state, events)?
+    } else if matches!(
+        state.pending_cost_move_resume,
+        Some(PendingCostMoveResume::LoyaltyActivation { .. })
+    ) {
+        super::planeswalker::resume_loyalty_activation(state, events)?
     } else {
         unreachable!("eligible cost-move root must remain parked")
     };
@@ -11266,6 +11277,61 @@ mod kilo_interruptibility_tests {
         assert!(
             try_offer_object_growth_shortcut(&unpinned).is_none(),
             "without the pins the drive aborts at the unpinned tap cost ⇒ NO offer"
+        );
+    }
+
+    /// [LOW-1] declined-axis ∞ lifecycle — characterization/regression guard (memory:
+    /// combo-interruptibility-acceptance-criterion). A declined `Counters`/`Life` axis leaves its
+    /// ∞ capability marker in `unbounded_resources` intentionally (CR 732.2b never forces a
+    /// shortcut). This test guards the MEASURED retirement path (a) documented at the boundary
+    /// seam: the empty-stack offer hook `try_offer_object_growth_shortcut` (engine.rs:472) is NOT
+    /// gated by existing ∞ marks, so a later genuine re-detection RE-OFFERS the loop and can
+    /// re-collapse the declined axis once the observer is gone.
+    ///
+    /// DISCRIMINATING LEG (the re-offer assertion): with a pre-existing declined ∞ mark injected
+    /// for P0, the offer STILL fires. If a future regression ∞-gated the offer hook (e.g. to
+    /// suppress re-offering a declined axis), this flips to `None`. Positive control / reach-guard:
+    /// the SAME state WITHOUT the mark also offers (proving the mark is what the assertion isolates,
+    /// and the recorded 2-step period is intact — a `None` would be a drive-abort, not a missing
+    /// sequence).
+    #[test]
+    fn declined_infinity_mark_does_not_suppress_reoffer() {
+        use crate::analysis::resource::ResourceAxis;
+
+        let mut driven = load_migrated_dump();
+        drive_one_live_cycle(&mut driven);
+        let base = at_priority_window(driven);
+
+        // Reach-guard anchor: the recorded period is present (a `None` below is a real gating
+        // decision, never an empty-sequence artifact).
+        assert_eq!(
+            base.last_loop_action_sequence.len(),
+            2,
+            "reach-guard: the live cycle recorded the clean 2-step pinned period"
+        );
+        // Positive control: without any ∞ mark the intact loop re-derives the offer.
+        assert!(
+            try_offer_object_growth_shortcut(&base).is_some(),
+            "positive control: the intact loop offers when no ∞ mark is present"
+        );
+
+        // Inject a pre-existing DECLINED ∞ axis for P0 (as if an earlier boundary declined the life
+        // axis and left it ∞-marked for manual play). The offer hook reads `waiting_for` + stack +
+        // `samples()` + `last_loop_action_sequence` — never `unbounded_resources` — so the mark
+        // must NOT suppress the re-offer.
+        let mut marked = base.clone();
+        marked.mark_unbounded_loop(P0, &[ResourceAxis::Life(P0)]);
+        assert!(
+            marked
+                .unbounded_resources
+                .get(&P0)
+                .is_some_and(|axes| axes.contains(&ResourceAxis::Life(P0))),
+            "reach-guard: the declined ∞ Life mark is present on the probed state"
+        );
+        assert!(
+            try_offer_object_growth_shortcut(&marked).is_some(),
+            "the empty-stack offer hook is NOT ∞-gated: a persisted declined ∞ axis does not \
+             suppress a genuine re-detection re-offering the loop (CR 732.2a / CR 732.2b)"
         );
     }
 }
