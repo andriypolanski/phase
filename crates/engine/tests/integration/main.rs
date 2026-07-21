@@ -836,6 +836,7 @@ mod vizier_of_many_faces_embalm_copy_panic_5278;
 mod volatile_fault_that_player_search;
 mod vorinclex_loyalty_actor_scope;
 mod vraska_betrayals_sting;
+mod vrestin_menoptra_leader_5949;
 mod ward_of_bones_relative_count_cast_prohibition;
 mod ward_of_bones_relative_count_land_prohibition;
 mod wedding_announcement_transform;
