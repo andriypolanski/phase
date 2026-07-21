@@ -3337,19 +3337,17 @@ impl AttackDeclarationConstraints {
             let Some(obj) = state.objects.get(&cid) else {
                 continue;
             };
-            // CR 508.1d: generic "attacks each combat if able" (local or remote).
-            let has_generic_must =
-                super::functioning_abilities::active_static_definitions(state, obj)
-                    .any(|sd| sd.mode == StaticMode::MustAttack)
-                    || (gates.has_must_attack
-                        && crate::game::static_abilities::check_static_ability(
-                            state,
-                            StaticMode::MustAttack,
-                            &crate::game::static_abilities::StaticCheckContext {
-                                target_id: Some(cid),
-                                ..Default::default()
-                            },
-                        ));
+            // CR 508.1d + CR 109.5: generic "attacks each combat if able" — any
+            // functioning static whose `affected` filter matches this creature.
+            // The affected filter is the single authority for WHO is required to
+            // attack; a remote-scoped carrier (Fumiko the Lowblood's "creatures
+            // your opponents control attack each combat") never forces itself.
+            let has_generic_must = gates.has_must_attack
+                && crate::game::static_abilities::check_static_ability(
+                    state,
+                    StaticMode::MustAttack,
+                    &static_target_ctx(cid),
+                );
             // CR 701.15b: goaders (distinct players).
             let goaders = goading_players_for_creature_gated(state, cid, gates.has_goad);
             // CR 701.15b (first clause): a goaded creature ALSO "attacks each
