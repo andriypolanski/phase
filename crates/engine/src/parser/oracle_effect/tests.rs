@@ -197,6 +197,68 @@ fn cosmic_cube_full_trigger_carries_dynamic_constraint() {
     }
 }
 
+/// CR 205.1b + CR 611.2a (issue #5950): an additive type grant with no stated
+/// duration — "That creature gains bushido 1 and becomes a Samurai in addition
+/// to its other creature types" (Sensei Golden-Tail's training ability) — is
+/// PERMANENT, not until-end-of-turn. The granted keyword + subtype are added for
+/// as long as the affected creature exists; without the Permanent stamp the
+/// unstated `None` duration defaults to `UntilEndOfTurn` in `effect.rs::resolve`
+/// and is swept at cleanup, so the effect wrongly "wears off" after one turn.
+/// Tests the building block ("... in addition to its other creature types")
+/// through the full card parse, not a bespoke string.
+#[test]
+fn additive_type_grant_with_no_duration_is_permanent() {
+    use crate::types::ability::{ContinuousModification, Duration};
+    let parsed = parse_oracle_text(
+        "Bushido 1 (Whenever this creature blocks or becomes blocked, it gets \
+         +1/+1 until end of turn.)\n\
+         {1}{W}, {T}: Put a training counter on target creature. That creature \
+         gains bushido 1 and becomes a Samurai in addition to its other creature \
+         types. Activate only as a sorcery.",
+        "Sensei Golden-Tail",
+        &["Bushido".to_string()],
+        &["Legendary".to_string(), "Creature".to_string()],
+        &["Fox".to_string(), "Samurai".to_string()],
+    );
+
+    // Locate the GenericEffect that grants the training bonus and assert its
+    // duration is Permanent (CR 611.2a), carrying both the bushido keyword and
+    // the Samurai subtype addition.
+    fn find_training_grant(
+        def: &crate::types::ability::AbilityDefinition,
+    ) -> Option<Option<Duration>> {
+        if let Effect::GenericEffect {
+            static_abilities,
+            duration,
+            ..
+        } = &*def.effect
+        {
+            let grants_bushido_and_samurai = static_abilities.iter().any(|sd| {
+                sd.modifications.iter().any(|m| {
+                    matches!(m, ContinuousModification::AddKeyword { .. })
+                }) && sd.modifications.iter().any(|m| {
+                    matches!(m, ContinuousModification::AddSubtype { subtype } if subtype == "Samurai")
+                })
+            });
+            if grants_bushido_and_samurai {
+                return Some(duration.clone());
+            }
+        }
+        def.sub_ability.as_deref().and_then(find_training_grant)
+    }
+
+    let duration = parsed
+        .abilities
+        .iter()
+        .find_map(find_training_grant)
+        .expect("Sensei Golden-Tail must parse a bushido+Samurai additive grant");
+    assert_eq!(
+        duration,
+        Some(Duration::Permanent),
+        "CR 611.2a: an additive type grant with no stated duration is permanent, not until-end-of-turn",
+    );
+}
+
 /// CR 510.1a + CR 613.11: The Kingpin of Crime's attack ability — "Whenever you
 /// attack, you may pay 2 life. If you do, until end of turn, creatures you
 /// control with toughness greater than their power assign combat damage equal
@@ -13907,13 +13969,16 @@ fn that_creature_cant_be_blocked_and_has_base_pt_parses_as_single_generic_effect
     }
 }
 
-/// CR 205.1b + CR 613.1d + CR 613.4b: Curious Colossus — a comma-list
+/// CR 205.1b + CR 611.2a + CR 613.1d + CR 613.4b: Curious Colossus — a comma-list
 /// continuous effect may combine lose-abilities (layer 6), additive type
 /// change (layer 4), and fixed base P/T (layer 7b) with no printed duration.
 /// The trailing "and has base power and toughness N/N" is a modifier
-/// conjunct on the same subject, not a standalone imperative effect.
+/// conjunct on the same subject, not a standalone imperative effect. Because no
+/// duration is stated on this additive type grant, CR 611.2a makes it permanent
+/// (issue #5950).
 #[test]
 fn comma_list_type_change_and_has_base_pt_parses_as_single_generic_effect() {
+    use crate::types::ability::Duration;
     let def = parse_effect_chain(
             "each creature target opponent controls loses all abilities, becomes a Coward in addition to its other types, and has base power and toughness 1/1",
             AbilityKind::Spell,
@@ -13929,7 +13994,11 @@ fn comma_list_type_change_and_has_base_pt_parses_as_single_generic_effect() {
             duration,
             ..
         } => {
-            assert_eq!(*duration, None);
+            assert_eq!(
+                *duration,
+                Some(Duration::Permanent),
+                "CR 611.2a: no stated duration on an additive type grant → permanent"
+            );
             let mods: Vec<_> = static_abilities
                 .iter()
                 .flat_map(|s| s.modifications.iter())

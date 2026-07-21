@@ -430,9 +430,12 @@ fn banewhip_punisher_destroy_creature_with_minus_counter() {
     );
 }
 
-/// CR 205.1b + CR 613.1d + CR 613.4b: Curious Colossus' ETB trigger uses
-/// one comma-list continuous effect: affected creatures lose abilities,
-/// gain a subtype, and get fixed base P/T indefinitely.
+/// CR 205.1b + CR 611.2a + CR 613.1d + CR 613.4b: Curious Colossus' ETB trigger
+/// uses one comma-list continuous effect: affected creatures lose abilities,
+/// gain a subtype, and get fixed base P/T indefinitely. The effect states no
+/// duration, so CR 611.2a makes it PERMANENT — the "in addition to its other
+/// types" additive type grant is stamped `Duration::Permanent` at parse time so
+/// it is not swept at cleanup (issue #5950).
 #[test]
 fn curious_colossus_base_pt_comma_list_has_no_unimplemented_trigger_tail() {
     let r = parse(
@@ -457,7 +460,11 @@ fn curious_colossus_base_pt_comma_list_has_no_unimplemented_trigger_tail() {
             duration,
             ..
         } => {
-            assert_eq!(*duration, None);
+            assert_eq!(
+                *duration,
+                Some(crate::types::ability::Duration::Permanent),
+                "CR 611.2a: no stated duration on an additive type grant → permanent"
+            );
             let mods: Vec<_> = static_abilities
                 .iter()
                 .flat_map(|s| s.modifications.iter())
