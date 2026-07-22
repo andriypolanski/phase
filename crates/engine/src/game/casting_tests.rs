@@ -43521,6 +43521,7 @@ fn conditional_cost_reduction_applies_only_when_condition_met() {
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::identifiers::CardId;
     use crate::types::mana::ManaCost;
+    use crate::types::statics::CostModifyMode;
 
     let condition = parse_restriction_condition("you control a legendary creature")
         .expect("test condition must parse");
@@ -43540,6 +43541,7 @@ fn conditional_cost_reduction_applies_only_when_condition_met() {
             },
         });
         def.cost_reduction = Some(CostReduction {
+            mode: CostModifyMode::Reduce,
             amount_per: 3,
             count: QuantityExpr::Fixed { value: 1 },
             condition: Some(condition.clone()),
