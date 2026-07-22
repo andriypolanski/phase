@@ -1518,6 +1518,11 @@ fn parse_number_of_inner(input: &str) -> OracleResult<'_, QuantityRef> {
             parse_number_of_creatures_died_this_turn,
             parse_number_of_sacrificed_this_turn,
             parse_number_of_descended_this_turn,
+            // CR 404.1 + CR 111.7 + CR 303.4b: "cards put into [possessive]
+            // graveyard from anywhere this turn" (Fraying Sanity where-X) —
+            // must precede the generic controlled-type arm and share the nest
+            // with the other this-turn zone-change counts.
+            parse_number_of_cards_put_into_graveyard_from_anywhere_this_turn,
             parse_number_of_times_you_chose_a_mode,
         )),
         parse_tokens_created_this_turn_tail,
@@ -4618,6 +4623,61 @@ fn parse_number_of_descended_this_turn(input: &str) -> OracleResult<'_, Quantity
                     controller: ControllerRef::You,
                 },
             ])),
+        },
+    ))
+}
+
+/// CR 404.1 + CR 111.7 + CR 303.4b (issue #5947): "cards put into [possessive]
+/// graveyard from anywhere this turn" — the Fraying Sanity where-X class.
+///
+/// A card is put into *its owner's* graveyard (CR 404.1), so the possessive
+/// scopes by ownership (`FilterProp::Owned`), not control. "From anywhere"
+/// means `from: None` (any origin zone). Bare "cards" carries no type, so the
+/// filter starts as `Any` narrowed by Owned + NonToken — tokens cease to exist
+/// instead of being put into a graveyard (CR 111.7), matching Ravenous Trap's
+/// condition population (`oracle_nom::condition`).
+///
+/// Possessive axis (compose, don't enumerate):
+///   - `"your "` → `ControllerRef::You`
+///   - `"their "` / `"his or her "` / `"enchanted player's "` →
+///     `ControllerRef::EnchantedPlayer` (curse anaphor: "enchanted player mills
+///     X … cards put into their graveyard")
+fn parse_number_of_cards_put_into_graveyard_from_anywhere_this_turn(
+    input: &str,
+) -> OracleResult<'_, QuantityRef> {
+    // Optional leading type phrase ("creature cards" / bare "cards").
+    // Consume up to the fixed "put into … from anywhere this turn" tail so a
+    // typed prefix is optional without enumerating every type × possessive
+    // permutation.
+    let plural = "cards put into ";
+    let singular = "card put into ";
+    let (rest, type_text) = alt((
+        terminated(take_until(plural), tag(plural)),
+        terminated(take_until(singular), tag(singular)),
+    ))
+    .parse(input)?;
+    let (filter, leftover) = parse_type_phrase(type_text.trim());
+    if !leftover.trim().is_empty() {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            leftover,
+            nom::error::ErrorKind::Fail,
+        )));
+    }
+    // Possessive owner of the graveyard.
+    let (rest, owner) = alt((
+        value(ControllerRef::You, tag("your ")),
+        value(ControllerRef::EnchantedPlayer, tag("their ")),
+        value(ControllerRef::EnchantedPlayer, tag("his or her ")),
+        value(ControllerRef::EnchantedPlayer, tag("enchanted player's ")),
+    ))
+    .parse(rest)?;
+    let (rest, _) = tag("graveyard from anywhere this turn").parse(rest)?;
+    Ok((
+        rest,
+        QuantityRef::ZoneChangeCountThisTurn {
+            from: None,
+            to: Some(Zone::Graveyard),
+            filter: super::condition::add_owned_with_props(filter, owner, &[FilterProp::NonToken]),
         },
     ))
 }
@@ -8831,6 +8891,53 @@ mod tests {
                 };
                 assert_eq!(tf.controller, None, "{phrase:?} must not scope controller");
             }
+        }
+    }
+
+    /// CR 404.1 + CR 111.7 + CR 303.4b (issue #5947): Fraying Sanity's where-X
+    /// phrase — "the number of cards put into their graveyard from anywhere
+    /// this turn" — must bind to `ZoneChangeCountThisTurn` scoped by
+    /// `Owned { EnchantedPlayer }` (curse anaphor) + `NonToken`, with
+    /// `from: None` ("from anywhere"). The "your" possessive is the controller-
+    /// owned sibling.
+    #[test]
+    fn parse_cards_put_into_graveyard_from_anywhere_this_turn() {
+        let cases = [
+            (
+                "cards put into their graveyard from anywhere this turn",
+                ControllerRef::EnchantedPlayer,
+            ),
+            (
+                "cards put into his or her graveyard from anywhere this turn",
+                ControllerRef::EnchantedPlayer,
+            ),
+            (
+                "cards put into enchanted player's graveyard from anywhere this turn",
+                ControllerRef::EnchantedPlayer,
+            ),
+            (
+                "cards put into your graveyard from anywhere this turn",
+                ControllerRef::You,
+            ),
+        ];
+        for (phrase, owner) in cases {
+            let (_, q) = parse_quantity_ref(&format!("the number of {phrase}"))
+                .unwrap_or_else(|_| panic!("number-of {phrase:?} should parse"));
+            let QuantityRef::ZoneChangeCountThisTurn { from, to, filter } = q else {
+                panic!("expected ZoneChangeCountThisTurn for {phrase:?}, got {q:?}");
+            };
+            assert_eq!(from, None, "{phrase:?}: from anywhere → from: None");
+            assert_eq!(to, Some(Zone::Graveyard));
+            assert_eq!(
+                filter,
+                TargetFilter::Typed(TypedFilter::default().properties(vec![
+                    FilterProp::Owned {
+                        controller: owner.clone(),
+                    },
+                    FilterProp::NonToken,
+                ])),
+                "{phrase:?}"
+            );
         }
     }
 

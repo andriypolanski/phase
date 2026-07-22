@@ -5728,7 +5728,11 @@ fn parse_object_put_into_graveyard_from_battlefield_this_turn(
 /// `TargetFilter::Any` into a fresh `Typed` filter carrying the same property
 /// set; returns other variants (`Player`, `SpecificObject`, …) unchanged
 /// because owner-tagging is meaningless on non-typed shapes.
-fn add_owned_with_props(
+///
+/// Shared with `oracle_nom::quantity` so the where-X / CDA reading of "cards
+/// put into [possessive] graveyard from anywhere this turn" (Fraying Sanity)
+/// builds the same owned+nontoken population the Ravenous Trap condition uses.
+pub(crate) fn add_owned_with_props(
     filter: TargetFilter,
     controller: ControllerRef,
     extras: &[FilterProp],
