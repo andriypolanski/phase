@@ -3059,7 +3059,7 @@ pub(super) fn resume_delve_mana_payment(state: &mut GameState) -> WaitingFor {
     };
     // CR 118.3a: The generic-only marker is consumed by the shared mana-payment
     // finalizer and cannot be pinned or spent on a colored cost.
-    state.add_mana_to_pool(
+    let _ = state.add_mana_to_pool(
         player,
         crate::types::mana::ManaUnit::convoke_payment(
             crate::types::mana::ManaType::Colorless,
@@ -6250,7 +6250,7 @@ fn apply_action(
             // CR 118.3a: stamp a pip id on pool entry. Convoke/improvise markers
             // are consumed by the shared algorithm and never pinned (the frontend
             // filters ConvokePayment units); Waterbend produces real pinnable mana.
-            state.add_mana_to_pool(*player, unit);
+            let _ = state.add_mana_to_pool(*player, unit);
             if mode == ConvokeMode::Waterbend {
                 events.push(GameEvent::ManaAdded {
                     player_id: *player,
@@ -9253,8 +9253,14 @@ pub(super) fn handle_tap_land_for_mana(
         }
     } else {
         // Legacy fallback for subtype-only lands.
-        let obj = state.objects.get_mut(&object_id).unwrap();
-        obj.tapped = true;
+        let tapped = crate::game::object_state::resolve_and_apply_object_edit(
+            state,
+            object_id,
+            crate::types::resolved_commands::ResolvedObjectStatus::Tapped,
+            true,
+        )
+        .map_err(|error| EngineError::InvalidAction(error.to_string()))?;
+        debug_assert!(tapped, "preflighted land tap must transition status");
         events.push(GameEvent::PermanentTapped {
             object_id,
             caused_by: None,
@@ -9354,11 +9360,14 @@ pub(super) fn handle_untap_land_for_mana(
     }
 
     // Untap the land
-    let obj = state
-        .objects
-        .get_mut(&object_id)
-        .ok_or_else(|| EngineError::InvalidAction("Object not found".to_string()))?;
-    obj.tapped = false;
+    let untapped = crate::game::object_state::resolve_and_apply_object_edit(
+        state,
+        object_id,
+        crate::types::resolved_commands::ResolvedObjectStatus::Tapped,
+        false,
+    )
+    .map_err(|error| EngineError::InvalidAction(error.to_string()))?;
+    debug_assert!(untapped, "a tracked manually tapped land must be tapped");
     events.push(GameEvent::PermanentUntapped { object_id });
 
     // Remove from tracking

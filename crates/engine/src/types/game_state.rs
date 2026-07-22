@@ -48,6 +48,11 @@ use super::resolution::{
     PendingCoinFlip, PendingMutateMerge, PendingProliferateActions, RepeatedOptionalPaymentFrame,
     ResolutionFrame, ResolutionStack, ResolutionStackError, ResolutionStateWire,
 };
+use super::resolved_commands::{
+    ManaPaymentRecipient, ResolvedManaInsertCommand, ResolvedManaReplayInvariantError,
+    ResolvedManaSpendCommand, ResolvedPlayerEdit, ResolvedPlayerEditCommand,
+    ResolvedPlayerEditReplayInvariantError, ResolvedRulesJournal, RulesExecutionNodeRef,
+};
 use super::zones::EtbTapState;
 use super::zones::{ExileCostSourceZone, Zone};
 
@@ -68,6 +73,25 @@ fn default_game_number() -> u8 {
 
 fn is_zero_u32(value: &u32) -> bool {
     *value == 0
+}
+
+fn nonzero_delta_magnitude(delta: i32) -> Result<u32, ResolvedPlayerEditReplayInvariantError> {
+    (delta != 0)
+        .then_some(delta.unsigned_abs())
+        .ok_or(ResolvedPlayerEditReplayInvariantError::ZeroDelta)
+}
+
+fn apply_u32_delta(value: u32, delta: i32) -> Result<u32, ResolvedPlayerEditReplayInvariantError> {
+    let amount = nonzero_delta_magnitude(delta)?;
+    if delta.is_positive() {
+        value
+            .checked_add(amount)
+            .ok_or(ResolvedPlayerEditReplayInvariantError::ResourceOverflow)
+    } else {
+        value
+            .checked_sub(amount)
+            .ok_or(ResolvedPlayerEditReplayInvariantError::ResourceUnderflow)
+    }
 }
 
 pub(crate) fn is_zero_usize(value: &usize) -> bool {
@@ -4484,6 +4508,11 @@ pub enum BatchCompletion {
         player: PlayerId,
         source_id: ObjectId,
         members: Vec<CloakExileMember>,
+        /// CR 110.2a: The resolved cloaking player the settled pile members
+        /// enter the battlefield under. Snapshotted at the resolver boundary so
+        /// a replacement-choice park cannot rebind it.
+        #[serde(default)]
+        enters_under: Option<PlayerId>,
     },
     /// CR 614.1 + CR 616.1 + CR 611.2a: A `CastFromZone` current-zone-to-Exile
     /// batch settled. Keep the resolved ability and its two target partitions
@@ -5917,6 +5946,11 @@ pub struct PendingManaAbility {
     pub player: PlayerId,
     pub source_id: ObjectId,
     pub ability_index: usize,
+    /// The P1 execution scope assigned when this activation begins. It survives
+    /// player-choice suspension so exact produced and spent mana keep the same
+    /// causal node after resumption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_execution_node: Option<RulesExecutionNodeRef>,
     /// CR 605.3b + CR 400.7: Mana ability choices can be answered after the
     /// source paid a cost that moved it out of existence (Treasure tokens, etc.).
     /// Preserve the activated ability definition from activation time so the
@@ -6780,6 +6814,13 @@ pub enum SpellCostSource {
     Emerge,
 }
 
+/// Serde default for offer-payload source fields added after the variant
+/// shipped: saved states predating the field deserialize to the `ObjectId(0)`
+/// sentinel (never a real object; such windows never read the source).
+pub(crate) fn zero_object_id() -> ObjectId {
+    ObjectId(0)
+}
+
 /// The specific kind of cast offer being presented to the player.
 /// Parameterizes `WaitingFor::CastOffer` — all variants share `player: PlayerId`
 /// at the outer level; the kind-specific payload lives here.
@@ -6869,6 +6910,28 @@ pub enum CastOfferKind {
         /// to their owner's graveyard.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         exile_instead_of_graveyard: bool,
+        /// CR 406.6: Source object of the granting ability. `filter`s such as
+        /// `ExiledBySource` (Plargg and Nassari's "the other cards exiled this
+        /// way") resolve their exile links against this id, so the re-offer
+        /// loop must rebuild candidates with the real source rather than a
+        /// sentinel. Defaults to the zero sentinel for saved states predating
+        /// the field (graveyard/hand windows never read it).
+        #[serde(default = "zero_object_id")]
+        source: ObjectId,
+        /// CR 607.2a + CR 608.2g: THIS resolution's "exiled this way" batch —
+        /// the concrete member pool the preceding `ChooseFromZone` offered,
+        /// captured when its answer settled. `ExiledBySource` alone reads the
+        /// source's complete LIVE linked-exile ledger, so after an earlier
+        /// resolution left a linked nonland card in exile the next window
+        /// would wrongly offer that stale card; intersecting the offer with
+        /// this pool (before the `Not(InTrackedSet)` chosen-card exclusion)
+        /// confines it to "the other cards exiled this way" of the CURRENT
+        /// resolution (Plargg and Nassari). Empty means "no batch restriction"
+        /// — windows without a choose-linked batch (Invoke Calamity's
+        /// graveyard/hand window) and saved states predating the field keep
+        /// the unrestricted behavior.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        member_pool: Vec<ObjectId>,
     },
     /// CR 608.2g + CR 609.4b: A during-resolution PAID cast of a single card
     /// from a graveyard (Quistis Trepe, Tinybones the Pickpocket: "you may cast
@@ -8535,6 +8598,21 @@ pub enum WaitingFor {
         candidates: Vec<PlayerId>,
         ability: Box<crate::types::ability::ResolvedAbility>,
     },
+    /// CR 608.2d: A resolving `ChooseFromZone { chooser: Opponent }` ("an
+    /// opponent chooses …") in a multiplayer game — the controller (`player`)
+    /// first decides WHICH opponent makes the choice (Plargg and Nassari's
+    /// release notes: "you choose which opponent gets to choose one of the
+    /// exiled nonland cards"). Only entered with two or more live opponents
+    /// and no pre-targeted opponent (one opponent has no decision;
+    /// "target opponent chooses" pre-binds the chooser at announcement).
+    /// `candidates` is the legal opponent set; `ability` is the resolving
+    /// choose ability, carried so the zone choice can be presented to the
+    /// picked opponent.
+    ChooseFromZoneOpponentChooser {
+        player: PlayerId,
+        candidates: Vec<PlayerId>,
+        ability: Box<crate::types::ability::ResolvedAbility>,
+    },
     /// CR 601.2c + CR 115.1: A spell with an "of an opponent's choice" target slot
     /// is being cast in a multiplayer game; the controller (`player`) chooses
     /// which opponent will announce that slot's target. Only entered with two or
@@ -9390,6 +9468,7 @@ impl WaitingFor {
             WaitingFor::TopOrBottomChoice { .. } => "TopOrBottomChoice",
             WaitingFor::PopulateChoice { .. } => "PopulateChoice",
             WaitingFor::ClashChooseOpponent { .. } => "ClashChooseOpponent",
+            WaitingFor::ChooseFromZoneOpponentChooser { .. } => "ChooseFromZoneOpponentChooser",
             WaitingFor::ChooseAnnouncingOpponent { .. } => "ChooseAnnouncingOpponent",
             WaitingFor::ClashCardPlacement { .. } => "ClashCardPlacement",
             WaitingFor::VoteChoice { .. } => "VoteChoice",
@@ -9529,6 +9608,7 @@ impl WaitingFor {
             | WaitingFor::TopOrBottomChoice { player, .. }
             | WaitingFor::PopulateChoice { player, .. }
             | WaitingFor::ClashChooseOpponent { player, .. }
+            | WaitingFor::ChooseFromZoneOpponentChooser { player, .. }
             | WaitingFor::ChooseAnnouncingOpponent { player, .. }
             | WaitingFor::ClashCardPlacement { player, .. }
             | WaitingFor::CompanionReveal { player, .. }
@@ -10900,6 +10980,11 @@ pub struct GameState {
     /// games don't re-mint colliding ids.
     #[serde(default)]
     pub next_pip_id: u64,
+    /// Resolved-rules journal for exact mana provenance and P2 mana commands.
+    /// It is serialized so a restored game retains the command operands needed
+    /// by later retained-prefix replay.
+    #[serde(default)]
+    pub resolved_rules_journal: ResolvedRulesJournal,
     /// CR 118.3a: transient carrier for the caster's pin hints during a single
     /// finalize spend. `finalize_mana_payment` takes `pending_cast` (removing the
     /// pins) BEFORE the spend runs, so the pins are moved here for the duration of
@@ -10907,6 +10992,13 @@ pub struct GameState {
     /// state equality — it is empty outside the synchronous finalize window.
     #[serde(skip)]
     pub active_payment_pins: Vec<ManaPipId>,
+    /// The synchronous rules-execution scope receiving newly produced mana.
+    /// It is empty outside an activation or inline trigger and is never wire
+    /// authority on its own.
+    // pub(crate) rather than private: functional-record-update construction
+    // (`..GameState::default()`) in sibling engine modules requires access.
+    #[serde(skip)]
+    pub(crate) active_rules_execution_node: Option<RulesExecutionNodeRef>,
     /// CR 601.2a: transient copy of the object-attached casting permission
     /// identity while finalization owns the `PendingCast` by value. Payment
     /// consults it only inside that synchronous window; it is never serialized.
@@ -15060,21 +15152,313 @@ impl GameState {
     /// CR 118.3a: Mint the next stable `ManaPipId` for a pool unit. Monotonic,
     /// never returns the `ManaPipId(0)` unstamped sentinel (counter starts at 1).
     fn next_pip_id(&mut self) -> ManaPipId {
+        // ManaPipId(0) is the "unstamped" sentinel the resolved-mana appliers
+        // fail closed on. Two legitimate states carry a zero allocator: a
+        // pre-provenance save (`#[serde(default)]`) and a loop-normalized
+        // clone (`normalize_for_loop` zeroes it for CR 104.4b comparison).
+        // Self-heal at mint so neither can ever stamp the sentinel.
+        if self.next_pip_id == 0 {
+            self.next_pip_id = 1;
+        }
         let id = self.next_pip_id;
         self.next_pip_id += 1;
         ManaPipId(id)
     }
 
-    /// CR 118.3a: Stamp a stable pip id on `unit` and add it to `player`'s mana
-    /// pool. This is the single authority for mana entering a *real* pool: every
+    /// CR 106.4 + CR 118.3a: Resolve and apply one real-pool mana insertion.
+    /// This is the single authority for mana entering a *real* pool: every
     /// production/refill/convoke/delve injection routes here so that each pooled
     /// unit has a unique id the player can pin to direct payment. Detached
     /// preview pools (with no `GameState`) keep calling `ManaPool::add` directly.
-    pub fn add_mana_to_pool(&mut self, player: PlayerId, mut unit: ManaUnit) {
+    pub fn add_mana_to_pool(&mut self, player: PlayerId, mut unit: ManaUnit) -> Option<ManaUnit> {
         unit.pip_id = self.next_pip_id();
-        if let Some(p) = self.players.iter_mut().find(|p| p.id == player) {
-            p.mana_pool.add(unit);
+        if !self.players.iter().any(|candidate| candidate.id == player) {
+            return None;
         }
+        let producer = self.current_or_begin_rules_execution_node();
+        let command = ResolvedManaInsertCommand {
+            player,
+            unit: unit.clone(),
+            producer,
+        };
+        self.apply_resolved_mana_insert(&command)
+            .expect("fresh mana insertion must satisfy its replay preconditions");
+        self.resolved_rules_journal
+            .record_mana_insert(command)
+            .expect("stamped mana must have one unique journal producer");
+        Some(unit)
+    }
+
+    /// Applies and journals one already-resolved player resource edit.
+    ///
+    /// Replacements and dynamic quantities must be settled before this boundary;
+    /// the command is the final composable semantic edit against the live prefix.
+    pub fn resolve_and_apply_player_edit(
+        &mut self,
+        player: PlayerId,
+        edit: ResolvedPlayerEdit,
+    ) -> Result<(), ResolvedPlayerEditReplayInvariantError> {
+        let command = ResolvedPlayerEditCommand {
+            player,
+            edit,
+            cause: self.current_or_begin_rules_execution_node(),
+        };
+        self.apply_resolved_player_edit(&command)?;
+        self.resolved_rules_journal
+            .record_player_edit(command)
+            .expect("resolved player edit must have a live journal cause");
+        Ok(())
+    }
+
+    /// Applies one final player-resource edit without replacements, quantity
+    /// evaluation, or an implicit player selection.
+    pub fn apply_resolved_player_edit(
+        &mut self,
+        command: &ResolvedPlayerEditCommand,
+    ) -> Result<(), ResolvedPlayerEditReplayInvariantError> {
+        let player = self
+            .players
+            .iter_mut()
+            .find(|candidate| candidate.id == command.player)
+            .ok_or(ResolvedPlayerEditReplayInvariantError::UnknownPlayer(
+                command.player,
+            ))?;
+
+        match &command.edit {
+            ResolvedPlayerEdit::Life { delta } => {
+                let amount = nonzero_delta_magnitude(*delta)?;
+                let life = player
+                    .life
+                    .checked_add(*delta)
+                    .ok_or(ResolvedPlayerEditReplayInvariantError::ResourceOverflow)?;
+                if *delta > 0 {
+                    let gained = player
+                        .life_gained_this_turn
+                        .checked_add(amount)
+                        .ok_or(ResolvedPlayerEditReplayInvariantError::ResourceOverflow)?;
+                    player.life = life;
+                    player.life_gained_this_turn = gained;
+                } else {
+                    let lost = player
+                        .life_lost_this_turn
+                        .checked_add(amount)
+                        .ok_or(ResolvedPlayerEditReplayInvariantError::ResourceOverflow)?;
+                    player.life = life;
+                    player.life_lost_this_turn = lost;
+                }
+            }
+            ResolvedPlayerEdit::Energy { delta } => {
+                player.energy = apply_u32_delta(player.energy, *delta)?;
+            }
+            ResolvedPlayerEdit::Counter { kind, delta } => {
+                let count = apply_u32_delta(player.player_counter(kind), *delta)?;
+                match kind {
+                    PlayerCounterKind::Poison => player.poison_counters = count,
+                    _ if count == 0 => {
+                        player.player_counters.remove(kind);
+                    }
+                    _ => {
+                        player.player_counters.insert(*kind, count);
+                    }
+                }
+            }
+            ResolvedPlayerEdit::Speed { old, new } => {
+                if player.speed != *old {
+                    return Err(
+                        ResolvedPlayerEditReplayInvariantError::SpeedPreconditionMismatch {
+                            expected: *old,
+                            found: player.speed,
+                        },
+                    );
+                }
+                if old == new {
+                    return Err(ResolvedPlayerEditReplayInvariantError::ZeroDelta);
+                }
+                player.speed = *new;
+            }
+        }
+        Ok(())
+    }
+
+    /// CR 106.4: Apply one exact, already-resolved mana insertion without
+    /// allocating a replacement pip or consulting mana-production state.
+    pub fn apply_resolved_mana_insert(
+        &mut self,
+        command: &ResolvedManaInsertCommand,
+    ) -> Result<(), ResolvedManaReplayInvariantError> {
+        if command.unit.pip_id.0 == 0 {
+            return Err(ResolvedManaReplayInvariantError::UnstampedManaPip);
+        }
+        let player = self
+            .players
+            .iter_mut()
+            .find(|candidate| candidate.id == command.player)
+            .ok_or(ResolvedManaReplayInvariantError::UnknownPlayer(
+                command.player,
+            ))?;
+        if player
+            .mana_pool
+            .mana
+            .iter()
+            .any(|unit| unit.pip_id == command.unit.pip_id)
+        {
+            return Err(ResolvedManaReplayInvariantError::DuplicateManaPip(
+                command.unit.pip_id,
+            ));
+        }
+        player.mana_pool.add(command.unit.clone());
+        self.advance_pip_high_water(command.unit.pip_id)
+    }
+
+    /// CR 118.3a: Construct, journal, and apply the solver-selected exact mana
+    /// payment. Solver choice happens before this boundary; this method never
+    /// re-solves or substitutes units.
+    pub(crate) fn resolve_and_apply_mana_spend(
+        &mut self,
+        payer: PlayerId,
+        recipient: ManaPaymentRecipient,
+        spent: &[ManaUnit],
+    ) -> Result<(), ResolvedManaReplayInvariantError> {
+        let Some(command) = self
+            .resolved_rules_journal
+            .record_mana_spend(payer, recipient, spent)
+            .expect("every paid mana pip must have one unique journal producer")
+        else {
+            return Ok(());
+        };
+        self.apply_resolved_mana_spend(&command)
+    }
+
+    /// CR 118.3a: Apply one exact, already-resolved mana payment. A missing or
+    /// mismatched pip is a typed replay-invariant failure, never an invitation
+    /// to choose substitute mana.
+    pub fn apply_resolved_mana_spend(
+        &mut self,
+        command: &ResolvedManaSpendCommand,
+    ) -> Result<(), ResolvedManaReplayInvariantError> {
+        let player = self
+            .players
+            .iter_mut()
+            .find(|candidate| candidate.id == command.payer)
+            .ok_or(ResolvedManaReplayInvariantError::UnknownPlayer(
+                command.payer,
+            ))?;
+        let units: Vec<ManaUnit> = command
+            .units
+            .iter()
+            .map(|spent| spent.unit.clone())
+            .collect();
+        for unit in &units {
+            if unit.pip_id.0 == 0 {
+                return Err(ResolvedManaReplayInvariantError::UnstampedManaPip);
+            }
+        }
+        crate::game::mana_payment::remove_exact_mana_units(&mut player.mana_pool, &units).map_err(
+            |error| match error {
+                crate::game::mana_payment::ExactManaRemovalError::DuplicatePip(pip) => {
+                    ResolvedManaReplayInvariantError::DuplicateSpentManaPip(pip)
+                }
+                crate::game::mana_payment::ExactManaRemovalError::MissingPip(pip) => {
+                    ResolvedManaReplayInvariantError::MissingExactManaUnit(pip)
+                }
+                crate::game::mana_payment::ExactManaRemovalError::MismatchedUnit(pip) => {
+                    ResolvedManaReplayInvariantError::MismatchedExactManaUnit(pip)
+                }
+            },
+        )
+    }
+
+    fn advance_pip_high_water(
+        &mut self,
+        pip: ManaPipId,
+    ) -> Result<(), ResolvedManaReplayInvariantError> {
+        let next = pip
+            .0
+            .checked_add(1)
+            .ok_or(ResolvedManaReplayInvariantError::ManaPipIdOverflow(pip))?;
+        self.next_pip_id = self.next_pip_id.max(next);
+        Ok(())
+    }
+
+    pub(crate) fn current_or_begin_rules_execution_node(&mut self) -> RulesExecutionNodeRef {
+        self.active_rules_execution_node.unwrap_or_else(|| {
+            self.resolved_rules_journal
+                .begin_proposal()
+                .expect("resolved-rules journal proposal ordinal overflow")
+        })
+    }
+
+    /// CR 605.3b: Begin the distinct, immediate execution node for one
+    /// activated mana ability. A nested activation records its active parent as
+    /// the causal dependency without changing activation behavior.
+    pub(crate) fn begin_activated_mana_journal_node(
+        &mut self,
+        source_id: ObjectId,
+    ) -> RulesExecutionNodeRef {
+        let source = self
+            .objects
+            .get(&source_id)
+            .map(ObjectIncarnationRef::from_object)
+            .expect("mana ability activation source must exist");
+        self.resolved_rules_journal
+            .begin_activated_mana(source, self.active_rules_execution_node)
+            .expect("resolved-rules journal settlement ordinal overflow")
+    }
+
+    /// CR 605.4a: Begin the distinct inline node for a triggered mana ability.
+    /// Its event-derived cause wins over the ambient activation scope, so a
+    /// trigger from a nested mana source stays bundled with that source.
+    pub(crate) fn begin_triggered_mana_journal_node(
+        &mut self,
+        source: ObjectIncarnationRef,
+        trigger: Option<TriggerDefinitionRef>,
+        caused_by: Option<RulesExecutionNodeRef>,
+    ) -> RulesExecutionNodeRef {
+        self.resolved_rules_journal
+            .begin_triggered_mana(
+                source,
+                trigger,
+                caused_by.or(self.active_rules_execution_node),
+            )
+            .expect("resolved-rules journal settlement ordinal overflow")
+    }
+
+    pub(crate) fn with_rules_execution_node<T>(
+        &mut self,
+        node: RulesExecutionNodeRef,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.active_rules_execution_node.replace(node);
+        let result = operation(self);
+        self.active_rules_execution_node = previous;
+        result
+    }
+
+    /// `with_rules_execution_node` for callers whose node is conditional
+    /// (CR 603.3d source-gone triggered mana): with `None` the operation runs
+    /// under the enclosing scope unchanged, so produced mana falls back to the
+    /// ambient node or the automatic Proposal attribution.
+    pub(crate) fn with_optional_rules_execution_node<T>(
+        &mut self,
+        node: Option<RulesExecutionNodeRef>,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        match node {
+            Some(node) => self.with_rules_execution_node(node, operation),
+            None => operation(self),
+        }
+    }
+
+    pub(crate) fn mana_payment_recipient(
+        &self,
+        recipient: ObjectId,
+        fallback_player: PlayerId,
+    ) -> ManaPaymentRecipient {
+        self.objects
+            .get(&recipient)
+            .map(ObjectIncarnationRef::from_object)
+            .map(ManaPaymentRecipient::Object)
+            .unwrap_or(ManaPaymentRecipient::Player(fallback_player))
     }
 
     /// CR 118.3a: defensively guarantee every unit in `player`'s mana pool carries
@@ -15100,27 +15484,38 @@ impl GameState {
             .iter()
             .filter(|u| u.pip_id.0 == 0 || !seen.insert(u.pip_id.0))
             .count();
-        if needed == 0 {
-            return;
-        }
-        // Mint the fresh ids before borrowing the pool mutably (`next_pip_id` needs
-        // `&mut self`), so the assignment pass can use `iter_mut` — idiomatic and
-        // compatible with both `Vec` and `im::Vector` without relying on `IndexMut`.
-        let mut fresh = Vec::with_capacity(needed);
-        for _ in 0..needed {
-            fresh.push(self.next_pip_id());
-        }
-        let mut fresh = fresh.into_iter();
-        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
-        for unit in self.players[idx].mana_pool.mana.iter_mut() {
-            if unit.pip_id.0 != 0 && seen.insert(unit.pip_id.0) {
-                continue; // already unique and stamped — leave it
+        if needed > 0 {
+            // Mint the fresh ids before borrowing the pool mutably (`next_pip_id` needs
+            // `&mut self`), so the assignment pass can use `iter_mut` — idiomatic and
+            // compatible with both `Vec` and `im::Vector` without relying on `IndexMut`.
+            let mut fresh = Vec::with_capacity(needed);
+            for _ in 0..needed {
+                fresh.push(self.next_pip_id());
             }
-            let id = fresh
-                .next()
-                .expect("minted exactly one fresh id per unit needing one");
-            seen.insert(id.0);
-            unit.pip_id = id;
+            let mut fresh = fresh.into_iter();
+            let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            for unit in self.players[idx].mana_pool.mana.iter_mut() {
+                if unit.pip_id.0 != 0 && seen.insert(unit.pip_id.0) {
+                    continue; // already unique and stamped — leave it
+                }
+                let id = fresh
+                    .next()
+                    .expect("minted exactly one fresh id per unit needing one");
+                seen.insert(id.0);
+                unit.pip_id = id;
+            }
+        }
+        let pool_units: Vec<ManaUnit> = self.players[idx].mana_pool.mana.to_vec();
+        for unit in pool_units {
+            if !self.resolved_rules_journal.has_produced_pip(unit.pip_id) {
+                let producer = self
+                    .resolved_rules_journal
+                    .begin_proposal()
+                    .expect("resolved-rules journal proposal ordinal overflow");
+                self.resolved_rules_journal
+                    .record_produced_mana(producer, unit)
+                    .expect("restamped pool mana must have one unique journal producer");
+            }
         }
     }
 
@@ -15302,7 +15697,9 @@ impl GameState {
             // CR 118.3a: start at 1 so minted pip ids never collide with the
             // `ManaPipId(0)` unstamped sentinel.
             next_pip_id: 1,
+            resolved_rules_journal: ResolvedRulesJournal::default(),
             active_payment_pins: Vec::new(),
+            active_rules_execution_node: None,
             active_casting_permission_index: None,
             battlefield: im::Vector::new(),
             stack: im::Vector::new(),
@@ -15986,6 +16383,10 @@ impl GameState {
         // CR 104.4b: pip-id counter is a volatile monotonic field; zero it (like
         // next_object_id) so two otherwise-identical loop states compare equal.
         clone.next_pip_id = 0;
+        // P1 provenance is append-only historical evidence, not live rules
+        // state. Clear it with the other monotonic identity carriers so it
+        // cannot hide a genuine CR 104.4b repeated position.
+        clone.resolved_rules_journal = ResolvedRulesJournal::default();
         clone.layers_dirty = LayersDirty::full();
         clone.public_state_dirty = PublicStateDirty::all_dirty();
         // PR-3 (Option C): snapshots stored in `loop_detect_ring` are produced BY this
@@ -16521,7 +16922,9 @@ fn _gamestate_partition_is_total(s: &GameState) {
         next_object_id: _,
         next_logical_zone_change_group_id: _,
         next_pip_id: _,
+        resolved_rules_journal: _,
         active_payment_pins: _,
+        active_rules_execution_node: _,
         active_casting_permission_index: _,
         battlefield: _,
         stack: _,
@@ -16827,6 +17230,7 @@ impl PartialEq for GameState {
             && self.objects.len() == other.objects.len()
             && self.next_object_id == other.next_object_id
             && self.next_pip_id == other.next_pip_id
+            && self.resolved_rules_journal == other.resolved_rules_journal
             && self.battlefield == other.battlefield
             && self.stack == other.stack
             && self.stack_paid_facts == other.stack_paid_facts
@@ -18981,7 +19385,7 @@ mod tests {
         let mut a = GameState::new_two_player(7);
         let player = a.players[0].id;
         // One floated unit, stamped with a distinct pip_id on pool entry.
-        a.add_mana_to_pool(
+        let _ = a.add_mana_to_pool(
             player,
             ManaUnit::new(ManaType::Red, ObjectId(900), false, vec![]),
         );
@@ -20162,6 +20566,7 @@ mod tests {
                     player: PlayerId(0),
                     source_id: ObjectId(1),
                     ability_index: 0,
+                    rules_execution_node: None,
                     ability_snapshot: None,
                     color_override: None,
                     resume: ManaAbilityResume::Priority,

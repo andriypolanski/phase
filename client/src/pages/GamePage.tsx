@@ -24,6 +24,7 @@ import { loadActiveQuickDraft } from "../services/quickDraftPersistence";
 import type { DraftMatchResult } from "../services/quickDraftPersistence";
 import { useResolvedGridRows, useResolvedSplitGridRows } from "../hooks/useResolvedGridRows.ts";
 import { useIsMobile } from "../hooks/useIsMobile.ts";
+import { useGameViewportLock } from "../hooks/useGameViewportLock.ts";
 import { FlexEditOverlay } from "../components/flexlayout/FlexEditOverlay.tsx";
 import { DraggableWidget } from "../components/flexlayout/DraggableWidget.tsx";
 import { BetweenGamesSideboardModal } from "../components/multiplayer/BetweenGamesSideboardModal.tsx";
@@ -98,6 +99,7 @@ import { useModalPeek } from "../components/modal/useModalPeek.ts";
 import { BattleProtectorModal } from "../components/modal/BattleProtectorModal.tsx";
 import { AssistChoosePlayerModal } from "../components/modal/AssistChoosePlayerModal.tsx";
 import { ClashOpponentModal } from "../components/modal/ClashOpponentModal.tsx";
+import { ZoneOpponentChooserModal } from "../components/modal/ZoneOpponentChooserModal.tsx";
 import { PileOpponentModal } from "../components/modal/PileOpponentModal.tsx";
 import { AnnouncingOpponentModal } from "../components/modal/AnnouncingOpponentModal.tsx";
 import { TributeModal } from "../components/modal/TributeModal.tsx";
@@ -305,6 +307,7 @@ export function GamePage() {
               : rawMode === "ai"
                 ? "ai"
                 : "local";
+  const isOnlineMode = mode === "online" || mode === "spectate";
 
   const [showCardDataMissing, setShowCardDataMissing] = useState(false);
 
@@ -490,6 +493,11 @@ export function GamePage() {
         break;
       case "error":
         useMultiplayerStore.getState().showToast(event.message);
+        // Native engine sockets emit an error before close; the provider disposes
+        // that terminal adapter, so no reconnectFailed event follows.
+        if (!isOnlineMode) {
+          setReconnectState({ status: "failed" });
+        }
         break;
       case "deckRejected":
         navigate("/multiplayer", {
@@ -501,7 +509,7 @@ export function GamePage() {
         });
         break;
     }
-  }, [gameId, navigate, joinCode, t]);
+  }, [gameId, navigate, joinCode, isOnlineMode, t]);
 
   const handleP2PEvent = useCallback((event: P2PAdapterEvent) => {
     switch (event.type) {
@@ -695,7 +703,7 @@ export function GamePage() {
       roomName={roomNameParam ?? undefined}
       source={sourceParam}
       draftId={draftIdParam}
-      onWsEvent={mode === "online" || mode === "spectate" ? handleWsEvent : undefined}
+      onWsEvent={mode === "ai" || mode === "online" || mode === "spectate" ? handleWsEvent : undefined}
       onP2PEvent={
         mode === "p2p-host" || mode === "p2p-join" ? handleP2PEvent : undefined
       }
@@ -711,7 +719,7 @@ export function GamePage() {
       <GamePageContent
         gameId={gameId}
         mode={rawMode}
-        isOnlineMode={mode === "online" || mode === "spectate"}
+        isOnlineMode={isOnlineMode}
         hostGameCode={hostGameCode}
         waitingForOpponent={waitingForOpponent}
         opponentDisconnected={opponentDisconnected}
@@ -811,6 +819,7 @@ function GamePageContent({
   const lobbyProgress = useGameStore((s) => s.lobbyProgress);
   const dispatch = useGameDispatch();
   const isMobile = useIsMobile();
+  useGameViewportLock();
   const focusedGridTemplateRows = useResolvedGridRows();
   const splitGridTemplateRows = useResolvedSplitGridRows();
   const gameState = useGameStore((s) => s.gameState);
@@ -1724,6 +1733,7 @@ function GamePageContent({
         <MeldChoiceModal />
         <AssistChoosePlayerModal />
         <ClashOpponentModal />
+        <ZoneOpponentChooserModal />
         <PileOpponentModal />
         <AnnouncingOpponentModal />
         <TributeModal />

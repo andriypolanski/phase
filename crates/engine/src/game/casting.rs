@@ -24,6 +24,7 @@ use crate::types::mana::{
     ManaColor, ManaCost, ManaCostShard, ManaSpellGrant, PaymentContext, SpecialAction, SpellMeta,
 };
 use crate::types::player::PlayerId;
+use crate::types::resolved_commands::ManaPaymentRecipient;
 use crate::types::statics::{
     ActivationExemption, AdditionalCostTaxAction, CastFreeOrigin, CastFrequency,
     CastingProhibitionCondition, CostModifyMode, ExileCardPool, ExileCastCost, ExileCastTiming,
@@ -14233,15 +14234,16 @@ pub(super) fn pay_mana_cost_from_pool_with_choices(
         }
     }
 
+    state.restamp_pool_pip_ids(player);
     let hand_demand = mana_payment::compute_hand_color_demand(state, player, source_id);
     let pins: Vec<crate::types::mana::ManaPipId> = state.active_payment_pins.clone();
     let player_data = state
         .players
-        .iter_mut()
+        .iter()
         .find(|p| p.id == player)
         .expect("player exists");
-    let (spent_units, life_payments) = mana_payment::pay_cost_with_demand_and_choices(
-        &mut player_data.mana_pool,
+    let (spent_units, life_payments) = mana_payment::select_mana_payment(
+        &player_data.mana_pool,
         cost,
         Some(&hand_demand),
         spell_ctx.as_ref(),
@@ -14251,6 +14253,12 @@ pub(super) fn pay_mana_cost_from_pool_with_choices(
         &pins,
     )
     .map_err(|_| EngineError::ActionNotAllowed("Mana payment failed".to_string()))?;
+    let recipient = state.mana_payment_recipient(source_id, player);
+    state
+        .resolve_and_apply_mana_spend(player, recipient, &spent_units)
+        .map_err(|_| {
+            EngineError::ActionNotAllowed("Mana pool changed before payment applied".to_string())
+        })?;
     if !spent_units.is_empty() && mana_payment::has_unspent_mana_continuous_effects(state) {
         state.layers_dirty.mark_full();
     }
@@ -14710,13 +14718,14 @@ fn pay_non_cast_mana_cost(
         }
     }
 
+    state.restamp_pool_pip_ids(player);
     let player_data = state
         .players
-        .iter_mut()
+        .iter()
         .find(|p| p.id == player)
         .expect("player exists");
-    let (spent_units, life_payments) = mana_payment::pay_cost_with_demand_and_choices(
-        &mut player_data.mana_pool,
+    let (spent_units, life_payments) = mana_payment::select_mana_payment(
+        &player_data.mana_pool,
         cost,
         None,
         Some(&ctx),
@@ -14727,6 +14736,14 @@ fn pay_non_cast_mana_cost(
         &[],
     )
     .map_err(|_| EngineError::ActionNotAllowed("Mana payment failed".to_string()))?;
+    let recipient = source_id
+        .map(|source| state.mana_payment_recipient(source, player))
+        .unwrap_or(ManaPaymentRecipient::Player(player));
+    state
+        .resolve_and_apply_mana_spend(player, recipient, &spent_units)
+        .map_err(|_| {
+            EngineError::ActionNotAllowed("Mana pool changed before payment applied".to_string())
+        })?;
     if !spent_units.is_empty() && mana_payment::has_unspent_mana_continuous_effects(state) {
         state.layers_dirty.mark_full();
     }
@@ -14848,6 +14865,7 @@ fn auto_tap_and_pay_cost_excluding(
     // paying a generic pip — preventing the spend from consuming a floated color
     // the outer cost still needs (Dimir/Gruul Signet bug). Computed BEFORE the
     // mutable pool borrow below to avoid a borrow-checker conflict (WATCH-ITEM #2).
+    state.restamp_pool_pip_ids(player);
     let hand_demand = mana_payment::compute_hand_color_demand(state, player, source_id);
     let combined_demand: mana_payment::ColorDemand = match sub_cost_demand {
         Some(outer) => {
@@ -14867,11 +14885,11 @@ fn auto_tap_and_pay_cost_excluding(
     let pins: Vec<crate::types::mana::ManaPipId> = state.active_payment_pins.clone();
     let player_data = state
         .players
-        .iter_mut()
+        .iter()
         .find(|p| p.id == player)
         .expect("player exists");
-    let (spent_units, life_payments) = mana_payment::pay_cost_with_demand_and_choices(
-        &mut player_data.mana_pool,
+    let (spent_units, life_payments) = mana_payment::select_mana_payment(
+        &player_data.mana_pool,
         cost,
         Some(&combined_demand),
         ctx,
@@ -14881,6 +14899,12 @@ fn auto_tap_and_pay_cost_excluding(
         &pins,
     )
     .map_err(|_| EngineError::ActionNotAllowed("Mana payment failed".to_string()))?;
+    let recipient = state.mana_payment_recipient(source_id, player);
+    state
+        .resolve_and_apply_mana_spend(player, recipient, &spent_units)
+        .map_err(|_| {
+            EngineError::ActionNotAllowed("Mana pool changed before payment applied".to_string())
+        })?;
     if !spent_units.is_empty() && mana_payment::has_unspent_mana_continuous_effects(state) {
         state.layers_dirty.mark_full();
     }
