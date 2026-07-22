@@ -12,11 +12,14 @@
 //! `TriggerCondition::ManaColorSpent { minimum: 2 }` on both ETBs; the defect
 //! was runtime — `clear_post_collection_transients` wiped `colors_spent_to_cast`
 //! after collection, so CR 603.4 ExactLive re-checks failed at resolution
-//! (Adamant / color-spent class, not Evoke-specific).
+//! (Adamant / color-spent class, not Evoke-specific). The tally must also
+//! clear on battlefield exit (CR 400.7) so a blinked permanent does not
+//! inherit its previous cast colors on re-entry.
 //!
 //! https://github.com/phase-rs/phase/issues/5943
 
 use engine::game::scenario::{GameScenario, P0, P1};
+use engine::game::triggers::process_triggers;
 use engine::types::actions::AlternativeCastDecision;
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
@@ -99,4 +102,74 @@ fn emptiness_evoke_bb_puts_minus_counters_then_sacrifices() {
 
     outcome.assert_counters(victim, CounterType::Minus1Minus1, 3);
     outcome.assert_zone(&[emptiness], Zone::Graveyard);
+}
+
+/// CR 400.7 + CR 603.4: A permanent cast with {W}{W} must satisfy
+/// `ManaColorSpent` on its **original** ETB, but after leaving and re-entering
+/// without a new cast the stale color tally must not survive — the white-spent
+/// branch must not fire again.
+#[test]
+fn emptiness_blinked_reentry_does_not_reuse_cast_color_tally() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let emptiness = emptiness_in_hand(&mut scenario);
+    let first_return = scenario
+        .add_creature_to_graveyard(P0, "First Return", 2, 2)
+        .with_mana_cost(ManaCost::generic(2))
+        .id();
+    let blink_bait = scenario
+        .add_creature_to_graveyard(P0, "Blink Bait", 1, 1)
+        .with_mana_cost(ManaCost::generic(1))
+        .id();
+
+    let mut runner = scenario.build();
+    // Hard-cast for {W}{W}{4} (not Evoke) so Emptiness remains on the battlefield.
+    add_mana(runner.state_mut(), ManaType::White, 2);
+    add_mana(runner.state_mut(), ManaType::Colorless, 4);
+
+    let outcome = runner
+        .cast(emptiness)
+        .target_objects(&[first_return])
+        .resolve();
+
+    outcome.assert_zone(&[first_return], Zone::Battlefield);
+    outcome.assert_zone(&[emptiness], Zone::Battlefield);
+    assert!(
+        runner.state().objects[&emptiness]
+            .colors_spent_to_cast
+            .get(engine::types::mana::ManaColor::White)
+            >= 2,
+        "precondition: the original cast must record {W}{W} before the blink"
+    );
+
+    let mut events = Vec::new();
+    engine::game::zones::move_to_zone(runner.state_mut(), emptiness, Zone::Exile, &mut events);
+    assert_eq!(
+        runner.state().objects[&emptiness]
+            .colors_spent_to_cast
+            .get(engine::types::mana::ManaColor::White),
+        0,
+        "colors_spent_to_cast must clear on battlefield exit"
+    );
+
+    engine::game::zones::move_to_zone(
+        runner.state_mut(),
+        emptiness,
+        Zone::Battlefield,
+        &mut events,
+    );
+    process_triggers(runner.state_mut(), &events);
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        runner.state().objects[&blink_bait].zone,
+        Zone::Graveyard,
+        "after blink, the white-spent ETB must not fire — blink bait stays in the graveyard"
+    );
+    assert_eq!(
+        runner.state().objects[&emptiness].zone,
+        Zone::Battlefield,
+        "Emptiness must remain on the battlefield after the blink"
+    );
 }

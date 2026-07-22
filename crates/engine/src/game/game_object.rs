@@ -1039,10 +1039,12 @@ pub struct GameObject {
     /// CR 601.2h: Per-color breakdown of mana spent to cast this object.
     /// Populated during casting finalization; consumed by trigger / ability
     /// conditions like Adamant (CR 207.2c) and by Converge-style quantity
-    /// refs. Like `mana_spent_to_cast_amount`, this is a historical cast fact
-    /// that persists through CR 603.4 intervening-if resolution re-checks —
-    /// `clear_post_collection_transients` clears only the transient
-    /// `mana_spent_to_cast` boolean, not this tally.
+    /// refs. Persists through CR 603.4 intervening-if resolution re-checks on
+    /// the **same** battlefield object (`clear_post_collection_transients`
+    /// clears only the transient `mana_spent_to_cast` boolean, not this tally).
+    /// Cleared by `reset_for_battlefield_exit` (CR 400.7) so a permanent that
+    /// leaves and re-enters without being cast again does not inherit a stale
+    /// color tally from its previous visit.
     #[serde(default, skip_serializing_if = "ColoredManaCount::is_empty")]
     pub colors_spent_to_cast: ColoredManaCount,
 
@@ -2322,6 +2324,13 @@ impl GameObject {
         // is a new object on any re-entry — clear the stale cast provenance.
         self.cast_from_zone = None;
         self.cast_controller = None;
+        // CR 601.2h + CR 400.7: The per-color cast tally is a historical fact
+        // for the object that actually resolved onto the battlefield from a
+        // cast, kept alive through CR 603.4 intervening-if re-checks on that
+        // same visit. Once the permanent leaves, any re-entry is a new object
+        // with no memory of how it was previously cast — clear alongside the
+        // other cast-entry provenance above (Emptiness / Adamant class).
+        self.colors_spent_to_cast = ColoredManaCount::default();
         // CR 611.2f: the cast-time keyword snapshot is bound to the same casting
         // event as `cast_from_zone`; clear it on the same zone-change boundary.
         self.cast_spell_keywords.clear();
@@ -2641,6 +2650,34 @@ mod tests {
     };
     use crate::types::counter::parse_counter_type;
     use crate::types::triggers::TriggerMode;
+
+    #[test]
+    fn reset_for_battlefield_exit_clears_colors_spent_to_cast() {
+        use crate::types::mana::ManaColor;
+
+        let mut obj = GameObject::new(
+            ObjectId(1),
+            CardId(1),
+            PlayerId(0),
+            "Emptiness".to_string(),
+            Zone::Battlefield,
+        );
+        obj.colors_spent_to_cast.add(ManaColor::White, 2);
+        obj.cast_from_zone = Some(Zone::Hand);
+
+        obj.reset_for_battlefield_exit();
+
+        assert_eq!(
+            obj.colors_spent_to_cast.get(ManaColor::White),
+            0,
+            "CR 400.7: a permanent that leaves the battlefield must not carry \
+             a stale cast-color tally into a later zone"
+        );
+        assert_eq!(
+            obj.cast_from_zone, None,
+            "cast provenance fields clear on the same exit boundary"
+        );
+    }
 
     #[test]
     fn game_object_has_all_rules_relevant_fields() {
