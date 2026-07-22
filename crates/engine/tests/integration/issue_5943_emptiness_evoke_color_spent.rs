@@ -130,6 +130,7 @@ fn emptiness_blinked_reentry_does_not_reuse_cast_color_tally() {
 
     let outcome = runner
         .cast(emptiness)
+        .alternative_cast(AlternativeCastDecision::Normal)
         .target_objects(&[first_return])
         .resolve();
 
@@ -140,7 +141,7 @@ fn emptiness_blinked_reentry_does_not_reuse_cast_color_tally() {
             .colors_spent_to_cast
             .get(engine::types::mana::ManaColor::White)
             >= 2,
-        "precondition: the original cast must record {W}{W} before the blink"
+        "precondition: the original cast must record two white mana before the blink"
     );
 
     let mut events = Vec::new();
