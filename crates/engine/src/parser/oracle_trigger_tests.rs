@@ -15055,11 +15055,7 @@ fn fraying_sanity_mills_zone_change_count_this_turn() {
     let execute = def.execute.as_ref().expect("execute");
     // Duration must NOT steal the quantity's "this turn" suffix.
     assert!(
-        execute.duration.is_none()
-            || !matches!(
-                execute.duration,
-                Some(crate::types::ability::Duration::UntilEndOfTurn)
-            ),
+        execute.duration.is_none(),
         "where-X's 'this turn' must not become UntilEndOfTurn duration, got {:?}",
         execute.duration
     );

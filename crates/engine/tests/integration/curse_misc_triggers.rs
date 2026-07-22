@@ -397,6 +397,14 @@ fn fraying_sanity_mills_cards_put_into_graveyard_this_turn() {
         .expect("P1")
         .library
         .len();
+    let p0_lib_before = runner
+        .state()
+        .players
+        .iter()
+        .find(|p| p.id == P0)
+        .expect("P0")
+        .library
+        .len();
     let gy_before = runner
         .state()
         .players
@@ -419,6 +427,14 @@ fn fraying_sanity_mills_cards_put_into_graveyard_this_turn() {
         .expect("P1")
         .library
         .len();
+    let p0_lib_after = runner
+        .state()
+        .players
+        .iter()
+        .find(|p| p.id == P0)
+        .expect("P0")
+        .library
+        .len();
     let gy_after = runner
         .state()
         .players
@@ -439,5 +455,9 @@ fn fraying_sanity_mills_cards_put_into_graveyard_this_turn() {
         gy_after,
         gy_before + milled,
         "milled cards must land in the enchanted player's graveyard"
+    );
+    assert_eq!(
+        p0_lib_after, p0_lib_before,
+        "only the enchanted player should be milled"
     );
 }
