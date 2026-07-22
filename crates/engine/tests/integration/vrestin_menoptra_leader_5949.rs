@@ -6,10 +6,11 @@
 //! batch (CR 508.1 `AttackersDeclared`). The generic counter parser wrongly
 //! promoted "on each ..." to the mass `PutCounterAll` form bound to the
 //! single-object `TriggeringSource` anaphor, which matches nothing at
-//! resolution, so the trigger "fired but did nothing." The fix rewrites it to
-//! `PutCounter { target: ParentTarget }` (the same representation Champions from
-//! Beyond's "those creatures get +4/+4" uses) and resolves `ParentTarget` for
-//! `PutCounter` through the attack-trigger batch resolver.
+//! resolution, so the trigger "fired but did nothing." The fix excludes
+//! `TargetFilter::ParentTarget` from the shared mass-classification branch in
+//! `oracle_effect/mod.rs` (matching the imperative authority), keeping
+//! `PutCounter { target: ParentTarget }` so resolution binds the bounded batch
+//! via `parent_target_refs_from_attack_trigger_context`.
 //!
 //! https://github.com/phase-rs/phase/issues/5949
 

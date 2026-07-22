@@ -1621,17 +1621,6 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
             );
         }
     }
-    // CR 508.1 + CR 603.2c + CR 608.2c (issue #5949): On a batched attack
-    // trigger, "put a +1/+1 counter on each of them"/"each of those creatures"
-    // distributes over the declared-attackers batch — NOT a battlefield-wide
-    // population. Fix the misparse to the batch-anaphor form the attack-trigger
-    // resolver understands. Gated on the attack modes whose event carries the
-    // `AttackersDeclared` batch (`parent_target_refs_from_attack_trigger_context`).
-    if matches!(def.mode, TriggerMode::YouAttack | TriggerMode::Attacks) {
-        if let Some(ability) = execute.as_deref_mut() {
-            demote_batch_attack_counter_all_to_parent_in_ability(ability);
-        }
-    }
     if modifiers.relative_player_scope == Some(ControllerRef::TargetPlayer) {
         if let Some(ability) = execute.as_deref_mut() {
             crate::parser::oracle_effect::rewrite_event_player_quantity_refs_to_scoped(ability);
@@ -2037,56 +2026,6 @@ fn lift_parent_target_to_triggering_source(effect: &mut Effect) {
 /// anaphor on the *first* sub-ability's effect, not the top-level effect.
 /// Without the descent, the second link would silently bind to the trigger
 /// source object instead of the just-acted-on event object.
-/// CR 508.1 + CR 603.2c + CR 608.2c (issue #5949): Rewrite a batched attack
-/// trigger's mass counter placement whose recipient is a batch anaphor
-/// ("each of them"/"each of those creatures") to the singular `PutCounter`
-/// bound to `ParentTarget`.
-///
-/// "Whenever you attack with one or more Insects, put a +1/+1 counter on each
-/// of them." (Vrestin, Menoptra Leader) is a distributive over the
-/// declared-attackers batch, not a battlefield-wide mass effect. The generic
-/// counter parser wrongly promotes the "on each …" phrasing to `PutCounterAll`
-/// and binds the "them" anaphor to the single-object `TriggeringSource`; at
-/// resolution `PutCounterAll` iterates the battlefield with an anaphor filter
-/// (`matches_target_filter` returns `false` for both `TriggeringSource` and
-/// `ParentTarget`), matches nothing, and the trigger "does nothing." Rewriting
-/// to `PutCounter { target: ParentTarget }` — the same representation Champions
-/// from Beyond's "those creatures get +4/+4" (`Effect::Pump { target:
-/// ParentTarget }`) uses — resolves through
-/// `parent_target_refs_from_attack_trigger_context` to every attacker in the
-/// batch (CR 508.1 `AttackersDeclared`). Only touches the anaphor targets, so a
-/// genuine mass placement in an attack trigger ("put a +1/+1 counter on each
-/// creature you control" → `PutCounterAll { target: Typed }`) is left alone.
-fn demote_batch_attack_counter_all_to_parent(effect: &mut Effect) {
-    if let Effect::PutCounterAll {
-        counter_type,
-        count,
-        target,
-    } = effect
-    {
-        if matches!(
-            target,
-            TargetFilter::TriggeringSource | TargetFilter::ParentTarget
-        ) {
-            *effect = Effect::PutCounter {
-                counter_type: counter_type.clone(),
-                count: count.clone(),
-                target: TargetFilter::ParentTarget,
-            };
-        }
-    }
-}
-
-fn demote_batch_attack_counter_all_to_parent_in_ability(ability: &mut AbilityDefinition) {
-    demote_batch_attack_counter_all_to_parent(ability.effect.as_mut());
-    if let Some(sub) = ability.sub_ability.as_deref_mut() {
-        demote_batch_attack_counter_all_to_parent_in_ability(sub);
-    }
-    if let Some(else_ability) = ability.else_ability.as_deref_mut() {
-        demote_batch_attack_counter_all_to_parent_in_ability(else_ability);
-    }
-}
-
 fn lift_parent_target_to_triggering_source_in_ability(ability: &mut AbilityDefinition) {
     // CR 608.2c + CR 608.2k: Stop the descent as soon as a link introduces a
     // player-*chosen* object target. A later `ParentTarget` then refers to

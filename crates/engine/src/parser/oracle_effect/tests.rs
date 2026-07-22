@@ -16437,6 +16437,28 @@ fn put_counter_all_each_creature_you_control() {
     );
 }
 
+/// CR 608.2c (issue #5949): "each of them" is a batch anaphor bound to
+/// `ParentTarget`, not a battlefield-wide `PutCounterAll`. The shared
+/// targeted-imperative mass-classification branch in `mod.rs` must mirror the
+/// imperative authority that already excludes `ParentTarget`.
+/// REVERT-PROBE: drop the exclusion and this assert fails (mis-promotes to
+/// `PutCounterAll`).
+#[test]
+fn put_counter_each_of_them_is_parent_target_not_put_counter_all() {
+    let e = parse_effect("put a +1/+1 counter on each of them");
+    assert!(
+        matches!(
+            e,
+            Effect::PutCounter {
+                counter_type: ref ct,
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::ParentTarget,
+            } if *ct == CounterType::Plus1Plus1
+        ),
+        "each-of-them anaphor must stay PutCounter {{ ParentTarget }}, got {e:?}"
+    );
+}
+
 /// Issue #588 (Summon: Good King Mog XII, chapter IV): the mass counter
 /// placement must stay scoped to other Moogles you control — not every
 /// other permanent. Regression when "Moogle" was absent from SUBTYPES.
