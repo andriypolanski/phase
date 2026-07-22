@@ -4600,13 +4600,22 @@ fn dispatch_collected_triggers(state: &mut GameState, pending: Vec<PendingTrigge
     let _ = drain_deferred_triggers_after_trigger_construction(state, &mut events_out);
 }
 
-/// Clear transient cast-tally booleans/color breakdown on all objects after
-/// trigger collection. `mana_spent_to_cast_amount` is intentionally NOT
-/// cleared: it is a historical fact about the object (how much mana was
-/// spent to cast it) used by spell resolution effects like "deals damage
-/// equal to the amount of mana spent to cast this spell" (Molten Note) and
-/// by CR 603.4 intervening-if resolution re-checks (Hungry Graffalon /
-/// Topiary Lecturer Increment).
+/// Clear transient cast-tally booleans on all objects after trigger
+/// collection. `mana_spent_to_cast_amount` and `colors_spent_to_cast` are
+/// intentionally NOT cleared: they are historical facts about the object
+/// (how much mana / which colors were spent to cast it) used by spell
+/// resolution effects like "deals damage equal to the amount of mana spent
+/// to cast this spell" (Molten Note), Converge / Adamant-style riders
+/// (CR 207.2c), and by CR 603.4 intervening-if resolution re-checks
+/// (Hungry Graffalon / Topiary Lecturer Increment; Emptiness /
+/// `ManaColorSpent` ETBs).
+///
+/// CR 603.4: ETB intervening-if re-checks run while the permanent is still
+/// on the battlefield, so `TriggerSourceContext::source_read` prefers
+/// `ExactLive` and reads the live object's color tally. Clearing
+/// `colors_spent_to_cast` here after collection made every Adamant-style
+/// ETB (including Evoke-paid Emptiness) silently do nothing at resolution
+/// even though the condition passed at collection time.
 ///
 /// CR 603.4: `cast_from_zone` is likewise preserved for permanents on the
 /// battlefield — a `WasCast` / "if you cast it" ETB intervening-if is
@@ -4630,7 +4639,6 @@ fn clear_post_collection_transients(state: &mut GameState) {
             obj.cast_from_zone = None;
         }
         obj.mana_spent_to_cast = false;
-        obj.colors_spent_to_cast = crate::types::mana::ColoredManaCount::default();
     }
 }
 
@@ -8844,7 +8852,10 @@ fn evaluate_trigger_condition_with_source(
                 == Some((*permission, state.turn_number))
         }
         // CR 207.2c: Adamant — at least N mana of a specific color was spent to cast.
-        // Reads the per-color tally recorded in casting::pay_mana_cost.
+        // CR 601.2h + CR 207.2c: Adamant / "if {C}{C} was spent to cast it" —
+        // read the durable per-color tally (`colors_spent_to_cast`), which
+        // survives `clear_post_collection_transients` so CR 603.4 resolution
+        // re-checks still see the payment recorded at cast finalization.
         TriggerCondition::ManaColorSpent { color, minimum } => {
             source_context.is_some_and(|source| {
                 source.source_read(state).colors_spent_to_cast().get(*color) >= *minimum
@@ -19544,6 +19555,39 @@ pub mod tests {
             Some(src),
             None,
         ));
+    }
+
+    /// CR 207.2c + CR 601.2h + CR 603.4: `ManaColorSpent` must still see the
+    /// per-color payment after `clear_post_collection_transients`. ExactLive
+    /// ETB sources read the live object; wiping `colors_spent_to_cast` there
+    /// made Adamant-style ETBs (Emptiness, issue #5943) pass collection then
+    /// silently fail at resolution.
+    #[test]
+    fn adamant_intervening_if_survives_post_collection_transient_clear() {
+        let (mut state, src) = setup_with_colored_cast(ManaColor::White, 2);
+        state.objects.get_mut(&src).unwrap().mana_spent_to_cast = true;
+        let cond = TriggerCondition::ManaColorSpent {
+            color: ManaColor::White,
+            minimum: 2,
+        };
+
+        clear_post_collection_transients(&mut state);
+
+        assert!(
+            !state.objects[&src].mana_spent_to_cast,
+            "transient mana_spent_to_cast boolean must still clear"
+        );
+        assert_eq!(
+            state.objects[&src]
+                .colors_spent_to_cast
+                .get(ManaColor::White),
+            2,
+            "colors_spent_to_cast is a durable cast fact for CR 603.4 re-checks"
+        );
+        assert!(
+            check_trigger_condition(&state, &cond, PlayerId(0), Some(src), None),
+            "ManaColorSpent must remain true after post-collection transient clear"
+        );
     }
 
     // === CR 603.6a + CR 110.5b: "When ~ enters untapped/tapped" ETB gating ===

@@ -546,6 +546,7 @@ mod issue_5820_susan_foreman;
 mod issue_5821_psychic_paper_attach_choice;
 mod issue_583_vivi_ornitier_mana_source;
 mod issue_5910_kitchen_finks_persist;
+mod issue_5943_emptiness_evoke_color_spent;
 mod issue_5945_kellan_the_kid;
 mod issue_5946_pest_infestation_bogwater_softlock;
 mod issue_5963_scavengers_talent_food_sacrifice;

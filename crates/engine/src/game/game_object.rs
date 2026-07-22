@@ -1037,9 +1037,12 @@ pub struct GameObject {
     pub mana_spent_to_cast: bool,
 
     /// CR 601.2h: Per-color breakdown of mana spent to cast this object.
-    /// Populated during casting finalization; consumed by trigger conditions
-    /// like Adamant (CR 207.2c). Cleared in lockstep with `mana_spent_to_cast`
-    /// (see `triggers::clear_transient_cast_state`).
+    /// Populated during casting finalization; consumed by trigger / ability
+    /// conditions like Adamant (CR 207.2c) and by Converge-style quantity
+    /// refs. Like `mana_spent_to_cast_amount`, this is a historical cast fact
+    /// that persists through CR 603.4 intervening-if resolution re-checks —
+    /// `clear_post_collection_transients` clears only the transient
+    /// `mana_spent_to_cast` boolean, not this tally.
     #[serde(default, skip_serializing_if = "ColoredManaCount::is_empty")]
     pub colors_spent_to_cast: ColoredManaCount,
 
@@ -1051,7 +1054,7 @@ pub struct GameObject {
     /// for spell-resolution effects that read their own cost (Molten Note,
     /// "deals damage equal to the amount of mana spent to cast this spell").
     ///
-    /// Unlike `mana_spent_to_cast` / `colors_spent_to_cast`, this field is NOT
+    /// Unlike the transient `mana_spent_to_cast` boolean, this field is NOT
     /// cleared after trigger collection — it is a historical fact about the
     /// object that remains valid through spell resolution and beyond. Set once
     /// at cast finalization; initialized to 0 by `GameObject::new`.

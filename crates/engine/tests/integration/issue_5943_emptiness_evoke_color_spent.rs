@@ -1,0 +1,102 @@
+//! Issue #5943 — Evoking Emptiness doesn't fire its color-spent ETB.
+//!
+//! Emptiness Oracle:
+//!   When this creature enters, if {W}{W} was spent to cast it, return target
+//!   creature card with mana value 3 or less from your graveyard to the
+//!   battlefield.
+//!   When this creature enters, if {B}{B} was spent to cast it, put three -1/-1
+//!   counters on up to one target creature.
+//!   Evoke {W/B}{W/B}
+//!
+//! Classifier: supported_aspect_defect. The AST already carries
+//! `TriggerCondition::ManaColorSpent { minimum: 2 }` on both ETBs; the defect
+//! was runtime — `clear_post_collection_transients` wiped `colors_spent_to_cast`
+//! after collection, so CR 603.4 ExactLive re-checks failed at resolution
+//! (Adamant / color-spent class, not Evoke-specific).
+//!
+//! https://github.com/phase-rs/phase/issues/5943
+
+use engine::game::scenario::{GameScenario, P0, P1};
+use engine::types::actions::AlternativeCastDecision;
+use engine::types::counter::CounterType;
+use engine::types::identifiers::ObjectId;
+use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
+use engine::types::phase::Phase;
+use engine::types::zones::Zone;
+
+const EMPTINESS_ORACLE: &str = "When this creature enters, if {W}{W} was spent to cast it, \
+return target creature card with mana value 3 or less from your graveyard to the battlefield.\n\
+When this creature enters, if {B}{B} was spent to cast it, put three -1/-1 counters on up to one \
+target creature.\n\
+Evoke {W/B}{W/B}";
+
+fn add_mana(state: &mut engine::types::game_state::GameState, color: ManaType, n: u32) {
+    for _ in 0..n {
+        state.players[0]
+            .mana_pool
+            .add(ManaUnit::new(color, ObjectId(0), false, vec![]));
+    }
+}
+
+fn emptiness_in_hand(scenario: &mut GameScenario) -> ObjectId {
+    scenario
+        .add_creature_to_hand(P0, "Emptiness", 3, 3)
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::WhiteBlack, ManaCostShard::WhiteBlack],
+            generic: 4,
+        })
+        .from_oracle_text_with_keywords(&["Evoke"], EMPTINESS_ORACLE)
+        .id()
+}
+
+/// CR 702.74a + CR 207.2c + CR 601.2h + CR 603.4: Evoking Emptiness for {W}{W}
+/// must fire the white-spent ETB (return MV≤3 creature from GY) and then the
+/// evoke sacrifice — the color tally must survive post-collection clearing.
+#[test]
+fn emptiness_evoke_ww_returns_graveyard_creature_then_sacrifices() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let emptiness = emptiness_in_hand(&mut scenario);
+    let gy_creature = scenario
+        .add_creature_to_graveyard(P0, "Recoverable Bear", 2, 2)
+        .with_mana_cost(ManaCost::generic(2))
+        .id();
+
+    let mut runner = scenario.build();
+    // Enough for printed and evoke so the AlternativeCastChoice surfaces;
+    // choosing Evoke spends only {W/B}{W/B} as white.
+    add_mana(runner.state_mut(), ManaType::White, 6);
+
+    let outcome = runner
+        .cast(emptiness)
+        .alternative_cast(AlternativeCastDecision::Alternative)
+        .target_objects(&[gy_creature])
+        .resolve();
+
+    outcome.assert_zone(&[gy_creature], Zone::Battlefield);
+    outcome.assert_zone(&[emptiness], Zone::Graveyard);
+}
+
+/// CR 702.74a + CR 207.2c + CR 601.2h + CR 603.4: Evoking for {B}{B} must fire
+/// the black-spent ETB (three -1/-1 counters) before the evoke sacrifice.
+#[test]
+fn emptiness_evoke_bb_puts_minus_counters_then_sacrifices() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let emptiness = emptiness_in_hand(&mut scenario);
+    let victim = scenario.add_creature(P1, "Victim Bear", 4, 4).id();
+
+    let mut runner = scenario.build();
+    add_mana(runner.state_mut(), ManaType::Black, 6);
+
+    let outcome = runner
+        .cast(emptiness)
+        .alternative_cast(AlternativeCastDecision::Alternative)
+        .target_objects(&[victim])
+        .resolve();
+
+    outcome.assert_counters(victim, CounterType::Minus1Minus1, 3);
+    outcome.assert_zone(&[emptiness], Zone::Graveyard);
+}
