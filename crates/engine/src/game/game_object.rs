@@ -341,12 +341,16 @@ pub struct EmblemSource {
 }
 
 /// CR 702.16p: Start-time attachment exemption captured for one continuous
-/// protection effect (`StaticGateKey::def_index` on the grant source) and host.
+/// protection modification (`static_definitions` index + `modifications` index
+/// on the grant source) and host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtectionStartSnapshot {
     pub resolved_quality: crate::types::keywords::ProtectionTarget,
     pub attachment_ids: Vec<ObjectId>,
 }
+
+/// `(static_definitions index, modifications index, host object id)`.
+pub type ProtectionEffectHostKey = (usize, usize, ObjectId);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameObject {
@@ -393,7 +397,8 @@ pub struct GameObject {
     /// host, the controlled attachments matching that effect's resolved protection
     /// quality when it first started applying to that host.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub protection_start_exempt_attachments: HashMap<(usize, ObjectId), ProtectionStartSnapshot>,
+    pub protection_start_exempt_attachments:
+        HashMap<ProtectionEffectHostKey, ProtectionStartSnapshot>,
     /// CR 702.95b-d: Soulbond pair relationship. Pairing is symmetric:
     /// if `A.paired_with == Some(B)`, then `B.paired_with == Some(A)`.
     /// This is independent from attachments; paired creatures are not

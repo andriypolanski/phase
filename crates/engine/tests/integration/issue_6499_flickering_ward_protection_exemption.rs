@@ -223,6 +223,151 @@ fn apply_host_protection_grant(
         .push(def);
 }
 
+fn apply_host_dual_protection_grant(
+    state: &mut GameState,
+    source_id: engine::types::identifiers::ObjectId,
+    host_id: engine::types::identifiers::ObjectId,
+    qualities: [ProtectionTarget; 2],
+    exemption: Option<ProtectionDoesNotRemove>,
+) {
+    use engine::types::ability::{ContinuousModification, StaticDefinition};
+    use engine::types::keywords::Keyword;
+
+    let mut def = StaticDefinition::continuous()
+        .affected(engine::types::ability::TargetFilter::SpecificObject { id: host_id })
+        .modifications(vec![
+            ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(qualities[0].clone()),
+            },
+            ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(qualities[1].clone()),
+            },
+        ]);
+    if let Some(exemption) = exemption {
+        def = def.protection_does_not_remove(exemption);
+    }
+    state
+        .objects
+        .get_mut(&source_id)
+        .unwrap()
+        .static_definitions
+        .push(def);
+}
+
+#[test]
+fn cr_702_16p_two_qualities_in_one_static_each_modification_snapshots_independently() {
+    let mut state = GameState::new_two_player(42);
+    let host = create_object(
+        &mut state,
+        CardId(50),
+        PlayerId(0),
+        "Bear".to_string(),
+        Zone::Battlefield,
+    );
+    state.objects.get_mut(&host).unwrap().card_types.core_types = vec![CoreType::Creature];
+
+    let red_equipment = create_object(
+        &mut state,
+        CardId(51),
+        PlayerId(0),
+        "Red Sword".to_string(),
+        Zone::Battlefield,
+    );
+    {
+        let obj = state.objects.get_mut(&red_equipment).unwrap();
+        obj.card_types.core_types = vec![CoreType::Artifact];
+        obj.card_types.subtypes.push("Equipment".to_string());
+        obj.color.push(ManaColor::Red);
+        obj.attached_to = Some(host.into());
+    }
+
+    let blue_equipment = create_object(
+        &mut state,
+        CardId(52),
+        PlayerId(0),
+        "Blue Shield".to_string(),
+        Zone::Battlefield,
+    );
+    {
+        let obj = state.objects.get_mut(&blue_equipment).unwrap();
+        obj.card_types.core_types = vec![CoreType::Artifact];
+        obj.card_types.subtypes.push("Equipment".to_string());
+        obj.color.push(ManaColor::Blue);
+        obj.attached_to = Some(host.into());
+    }
+
+    state
+        .objects
+        .get_mut(&host)
+        .unwrap()
+        .attachments
+        .extend([red_equipment, blue_equipment]);
+
+    let grant_source = create_object(
+        &mut state,
+        CardId(53),
+        PlayerId(0),
+        "Dual Ward".to_string(),
+        Zone::Battlefield,
+    );
+    apply_host_dual_protection_grant(
+        &mut state,
+        grant_source,
+        host,
+        [
+            ProtectionTarget::Color(ManaColor::Red),
+            ProtectionTarget::Color(ManaColor::Blue),
+        ],
+        Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+    );
+
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+
+    let snapshots = &state
+        .objects
+        .get(&grant_source)
+        .unwrap()
+        .protection_start_exempt_attachments;
+    assert!(
+        snapshots
+            .get(&(0, 0, host))
+            .is_some_and(|snapshot| snapshot.attachment_ids.contains(&red_equipment)),
+        "red protection modification must snapshot the red Equipment at effect start"
+    );
+    assert!(
+        snapshots
+            .get(&(0, 1, host))
+            .is_some_and(|snapshot| snapshot.attachment_ids.contains(&blue_equipment)),
+        "blue protection modification must snapshot the blue Equipment at effect start"
+    );
+    assert!(
+        !snapshots
+            .get(&(0, 0, host))
+            .is_some_and(|snapshot| snapshot.attachment_ids.contains(&blue_equipment)),
+        "red snapshot must not absorb the blue Equipment"
+    );
+
+    let mut events = Vec::new();
+    check_state_based_actions(&mut state, &mut events);
+    assert_eq!(
+        state
+            .objects
+            .get(&red_equipment)
+            .and_then(|o| o.attached_to),
+        Some(host.into()),
+        "red Equipment exempted by the red protection instance must stay attached"
+    );
+    assert_eq!(
+        state
+            .objects
+            .get(&blue_equipment)
+            .and_then(|o| o.attached_to),
+        Some(host.into()),
+        "blue Equipment exempted by the blue protection instance must stay attached"
+    );
+}
+
 #[test]
 fn cr_702_16p_snapshots_matching_controlled_attachment_at_grant_start() {
     let mut state = GameState::new_two_player(42);
@@ -280,7 +425,7 @@ fn cr_702_16p_snapshots_matching_controlled_attachment_at_grant_start() {
             .get(&grant_source)
             .unwrap()
             .protection_start_exempt_attachments
-            .get(&(0, host))
+            .get(&(0, 0, host))
             .is_some_and(|snapshot| snapshot.attachment_ids.contains(&equipment)),
         "CR 702.16p: white Equipment already attached when the grant starts must be snapshotted"
     );
@@ -500,7 +645,7 @@ fn cr_702_16p_same_source_second_effect_does_not_inherit_first_snapshot() {
         .get(&grant_source)
         .unwrap()
         .protection_start_exempt_attachments
-        .get(&(0, host))
+        .get(&(0, 0, host))
         .is_some_and(|snapshot| snapshot.attachment_ids.contains(&equipment)));
 
     {
@@ -525,7 +670,7 @@ fn cr_702_16p_same_source_second_effect_does_not_inherit_first_snapshot() {
             .get(&grant_source)
             .unwrap()
             .protection_start_exempt_attachments
-            .get(&(0, host))
+            .get(&(0, 0, host))
             .is_some_and(|snapshot| snapshot.attachment_ids.contains(&equipment)),
         "white rider must not inherit blue-rider snapshot at the same effect slot"
     );
@@ -606,7 +751,7 @@ fn cr_702_16p_opponent_controlled_matching_attachment_not_exempt() {
             .get(&grant_source)
             .unwrap()
             .protection_start_exempt_attachments
-            .get(&(0, host))
+            .get(&(0, 0, host))
             .is_some_and(|snapshot| snapshot.attachment_ids.contains(&equipment)),
         "702.16p only exempts controlled attachments at effect start"
     );
