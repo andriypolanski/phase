@@ -15,7 +15,7 @@ use crate::game::game_object::GameObject;
 use crate::game::printed_cards::apply_card_face_to_object;
 use crate::game::zones::create_object;
 use crate::types::ability::{
-    AbilityDefinition, AbilityKind, AdditionalCost, Effect, PtValue, QuantityExpr,
+    AbilityDefinition, AbilityKind, AdditionalCost, Effect, EffectKind, PtValue, QuantityExpr,
     ReplacementDefinition, ResolvedAbility, StaticDefinition, TargetFilter, TargetRef,
     TriggerDefinition,
 };
@@ -1506,9 +1506,13 @@ impl GameRunner {
                 count,
                 min_count,
                 up_to,
+                effect_kind,
                 ..
             } = &self.state.waiting_for
             {
+                if *effect_kind != EffectKind::PutAtLibraryPosition {
+                    break;
+                }
                 if *up_to || cards.len() < *min_count as usize {
                     break;
                 }

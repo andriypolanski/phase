@@ -1396,13 +1396,16 @@ fn group_object_ids_by_owner_apnap(
     state: &GameState,
     object_ids: &[ObjectId],
 ) -> Vec<(PlayerId, Vec<ObjectId>)> {
-    use std::collections::BTreeMap;
-    let mut by_owner: BTreeMap<PlayerId, Vec<ObjectId>> = BTreeMap::new();
+    use std::collections::HashMap;
+    let mut by_owner: HashMap<PlayerId, Vec<ObjectId>> = HashMap::new();
     for &id in object_ids {
         let owner = state.objects[&id].owner;
         by_owner.entry(owner).or_default().push(id);
     }
-    by_owner.into_iter().collect()
+    crate::game::players::apnap_order(state)
+        .into_iter()
+        .filter_map(|pid| by_owner.remove(&pid).map(|cards| (pid, cards)))
+        .collect()
 }
 
 fn mass_library_order_effect_zone_choice(
@@ -5766,6 +5769,7 @@ mod tests {
         state.players[0].library = im::vector![p0_card];
         state.players[1].library = im::vector![p1_a, p1_b];
         state.last_revealed_ids = vec![p0_card, p1_a, p1_b];
+        state.active_player = PlayerId(1);
 
         let ability = ResolvedAbility::new(
             Effect::ChangeZoneAll {
@@ -5789,32 +5793,36 @@ mod tests {
 
         match &state.waiting_for {
             WaitingFor::EffectZoneChoice { player, cards, .. } => {
-                assert_eq!(*player, PlayerId(0), "APNAP: active player's batch first");
-                assert_eq!(cards, &vec![p0_card]);
+                assert_eq!(
+                    *player,
+                    PlayerId(1),
+                    "APNAP: active player's batch first even when active player is not seat 0"
+                );
+                let mut sorted = cards.clone();
+                sorted.sort_by_key(|id| id.0);
+                let mut expect = vec![p1_a, p1_b];
+                expect.sort_by_key(|id| id.0);
+                assert_eq!(sorted, expect);
             }
             other => panic!("expected first-owner EffectZoneChoice, got {other:?}"),
         }
         assert!(
             state.pending_mass_library_order_choice.is_some(),
-            "opponent batch must remain queued"
+            "non-active owner batch must remain queued"
         );
 
         apply_as_current(
             &mut state,
             GameAction::SelectCards {
-                cards: vec![p0_card],
+                cards: vec![p1_a, p1_b],
             },
         )
         .unwrap();
 
         match &state.waiting_for {
             WaitingFor::EffectZoneChoice { player, cards, .. } => {
-                assert_eq!(*player, PlayerId(1), "second owner receives their batch");
-                let mut sorted = cards.clone();
-                sorted.sort_by_key(|id| id.0);
-                let mut expect = vec![p1_a, p1_b];
-                expect.sort_by_key(|id| id.0);
-                assert_eq!(sorted, expect);
+                assert_eq!(*player, PlayerId(0), "second owner receives their batch");
+                assert_eq!(cards, &vec![p0_card]);
             }
             other => panic!("expected second-owner EffectZoneChoice, got {other:?}"),
         }
