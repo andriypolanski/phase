@@ -18,19 +18,23 @@
 //! declining the free cast, the four exiled picks reach hand via
 //! `TrackedSetFiltered { caused_by: Exiled }`, not chain `TrackedSet`.
 
-use engine::game::scenario::{GameRunner, GameScenario};
+use engine::game::effects::change_zone::resolve_all;
+use engine::game::engine::apply_as_current;
+use engine::game::scenario::{GameRunner, GameScenario, P1};
+use engine::game::zones::create_object;
 use engine::parser::oracle_effect::parse_effect_chain;
 use engine::types::ability::{
-    AbilityKind, Effect, ForEachCategoryAction, QuantityExpr, QuantityRef, TargetFilter,
+    AbilityKind, Effect, EffectKind, ForEachCategoryAction, LibraryPosition, QuantityExpr,
+    QuantityRef, ResolvedAbility, TargetFilter,
 };
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
-use engine::types::game_state::WaitingFor;
-use engine::types::identifiers::ObjectId;
+use engine::types::game_state::{GameState, WaitingFor};
+use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
-use engine::types::zones::Zone;
+use engine::types::zones::{EtbTapState, Zone};
 
 const P0: PlayerId = PlayerId(0);
 
@@ -282,6 +286,100 @@ fn dynamic_reveal_put_rest_moves_revealed_cards_to_library_bottom() {
             "revealed cards must stay in the library, not be stranded elsewhere"
         );
     }
+}
+
+#[test]
+fn opponent_library_bottom_order_prompts_owner_and_applies_submitted_order() {
+    // CR 401.4: mass library-bottom placement on opponent-owned revealed cards
+    // must prompt the opponent (not the spell controller) and honor their order.
+    let mut state = GameState::new_two_player(42);
+    let deep = create_object(
+        &mut state,
+        CardId(801),
+        P1,
+        "Deep Card".to_string(),
+        Zone::Library,
+    );
+    let rev3 = create_object(
+        &mut state,
+        CardId(802),
+        P1,
+        "Revealed 3".to_string(),
+        Zone::Library,
+    );
+    let rev1 = create_object(
+        &mut state,
+        CardId(803),
+        P1,
+        "Revealed 1".to_string(),
+        Zone::Library,
+    );
+    let rev2 = create_object(
+        &mut state,
+        CardId(804),
+        P1,
+        "Revealed 2".to_string(),
+        Zone::Library,
+    );
+    state.players[P1.0 as usize].library = im::vector![rev3, rev2, rev1, deep];
+    state.last_revealed_ids = vec![rev3, rev2, rev1];
+
+    let ability = ResolvedAbility::new(
+        Effect::ChangeZoneAll {
+            origin: Some(Zone::Library),
+            destination: Zone::Library,
+            target: TargetFilter::LastRevealed,
+            enters_under: None,
+            enter_tapped: EtbTapState::Unspecified,
+            enter_with_counters: vec![],
+            face_down_profile: None,
+            library_position: Some(LibraryPosition::Bottom),
+            random_order: false,
+        },
+        vec![],
+        ObjectId(900),
+        P0,
+    );
+
+    let mut events = Vec::new();
+    resolve_all(&mut state, &ability, &mut events).unwrap();
+
+    match &state.waiting_for {
+        WaitingFor::EffectZoneChoice {
+            player,
+            cards,
+            effect_kind,
+            ..
+        } => {
+            assert_eq!(
+                *player, P1,
+                "opponent-owned cards must be ordered by their owner, not the caster"
+            );
+            assert_eq!(cards.len(), 3);
+            assert_eq!(*effect_kind, EffectKind::PutAtLibraryPosition);
+        }
+        other => panic!("expected library-order prompt for opponent-owned cards, got {other:?}"),
+    }
+
+    apply_as_current(
+        &mut state,
+        GameAction::SelectCards {
+            cards: vec![rev3, rev1, rev2],
+        },
+    )
+    .unwrap();
+
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "library-order cleanup must finish after the owner submits order"
+    );
+    let library = &state.players[P1.0 as usize].library;
+    assert_eq!(library[0], deep, "unrevealed card stays on top");
+    assert_eq!(
+        library.iter().skip(1).copied().collect::<Vec<_>>(),
+        vec![rev3, rev1, rev2],
+        "bottom tail must match the opponent's submitted order"
+    );
 }
 
 #[test]
