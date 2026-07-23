@@ -196,3 +196,250 @@ fn printed_protection_still_removes_white_aura_without_rider() {
         "illegal Aura must go to its owner's graveyard (CR 704.5m)"
     );
 }
+
+fn apply_host_protection_grant(
+    state: &mut GameState,
+    source_id: engine::types::identifiers::ObjectId,
+    host_id: engine::types::identifiers::ObjectId,
+    pt: ProtectionTarget,
+    exemption: Option<ProtectionDoesNotRemove>,
+) {
+    use engine::types::ability::{ContinuousModification, StaticDefinition};
+    use engine::types::keywords::Keyword;
+
+    let mut def = StaticDefinition::continuous()
+        .affected(engine::types::ability::TargetFilter::SpecificObject { id: host_id })
+        .modifications(vec![ContinuousModification::AddKeyword {
+            keyword: Keyword::Protection(pt),
+        }]);
+    if let Some(exemption) = exemption {
+        def = def.protection_does_not_remove(exemption);
+    }
+    state
+        .objects
+        .get_mut(&source_id)
+        .unwrap()
+        .static_definitions
+        .push(def);
+}
+
+#[test]
+fn cr_702_16p_snapshots_matching_controlled_attachment_at_grant_start() {
+    let mut state = GameState::new_two_player(42);
+    let host = create_object(
+        &mut state,
+        CardId(1),
+        PlayerId(0),
+        "Bear".to_string(),
+        Zone::Battlefield,
+    );
+    state.objects.get_mut(&host).unwrap().card_types.core_types = vec![CoreType::Creature];
+
+    let equipment = create_object(
+        &mut state,
+        CardId(2),
+        PlayerId(0),
+        "Sword".to_string(),
+        Zone::Battlefield,
+    );
+    {
+        let obj = state.objects.get_mut(&equipment).unwrap();
+        obj.card_types.core_types = vec![CoreType::Artifact];
+        obj.card_types.subtypes.push("Equipment".to_string());
+        obj.color.push(ManaColor::White);
+        obj.attached_to = Some(host.into());
+    }
+    state
+        .objects
+        .get_mut(&host)
+        .unwrap()
+        .attachments
+        .push(equipment);
+
+    let grant_source = create_object(
+        &mut state,
+        CardId(3),
+        PlayerId(0),
+        "Blessing".to_string(),
+        Zone::Battlefield,
+    );
+    apply_host_protection_grant(
+        &mut state,
+        grant_source,
+        host,
+        ProtectionTarget::Color(ManaColor::White),
+        Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+    );
+
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+
+    assert!(
+        state
+            .objects
+            .get(&grant_source)
+            .unwrap()
+            .protection_start_exempt_attachments
+            .get(&host)
+            .is_some_and(|snapshot| snapshot.contains(&equipment)),
+        "CR 702.16p: white Equipment already attached when the grant starts must be snapshotted"
+    );
+
+    let mut events = Vec::new();
+    check_state_based_actions(&mut state, &mut events);
+    assert_eq!(
+        state.objects.get(&equipment).and_then(|o| o.attached_to),
+        Some(host.into()),
+        "snapshotted Equipment must survive SBA"
+    );
+}
+
+#[test]
+fn cr_702_16p_does_not_retain_attachment_that_becomes_matching_later() {
+    let mut state = GameState::new_two_player(42);
+    let host = create_object(
+        &mut state,
+        CardId(10),
+        PlayerId(0),
+        "Bear".to_string(),
+        Zone::Battlefield,
+    );
+    state.objects.get_mut(&host).unwrap().card_types.core_types = vec![CoreType::Creature];
+
+    let equipment = create_object(
+        &mut state,
+        CardId(11),
+        PlayerId(0),
+        "Sword".to_string(),
+        Zone::Battlefield,
+    );
+    {
+        let obj = state.objects.get_mut(&equipment).unwrap();
+        obj.card_types.core_types = vec![CoreType::Artifact];
+        obj.card_types.subtypes.push("Equipment".to_string());
+        obj.attached_to = Some(host.into());
+    }
+    state
+        .objects
+        .get_mut(&host)
+        .unwrap()
+        .attachments
+        .push(equipment);
+
+    let grant_source = create_object(
+        &mut state,
+        CardId(12),
+        PlayerId(0),
+        "Blessing".to_string(),
+        Zone::Battlefield,
+    );
+    apply_host_protection_grant(
+        &mut state,
+        grant_source,
+        host,
+        ProtectionTarget::Color(ManaColor::White),
+        Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+    );
+
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+
+    state
+        .objects
+        .get_mut(&equipment)
+        .unwrap()
+        .base_color
+        .push(ManaColor::White);
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+
+    let mut events = Vec::new();
+    check_state_based_actions(&mut state, &mut events);
+
+    assert_eq!(
+        state.objects.get(&equipment).and_then(|o| o.attached_to),
+        None,
+        "Equipment that became matching only after grant start must unattach (CR 702.16p snapshot, not live check)"
+    );
+    assert!(
+        state.battlefield.contains(&equipment),
+        "Equipment remains on the battlefield after CR 704.5n"
+    );
+}
+
+#[test]
+fn cr_702_16p_second_unridered_protection_grant_still_removes_despite_snapshot() {
+    let mut state = GameState::new_two_player(42);
+    let host = create_object(
+        &mut state,
+        CardId(20),
+        PlayerId(0),
+        "Bear".to_string(),
+        Zone::Battlefield,
+    );
+    state.objects.get_mut(&host).unwrap().card_types.core_types = vec![CoreType::Creature];
+
+    let equipment = create_object(
+        &mut state,
+        CardId(21),
+        PlayerId(0),
+        "Sword".to_string(),
+        Zone::Battlefield,
+    );
+    {
+        let obj = state.objects.get_mut(&equipment).unwrap();
+        obj.card_types.core_types = vec![CoreType::Artifact];
+        obj.card_types.subtypes.push("Equipment".to_string());
+        obj.color.push(ManaColor::White);
+        obj.attached_to = Some(host.into());
+    }
+    state
+        .objects
+        .get_mut(&host)
+        .unwrap()
+        .attachments
+        .push(equipment);
+
+    let rider_source = create_object(
+        &mut state,
+        CardId(22),
+        PlayerId(0),
+        "Blessing".to_string(),
+        Zone::Battlefield,
+    );
+    apply_host_protection_grant(
+        &mut state,
+        rider_source,
+        host,
+        ProtectionTarget::Color(ManaColor::White),
+        Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+    );
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+
+    let plain_source = create_object(
+        &mut state,
+        CardId(23),
+        PlayerId(0),
+        "Extra Ward".to_string(),
+        Zone::Battlefield,
+    );
+    apply_host_protection_grant(
+        &mut state,
+        plain_source,
+        host,
+        ProtectionTarget::Color(ManaColor::White),
+        None,
+    );
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+
+    let mut events = Vec::new();
+    check_state_based_actions(&mut state, &mut events);
+
+    assert_eq!(
+        state.objects.get(&equipment).and_then(|o| o.attached_to),
+        None,
+        "second protection from white without a rider must remove despite the first grant's 702.16p snapshot"
+    );
+}

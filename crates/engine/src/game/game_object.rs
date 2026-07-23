@@ -381,6 +381,12 @@ pub struct GameObject {
     /// `None` if unattached. See `AttachTarget` for variants.
     pub attached_to: Option<AttachTarget>,
     pub attachments: Vec<ObjectId>,
+    /// CR 702.16p: For each host this object grants protection to with a
+    /// `ControlledAttachmentsAlreadyAttached` rider, the attachment `ObjectId`s
+    /// that matched the grant's protection quality and were already attached
+    /// when that grant first started applying to that host.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub protection_start_exempt_attachments: HashMap<ObjectId, Vec<ObjectId>>,
     /// CR 702.95b-d: Soulbond pair relationship. Pairing is symmetric:
     /// if `A.paired_with == Some(B)`, then `B.paired_with == Some(A)`.
     /// This is independent from attachments; paired creatures are not
@@ -1249,6 +1255,7 @@ fn _gameobject_partition_is_total(o: &GameObject) {
         phyrexian_life_paid: _,
         mana_spent_source_snapshots: _,
         phase_status: _,
+        protection_start_exempt_attachments: _,
     } = o;
 }
 
@@ -1981,6 +1988,7 @@ impl GameObject {
             dealt_deathtouch_damage: false,
             attached_to: None,
             attachments: Vec::new(),
+            protection_start_exempt_attachments: HashMap::new(),
             paired_with: None,
             pair_controller: None,
             counters: HashMap::new(),
@@ -2355,6 +2363,7 @@ impl GameObject {
         // CR 305.1 + CR 603.4: Land-play provenance is likewise battlefield-
         // entry scoped and must not survive a later zone change.
         self.played_from_zone = None;
+        self.protection_start_exempt_attachments.clear();
         self.convoked_creatures.clear();
         // CR 702.103f: `bestow_form` is intentionally NOT cleared here.
         // The zone-exit cleanup in `apply_zone_exit_cleanup` (zones.rs) reads

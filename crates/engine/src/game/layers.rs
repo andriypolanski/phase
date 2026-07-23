@@ -2243,6 +2243,7 @@ pub fn evaluate_layers(state: &mut GameState) {
 
     // Step 5: Clear dirty flag. A full evaluation satisfies any pending request
     // (Clean / EnteredObjects / Full).
+    crate::game::effects::attach::refresh_protection_start_attachment_snapshots(state);
     state.layers_dirty = LayersDirty::Clean;
 }
 
