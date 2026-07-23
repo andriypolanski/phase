@@ -1513,11 +1513,11 @@ impl GameRunner {
                 if *effect_kind != EffectKind::PutAtLibraryPosition {
                     break;
                 }
-                if *up_to || cards.len() < *min_count as usize {
+                if *up_to || cards.len() < *min_count {
                     break;
                 }
-                let chosen: Vec<_> = cards.iter().take(*count as usize).copied().collect();
-                if chosen.len() != *count as usize {
+                let chosen: Vec<_> = cards.iter().take(*count).copied().collect();
+                if chosen.len() != *count {
                     break;
                 }
                 if apply_as_current(&mut self.state, GameAction::SelectCards { cards: chosen })
