@@ -345,6 +345,14 @@ pub(crate) fn apply_zone_exit_cleanup(
                         | crate::types::ability::CastingPermission::PlayFromExile { .. }
                 )
             });
+            // CR 400.7 + CR 601.2h: A spell that leaves the stack without
+            // resolving onto the battlefield (countered, fizzled, bounced to
+            // hand) must not carry its cast-color tally into a later zone — only
+            // Stack → Battlefield preserves it for the permanent the spell
+            // becomes (CR 400.7d).
+            if to != Zone::Battlefield {
+                obj_mut.clear_cast_payment_provenance();
+            }
         }
 
         if from == Zone::Battlefield {

@@ -4629,10 +4629,13 @@ fn dispatch_collected_triggers(state: &mut GameState, pending: Vec<PendingTrigge
 /// spell is still on the stack — Cascade (CR 702.85a: "functions only while
 /// the spell with cascade is on the stack"), Storm, and dynamically-granted
 /// Casualty. Clearing it for stack objects here made every such cast-triggered
-/// ability silently do nothing at resolution. It is still cleared for
-/// objects in other zones (a fizzled spell that has left the stack, an object
-/// that bounced) since their cast provenance is no longer meaningful, and is
-/// cleared on battlefield exit by `reset_for_battlefield_exit`.
+/// ability silently do nothing at resolution. Cast-payment tallies
+/// (`colors_spent_to_cast`) are cleared when a spell leaves the stack for
+/// any zone other than the battlefield (`zones.rs`) and when a permanent
+/// leaves the battlefield (`reset_for_battlefield_exit`). `cast_from_zone` is
+/// still cleared for objects in other zones (a fizzled spell that has left
+/// the stack, an object that bounced) since their cast provenance is no longer
+/// meaningful for future zone changes.
 fn clear_post_collection_transients(state: &mut GameState) {
     for obj in state.objects.iter_mut().map(|(_, v)| v) {
         if !matches!(obj.zone, Zone::Battlefield | Zone::Stack) {
@@ -19587,6 +19590,23 @@ pub mod tests {
         assert!(
             check_trigger_condition(&state, &cond, PlayerId(0), Some(src), None),
             "ManaColorSpent must remain true after post-collection transient clear"
+        );
+    }
+
+    #[test]
+    fn colors_spent_to_cast_clears_when_spell_leaves_stack_for_graveyard() {
+        use crate::game::zones::move_to_zone;
+
+        let (mut state, src) = setup_with_colored_cast(ManaColor::White, 2);
+        state.objects.get_mut(&src).unwrap().zone = Zone::Stack;
+        let mut events = Vec::new();
+        move_to_zone(&mut state, src, Zone::Graveyard, &mut events);
+        assert_eq!(
+            state.objects[&src]
+                .colors_spent_to_cast
+                .get(ManaColor::White),
+            0,
+            "CR 400.7: a spell countered to the graveyard must not retain cast colors"
         );
     }
 

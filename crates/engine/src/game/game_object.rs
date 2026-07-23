@@ -1042,9 +1042,9 @@ pub struct GameObject {
     /// refs. Persists through CR 603.4 intervening-if resolution re-checks on
     /// the **same** battlefield object (`clear_post_collection_transients`
     /// clears only the transient `mana_spent_to_cast` boolean, not this tally).
-    /// Cleared by `reset_for_battlefield_exit` (CR 400.7) so a permanent that
-    /// leaves and re-enters without being cast again does not inherit a stale
-    /// color tally from its previous visit.
+    /// Cleared by `reset_for_battlefield_exit` and when a spell leaves the stack
+    /// for any zone other than the battlefield (CR 400.7; CR 400.7d preserves
+    /// the tally only for the permanent the spell becomes).
     #[serde(default, skip_serializing_if = "ColoredManaCount::is_empty")]
     pub colors_spent_to_cast: ColoredManaCount,
 
@@ -2287,6 +2287,16 @@ impl GameObject {
         self.assigns_no_combat_damage = false;
     }
 
+    /// CR 400.7 + CR 601.2h: Clear cast-payment tallies bound to a spell on the
+    /// stack or to a permanent's current battlefield visit. Preserved through
+    /// CR 603.4 intervening-if re-checks on that same visit; cleared when the
+    /// spell leaves the stack for any zone other than the battlefield (CR
+    /// 400.7d applies only to the permanent the spell becomes) and when a
+    /// permanent leaves the battlefield.
+    pub fn clear_cast_payment_provenance(&mut self) {
+        self.colors_spent_to_cast = ColoredManaCount::default();
+    }
+
     /// CR 400.7: Clear battlefield-only designations when a permanent leaves the battlefield.
     /// Separate from entry reset because some state (counters, transform) is already handled
     /// by `apply_zone_exit_cleanup` in zones.rs.
@@ -2324,13 +2334,7 @@ impl GameObject {
         // is a new object on any re-entry — clear the stale cast provenance.
         self.cast_from_zone = None;
         self.cast_controller = None;
-        // CR 601.2h + CR 400.7: The per-color cast tally is a historical fact
-        // for the object that actually resolved onto the battlefield from a
-        // cast, kept alive through CR 603.4 intervening-if re-checks on that
-        // same visit. Once the permanent leaves, any re-entry is a new object
-        // with no memory of how it was previously cast — clear alongside the
-        // other cast-entry provenance above (Emptiness / Adamant class).
-        self.colors_spent_to_cast = ColoredManaCount::default();
+        self.clear_cast_payment_provenance();
         // CR 611.2f: the cast-time keyword snapshot is bound to the same casting
         // event as `cast_from_zone`; clear it on the same zone-change boundary.
         self.cast_spell_keywords.clear();

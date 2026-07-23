@@ -10,20 +10,20 @@
 //!
 //! Classifier: supported_aspect_defect. The AST already carries
 //! `TriggerCondition::ManaColorSpent { minimum: 2 }` on both ETBs; the defect
-//! was runtime — `clear_post_collection_transients` wiped `colors_spent_to_cast`
-//! after collection, so CR 603.4 ExactLive re-checks failed at resolution
-//! (Adamant / color-spent class, not Evoke-specific). The tally must also
-//! clear on battlefield exit (CR 400.7) so a blinked permanent does not
-//! inherit its previous cast colors on re-entry.
+//! was runtime lifecycle of `colors_spent_to_cast`:
+//!
+//!   * Too short: `clear_post_collection_transients` wiped the tally before CR
+//!     603.4 resolution re-checks on the original ETB.
+//!   * Too long: the tally survived battlefield exit or stack→graveyard without
+//!     becoming the permanent, so blink/reanimate paths inherited stale colors.
 //!
 //! https://github.com/phase-rs/phase/issues/5943
 
 use engine::game::scenario::{GameScenario, P0, P1};
-use engine::game::triggers::process_triggers;
-use engine::types::actions::AlternativeCastDecision;
+use engine::types::actions::{AlternativeCastDecision, GameAction};
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
+use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
 
@@ -33,9 +33,21 @@ When this creature enters, if {B}{B} was spent to cast it, put three -1/-1 count
 target creature.\n\
 Evoke {W/B}{W/B}";
 
-fn add_mana(state: &mut engine::types::game_state::GameState, color: ManaType, n: u32) {
+const BLINK: &str =
+    "Exile target creature you control. Return it to the battlefield under its owner's control.";
+
+const COUNTERSPELL: &str = "Counter target spell.";
+
+const REANIMATE: &str = "Return target creature card from your graveyard to the battlefield.";
+
+fn add_mana(
+    state: &mut engine::types::game_state::GameState,
+    player: engine::types::player::PlayerId,
+    color: ManaType,
+    n: u32,
+) {
     for _ in 0..n {
-        state.players[0]
+        state.players[player.0 as usize]
             .mana_pool
             .add(ManaUnit::new(color, ObjectId(0), false, vec![]));
     }
@@ -67,9 +79,7 @@ fn emptiness_evoke_ww_returns_graveyard_creature_then_sacrifices() {
         .id();
 
     let mut runner = scenario.build();
-    // Enough for printed and evoke so the AlternativeCastChoice surfaces;
-    // choosing Evoke spends only {W/B}{W/B} as white.
-    add_mana(runner.state_mut(), ManaType::White, 6);
+    add_mana(runner.state_mut(), P0, ManaType::White, 6);
 
     let outcome = runner
         .cast(emptiness)
@@ -92,7 +102,7 @@ fn emptiness_evoke_bb_puts_minus_counters_then_sacrifices() {
     let victim = scenario.add_creature(P1, "Victim Bear", 4, 4).id();
 
     let mut runner = scenario.build();
-    add_mana(runner.state_mut(), ManaType::Black, 6);
+    add_mana(runner.state_mut(), P0, ManaType::Black, 6);
 
     let outcome = runner
         .cast(emptiness)
@@ -104,10 +114,8 @@ fn emptiness_evoke_bb_puts_minus_counters_then_sacrifices() {
     outcome.assert_zone(&[emptiness], Zone::Graveyard);
 }
 
-/// CR 400.7 + CR 603.4: A permanent cast with {W}{W} must satisfy
-/// `ManaColorSpent` on its **original** ETB, but after leaving and re-entering
-/// without a new cast the stale color tally must not survive — the white-spent
-/// branch must not fire again.
+/// CR 400.7 + CR 603.4: Blink through the production cast/zone-change pipeline
+/// must not let a hard-cast Emptiness reuse its prior {W}{W} tally on re-entry.
 #[test]
 fn emptiness_blinked_reentry_does_not_reuse_cast_color_tally() {
     let mut scenario = GameScenario::new();
@@ -122,11 +130,14 @@ fn emptiness_blinked_reentry_does_not_reuse_cast_color_tally() {
         .add_creature_to_graveyard(P0, "Blink Bait", 1, 1)
         .with_mana_cost(ManaCost::generic(1))
         .id();
+    let blink = scenario
+        .add_spell_to_hand_from_oracle(P0, "Cloudshift Test", true, BLINK)
+        .with_mana_cost(ManaCost::zero())
+        .id();
 
     let mut runner = scenario.build();
-    // Hard-cast for {W}{W}{4} (not Evoke) so Emptiness remains on the battlefield.
-    add_mana(runner.state_mut(), ManaType::White, 2);
-    add_mana(runner.state_mut(), ManaType::Colorless, 4);
+    add_mana(runner.state_mut(), P0, ManaType::White, 2);
+    add_mana(runner.state_mut(), P0, ManaType::Colorless, 4);
 
     let outcome = runner
         .cast(emptiness)
@@ -139,29 +150,12 @@ fn emptiness_blinked_reentry_does_not_reuse_cast_color_tally() {
     assert!(
         runner.state().objects[&emptiness]
             .colors_spent_to_cast
-            .get(engine::types::mana::ManaColor::White)
+            .get(ManaColor::White)
             >= 2,
         "precondition: the original cast must record two white mana before the blink"
     );
 
-    let mut events = Vec::new();
-    engine::game::zones::move_to_zone(runner.state_mut(), emptiness, Zone::Exile, &mut events);
-    assert_eq!(
-        runner.state().objects[&emptiness]
-            .colors_spent_to_cast
-            .get(engine::types::mana::ManaColor::White),
-        0,
-        "colors_spent_to_cast must clear on battlefield exit"
-    );
-
-    engine::game::zones::move_to_zone(
-        runner.state_mut(),
-        emptiness,
-        Zone::Battlefield,
-        &mut events,
-    );
-    process_triggers(runner.state_mut(), &events);
-    runner.advance_until_stack_empty();
+    runner.cast(blink).target_objects(&[emptiness]).resolve();
 
     assert_eq!(
         runner.state().objects[&blink_bait].zone,
@@ -172,5 +166,87 @@ fn emptiness_blinked_reentry_does_not_reuse_cast_color_tally() {
         runner.state().objects[&emptiness].zone,
         Zone::Battlefield,
         "Emptiness must remain on the battlefield after the blink"
+    );
+}
+
+/// CR 400.7: A {W}{W} Emptiness countered to the graveyard must drop its cast
+/// colors; a later Reanimate must not satisfy `ManaColorSpent` on entry.
+#[test]
+fn emptiness_countered_then_reanimated_does_not_reuse_cast_color_tally() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let emptiness = emptiness_in_hand(&mut scenario);
+    let reanimate_bait = scenario
+        .add_creature_to_graveyard(P0, "Reanimate Bait", 1, 1)
+        .with_mana_cost(ManaCost::generic(1))
+        .id();
+
+    let counterspell = scenario
+        .add_spell_to_hand_from_oracle(P1, "Counterspell", true, COUNTERSPELL)
+        .with_mana_cost(ManaCost::Cost {
+            generic: 0,
+            shards: vec![ManaCostShard::Blue, ManaCostShard::Blue],
+        })
+        .id();
+    scenario.add_basic_land(P1, ManaColor::Blue);
+    scenario.add_basic_land(P1, ManaColor::Blue);
+
+    let reanimate = scenario
+        .add_spell_to_hand_from_oracle(P0, "Reanimate", false, REANIMATE)
+        .with_mana_cost(ManaCost::zero())
+        .id();
+
+    let mut runner = scenario.build();
+    add_mana(runner.state_mut(), P0, ManaType::White, 2);
+    add_mana(runner.state_mut(), P0, ManaType::Colorless, 4);
+
+    runner
+        .cast(emptiness)
+        .alternative_cast(AlternativeCastDecision::Normal)
+        .commit();
+
+    assert_eq!(
+        runner.state().objects[&emptiness].zone,
+        Zone::Stack,
+        "Emptiness must be on the stack before Counterspell"
+    );
+
+    // CR 117.7: P0 passes so P1 may cast Counterspell in response.
+    runner.act(GameAction::PassPriority).expect("P0 pass");
+
+    add_mana(runner.state_mut(), P1, ManaType::Blue, 2);
+    runner
+        .cast(counterspell)
+        .target_objects(&[emptiness])
+        .resolve();
+
+    assert_eq!(
+        runner.state().objects[&emptiness].zone,
+        Zone::Graveyard,
+        "Counterspell must move Emptiness to the graveyard"
+    );
+    assert_eq!(
+        runner.state().objects[&emptiness]
+            .colors_spent_to_cast
+            .get(ManaColor::White),
+        0,
+        "cast colors must clear when the spell leaves the stack without resolving"
+    );
+
+    runner
+        .cast(reanimate)
+        .target_objects(&[emptiness])
+        .resolve();
+
+    assert_eq!(
+        runner.state().objects[&emptiness].zone,
+        Zone::Battlefield,
+        "Reanimate must return Emptiness to the battlefield"
+    );
+    assert_eq!(
+        runner.state().objects[&reanimate_bait].zone,
+        Zone::Graveyard,
+        "without cast colors, the white-spent ETB must not return reanimate bait"
     );
 }
