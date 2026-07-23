@@ -114,6 +114,7 @@ pub enum NativeEngineProgressPhase {
     DownloadingData,
     Spawning,
     Ready,
+    Failed,
 }
 
 /// Structured IPC failures let the frontend choose its normal WASM fallback.
@@ -490,11 +491,17 @@ pub async fn ensure_native_engine(
     app: AppHandle,
     key: NativeEngineKey,
 ) -> Result<NativeEngineReady, NativeEngineError> {
-    tauri::async_runtime::spawn_blocking(move || ensure_native_engine_sync(&app, key))
+    let progress_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || ensure_native_engine_sync(&app, key))
         .await
         .map_err(|error| NativeEngineError::Internal {
             detail: error.to_string(),
-        })?
+        })
+        .and_then(|result| result);
+    if result.is_err() {
+        emit_progress(&progress_app, NativeEngineProgressPhase::Failed, None);
+    }
+    result
 }
 
 /// Stops the held or adopted native server and removes its persisted record.

@@ -15,6 +15,16 @@
     "enter": "Włącz pełny ekran",
     "exit": "Wyłącz pełny ekran"
   },
+  "nativeEngineProgress": {
+    "title": "Aktualizowanie silnika natywnego",
+    "resolving": "Wyszukiwanie właściwego lokalnego serwera…",
+    "downloadingBinary": "Pobieranie zaktualizowanego serwera…",
+    "verifying": "Weryfikowanie serwera…",
+    "downloadingData": "Pobieranie danych gry…",
+    "spawning": "Uruchamianie lokalnego serwera…",
+    "ready": "Silnik natywny jest gotowy",
+    "failed": "Nie można przygotować silnika natywnego"
+  },
   "buildBadge": {
     "downloading": "pobieranie… {{progress}}%",
     "checking": "sprawdzanie…",

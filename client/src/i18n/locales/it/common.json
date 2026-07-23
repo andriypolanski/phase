@@ -15,6 +15,16 @@
     "enter": "Attiva schermo intero",
     "exit": "Esci da schermo intero"
   },
+  "nativeEngineProgress": {
+    "title": "Aggiornamento del motore nativo",
+    "resolving": "Ricerca del server locale corretto…",
+    "downloadingBinary": "Download del server aggiornato…",
+    "verifying": "Verifica del server…",
+    "downloadingData": "Download dei dati di gioco…",
+    "spawning": "Avvio del server locale…",
+    "ready": "Motore nativo pronto",
+    "failed": "Impossibile preparare il motore nativo"
+  },
   "buildBadge": {
     "downloading": "download in corso… {{progress}}%",
     "checking": "controllo…",
