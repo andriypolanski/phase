@@ -247,10 +247,16 @@ fn dynamic_reveal_put_rest_moves_revealed_cards_to_library_bottom() {
     let mut runner = scenario.build();
     add_mana(&mut runner, 0, 3);
 
-    let outcome = runner.cast(spell).x(3).resolve();
+    // CR 401.4: submit a non-default bottom order through the production
+    // `EffectZoneChoice` path — not an engine-default batch order.
+    let outcome = runner
+        .cast(spell)
+        .x(3)
+        .effect_zone(&[rev3, rev1, rev2])
+        .resolve();
     assert!(
         matches!(outcome.final_waiting_for(), WaitingFor::Priority { .. }),
-        "dynamic reveal rest cleanup must finish without an unhandled prompt"
+        "dynamic reveal rest cleanup must finish after the library-order choice"
     );
 
     let library = &runner.state().players[0].library;
@@ -263,14 +269,11 @@ fn dynamic_reveal_put_rest_moves_revealed_cards_to_library_bottom() {
         library[0], deep,
         "the card below the X-card reveal window must remain on top"
     );
-    // CR 401.4: the three revealed cards must land on the bottom as a contiguous
-    // tail in the engine's deterministic batch order (no EffectZoneChoice when
-    // reorder_all is false and the clause only restates the default).
     let bottom_tail: Vec<ObjectId> = library.iter().skip(1).copied().collect();
     assert_eq!(
         bottom_tail,
-        vec![rev2, rev3, rev1],
-        "revealed remainder must be placed on the library bottom as a contiguous tail"
+        vec![rev3, rev1, rev2],
+        "revealed remainder must land on the bottom in the player's submitted order"
     );
     for id in [rev1, rev2, rev3] {
         assert_eq!(

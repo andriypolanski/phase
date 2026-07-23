@@ -1666,6 +1666,45 @@ pub fn resolve_all(
         state.push_devour_change_zone_snapshot(state.battlefield.iter().copied().collect());
     }
 
+    // CR 401.4: When multiple objects are placed at the same library position
+    // simultaneously and `random_order` is false, the owner arranges their
+    // relative order ("in any order" restates this default). Route through the
+    // shared `EffectZoneChoice` + `PutAtLibraryPosition` production path instead
+    // of silently picking an engine-default batch order.
+    if dest_zone == Zone::Library
+        && effect_library_position.is_some()
+        && !random_order
+        && matching.len() > 1
+    {
+        let choice_count = matching.len();
+        state.waiting_for = WaitingFor::EffectZoneChoice {
+            player: filter_controller,
+            cards: matching,
+            count: choice_count,
+            min_count: choice_count,
+            up_to: false,
+            source_id: ability.source_id,
+            effect_kind: EffectKind::PutAtLibraryPosition,
+            zone: Zone::Library,
+            destination: None,
+            enter_tapped: EtbTapState::Unspecified,
+            enter_transformed: false,
+            enters_under_player: None,
+            enters_attacking: false,
+            owner_library: false,
+            track_exiled_by_source: false,
+            face_down_profile: None,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            count_param: 0,
+            library_position: effect_library_position.clone(),
+            is_cost_payment: false,
+            enters_modified_if: None,
+            duration: ability.duration.clone(),
+        };
+        return Ok(());
+    }
+
     // CR 401.4: When placing objects on the bottom of a library "in a random
     // order", randomize the processing order so the final bottom-to-top sequence
     // is non-deterministic without shuffling the rest of the library. Top
