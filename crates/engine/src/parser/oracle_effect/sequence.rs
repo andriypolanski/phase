@@ -4037,16 +4037,7 @@ pub(super) fn apply_clause_continuation(
                 // applied at runtime. Emit an explicit `LastRevealed` sibling
                 // for the revealed-library remainder instead of patching an
                 // unused field (Sunbird's Invocation / Enshrined Memories class).
-                if !reorder_all
-                    && matches!(
-                        &*defs[bound_index].effect,
-                        Effect::Dig {
-                            keep_count: Some(0),
-                            reveal: true,
-                            ..
-                        }
-                    )
-                {
+                if !reorder_all && dig_needs_last_revealed_rest_sibling(&defs[bound_index].effect) {
                     defs.push(AbilityDefinition::new(
                         kind,
                         Effect::ChangeZoneAll {
@@ -5003,6 +4994,28 @@ fn put_rest_targets_revealed_remainder(lower: &str) -> bool {
     nom_primitives::scan_contains(lower, "put the rest")
         && !nom_primitives::scan_contains(lower, "of the exiled cards")
         && !nom_primitives::scan_contains(lower, "of those exiled cards")
+}
+
+/// CR 701.20a + CR 608.2c: True when a trailing PutRest must become an explicit
+/// `LastRevealed` sibling rather than patching `Dig.rest_destination`. Matches
+/// reveal-only Digs already at `keep_count: 0` and dynamic-count reveal Digs
+/// that assembly demotes to `keep_count: 0` after continuations are applied.
+fn dig_needs_last_revealed_rest_sibling(effect: &Effect) -> bool {
+    match effect {
+        Effect::Dig {
+            keep_count: Some(0),
+            reveal: true,
+            ..
+        } => true,
+        Effect::Dig {
+            keep_count: None,
+            reveal: true,
+            filter: TargetFilter::Any,
+            count,
+            ..
+        } => !matches!(count, QuantityExpr::Fixed { .. }),
+        _ => false,
+    }
 }
 
 /// Recursively patch `rest_destination` on Dig/RevealUntil effects reachable from
@@ -6712,11 +6725,8 @@ pub(super) fn parse_followup_continuation_ast(
                 || nom_primitives::scan_contains(&lower, "into their hand")
             {
                 Zone::Hand
-            } else if nom_primitives::scan_contains(&lower, "on the bottom")
-                || nom_primitives::scan_contains(&lower, "on top of")
-            {
-                Zone::Library
             } else {
+                // "on the bottom", "on top of", and other library rest piles.
                 Zone::Library
             };
             Some(ContinuationAst::PutRest {

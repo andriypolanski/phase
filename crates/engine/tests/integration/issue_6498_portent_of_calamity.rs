@@ -16,7 +16,7 @@
 //! DISCRIMINATING: with X=5, exile one of each of four types plus a duplicate
 //! creature; the unselected revealed creature goes to the graveyard; after
 //! declining the free cast, the four exiled picks reach hand via
-//! `ExiledBySource`, not chain `TrackedSet`.
+//! `TrackedSetFiltered { caused_by: Exiled }`, not chain `TrackedSet`.
 
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::parser::oracle_effect::parse_effect_chain;
@@ -162,6 +162,52 @@ fn portent_parses_dynamic_reveal_and_last_revealed_rest_to_graveyard() {
 }
 
 #[test]
+fn dynamic_reveal_put_rest_emits_last_revealed_sibling() {
+    // Shared grammar class from the parse-diff (Sunbird's Invocation tail,
+    // Enshrined Memories-style separate rest clause, etc.): dynamic-count
+    // reveal-only Dig + trailing "put the rest …".
+    const DYNAMIC_REVEAL_REST: &str = "Reveal the top X cards of your library. Put the rest on the bottom of your library in any order.";
+    let def = parse_effect_chain(DYNAMIC_REVEAL_REST, AbilityKind::Spell);
+    match &*def.effect {
+        Effect::Dig {
+            reveal: true,
+            keep_count: Some(0),
+            count:
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Variable { name },
+                },
+            ..
+        } => assert_eq!(name, "X"),
+        other => panic!("expected dynamic reveal Dig with X, got {other:?}"),
+    }
+
+    let mut node = &def;
+    let mut saw_last_revealed_rest = false;
+    loop {
+        if matches!(
+            &*node.effect,
+            Effect::ChangeZoneAll {
+                origin: Some(Zone::Library),
+                destination: Zone::Library,
+                target: TargetFilter::LastRevealed,
+                ..
+            }
+        ) {
+            saw_last_revealed_rest = true;
+        }
+        match node.sub_ability.as_deref() {
+            Some(next) => node = next,
+            None => break,
+        }
+    }
+    assert!(
+        saw_last_revealed_rest,
+        "dynamic reveal Dig with put-the-rest must emit explicit LastRevealed sibling \
+         instead of relying on unused Dig.rest_destination"
+    );
+}
+
+#[test]
 fn portent_full_resolution_exiles_picks_to_hand_and_unselected_reveal_to_graveyard() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
@@ -288,7 +334,7 @@ fn portent_full_resolution_exiles_picks_to_hand_and_unselected_reveal_to_graveya
         assert_eq!(
             runner.state().objects[id].zone,
             Zone::Hand,
-            "remaining exiled cards must reach hand via ExiledBySource tail"
+            "remaining exiled cards must reach hand via TrackedSetFiltered(Exiled) tail"
         );
         assert!(
             !runner.state().players[0].graveyard.contains(id),
