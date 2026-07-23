@@ -3975,6 +3975,40 @@ pub(super) fn apply_clause_continuation(
             destination,
             reorder_all,
         } => {
+            // CR 608.2c + CR 701.20b (Portent of Calamity): After a per-category
+            // exile from among revealed cards, "put the rest into <zone>" moves
+            // the revealed cards still in the library — `LastRevealed` ∩ origin
+            // Library — NOT Dig.rest_destination (a keep_count-0 reveal Dig
+            // returns before applying rest) and NOT the chain tracked set of
+            // cards just exiled (which would dump the player's picks into the
+            // graveyard). Prefer this over Dig patching when both antecedents
+            // exist in the clause list.
+            let for_each_bound = defs.iter().rposition(|def| {
+                matches!(
+                    &*def.effect,
+                    Effect::ForEachCategory {
+                        action: ForEachCategoryAction::ExileFromPool { .. },
+                        ..
+                    }
+                )
+            });
+            if for_each_bound.is_some() {
+                defs.push(AbilityDefinition::new(
+                    kind,
+                    Effect::ChangeZoneAll {
+                        origin: Some(Zone::Library),
+                        destination,
+                        target: TargetFilter::LastRevealed,
+                        enters_under: None,
+                        enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                        enter_with_counters: vec![],
+                        face_down_profile: None,
+                        library_position: None,
+                        random_order: false,
+                    },
+                ));
+                return;
+            }
             // Absorbed into preceding Dig or RevealUntil — sets rest_destination
             // for unchosen/non-matching cards. CR 608.2c: When the preceding def is
             // a conditional "instead" alternative (new def with `else_ability =
@@ -3995,10 +4029,13 @@ pub(super) fn apply_clause_continuation(
                 None,
                 super::assembly::OnMiss::Ignore,
             );
-            let Some(bound_index) = bound else {
-                return;
-            };
-            patch_rest_destination_recursively(&mut defs[bound_index], destination, reorder_all);
+            if let Some(bound_index) = bound {
+                patch_rest_destination_recursively(
+                    &mut defs[bound_index],
+                    destination,
+                    reorder_all,
+                );
+            }
         }
         ContinuationAst::DigFromAmong {
             quantity,
@@ -6609,6 +6646,35 @@ pub(super) fn parse_followup_continuation_ast(
             } else {
                 // Default: bottom of library (covers "on the bottom", "back in any order", etc.)
                 Zone::Library
+            };
+            Some(ContinuationAst::PutRest {
+                destination,
+                reorder_all: false,
+            })
+        }
+        // CR 608.2c + CR 701.20b (Portent of Calamity / Sanar class): "Put the
+        // rest into your graveyard" after a per-category exile from among the
+        // revealed cards. The rest are the revealed cards still in the library
+        // (not the cards just exiled into the chain tracked set).
+        Effect::ForEachCategory {
+            action: ForEachCategoryAction::ExileFromPool { .. },
+            ..
+        } if nom_primitives::scan_contains(&lower, "put the rest") =>
+        {
+            let destination = if nom_primitives::scan_contains(&lower, "into your graveyard")
+                || nom_primitives::scan_contains(&lower, "into their graveyard")
+            {
+                Zone::Graveyard
+            } else if nom_primitives::scan_contains(&lower, "into your hand")
+                || nom_primitives::scan_contains(&lower, "into their hand")
+            {
+                Zone::Hand
+            } else if nom_primitives::scan_contains(&lower, "on the bottom")
+                || nom_primitives::scan_contains(&lower, "on top of")
+            {
+                Zone::Library
+            } else {
+                Zone::Graveyard
             };
             Some(ContinuationAst::PutRest {
                 destination,
