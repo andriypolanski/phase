@@ -2359,10 +2359,13 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
             enter_tapped,
             enter_with_counters,
         } => {
-            let origin = if matches!(target, TargetFilter::ExiledBySource) {
-                Some(Zone::Exile)
-            } else {
-                origin
+            let origin = match &target {
+                TargetFilter::ExiledBySource => Some(Zone::Exile),
+                TargetFilter::TrackedSetFiltered {
+                    caused_by: Some(crate::types::ability::ThisWayCause::Exiled),
+                    ..
+                } => Some(Zone::Exile),
+                _ => origin,
             };
             Effect::ChangeZoneAll {
                 origin,
@@ -6524,15 +6527,18 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
             choice_count: _,
             enter_with_counters,
         } => {
-            // CR 610.3: Mass filters (ExiledBySource, TrackedSet) act on all matching
-            // objects without individual targeting — use ChangeZoneAll.
+            // CR 610.3: Mass filters (ExiledBySource, TrackedSet,
+            // TrackedSetFiltered) act on all matching objects without individual
+            // targeting — use ChangeZoneAll.
             // ExiledBySource always originates from Exile regardless of inferred zone.
             // CR 122.1: ChangeZoneAll has no counter-stamping channel — those
             // patterns are single-target only in current Oracle text, so the
             // mass-filter branch deliberately drops `enter_with_counters`.
             if matches!(
                 target,
-                TargetFilter::ExiledBySource | TargetFilter::TrackedSet { .. }
+                TargetFilter::ExiledBySource
+                    | TargetFilter::TrackedSet { .. }
+                    | TargetFilter::TrackedSetFiltered { .. }
             ) && enter_with_counters.is_empty()
             {
                 Effect::ChangeZoneAll {

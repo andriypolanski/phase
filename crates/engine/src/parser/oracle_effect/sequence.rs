@@ -3982,7 +3982,9 @@ pub(super) fn apply_clause_continuation(
             // returns before applying rest) and NOT the chain tracked set of
             // cards just exiled (which would dump the player's picks into the
             // graveyard). Prefer this over Dig patching when both antecedents
-            // exist in the clause list.
+            // exist in the clause list. The exiled-card tail ("put the rest of
+            // the exiled cards …") is a distinct remainder set and must stay on
+            // the imperative `ExiledBySource` path.
             let for_each_bound = defs.iter().rposition(|def| {
                 matches!(
                     &*def.effect,
@@ -3992,7 +3994,7 @@ pub(super) fn apply_clause_continuation(
                     }
                 )
             });
-            if for_each_bound.is_some() {
+            if for_each_bound.is_some() && destination != Zone::Hand {
                 defs.push(AbilityDefinition::new(
                     kind,
                     Effect::ChangeZoneAll {
@@ -4030,6 +4032,37 @@ pub(super) fn apply_clause_continuation(
                 super::assembly::OnMiss::Ignore,
             );
             if let Some(bound_index) = bound {
+                // CR 701.20a + CR 608.2c: Dynamic-count reveal-only Digs
+                // (`keep_count: 0`) return before `Dig.rest_destination` is
+                // applied at runtime. Emit an explicit `LastRevealed` sibling
+                // for the revealed-library remainder instead of patching an
+                // unused field (Sunbird's Invocation / Enshrined Memories class).
+                if !reorder_all
+                    && matches!(
+                        &*defs[bound_index].effect,
+                        Effect::Dig {
+                            keep_count: Some(0),
+                            reveal: true,
+                            ..
+                        }
+                    )
+                {
+                    defs.push(AbilityDefinition::new(
+                        kind,
+                        Effect::ChangeZoneAll {
+                            origin: Some(Zone::Library),
+                            destination,
+                            target: TargetFilter::LastRevealed,
+                            enters_under: None,
+                            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                            enter_with_counters: vec![],
+                            face_down_profile: None,
+                            library_position: None,
+                            random_order: false,
+                        },
+                    ));
+                    return;
+                }
                 patch_rest_destination_recursively(
                     &mut defs[bound_index],
                     destination,
@@ -4960,6 +4993,16 @@ fn apply_search_destination_to_ability_chain(
         }
         cursor = sub_ability.sub_ability.as_deref_mut();
     }
+}
+
+/// CR 608.2c + CR 701.20b: True for "put the rest …" clauses that move the
+/// revealed-library remainder after a per-category exile. False for the distinct
+/// exiled-card tail ("put the rest of the exiled cards …"), which must bind to
+/// `ExiledBySource` instead of `LastRevealed` / chain `TrackedSet`.
+fn put_rest_targets_revealed_remainder(lower: &str) -> bool {
+    nom_primitives::scan_contains(lower, "put the rest")
+        && !nom_primitives::scan_contains(lower, "of the exiled cards")
+        && !nom_primitives::scan_contains(lower, "of those exiled cards")
 }
 
 /// Recursively patch `rest_destination` on Dig/RevealUntil effects reachable from
@@ -6659,7 +6702,7 @@ pub(super) fn parse_followup_continuation_ast(
         Effect::ForEachCategory {
             action: ForEachCategoryAction::ExileFromPool { .. },
             ..
-        } if nom_primitives::scan_contains(&lower, "put the rest") =>
+        } if put_rest_targets_revealed_remainder(&lower) =>
         {
             let destination = if nom_primitives::scan_contains(&lower, "into your graveyard")
                 || nom_primitives::scan_contains(&lower, "into their graveyard")
@@ -6674,7 +6717,7 @@ pub(super) fn parse_followup_continuation_ast(
             {
                 Zone::Library
             } else {
-                Zone::Graveyard
+                Zone::Library
             };
             Some(ContinuationAst::PutRest {
                 destination,

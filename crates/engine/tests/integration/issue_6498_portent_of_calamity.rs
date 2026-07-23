@@ -13,9 +13,10 @@
 //! so the per-type exile picks (the tracked set) were immediately moved to the
 //! graveyard. Also, Dig→RevealTop demotion collapsed X to 1.
 //!
-//! DISCRIMINATING: with X=4 and four distinct types, exile one of each type;
-//! those four stay in Exile (and later may go to hand); the unrevealed library
-//! cards are untouched; non-exiled revealed cards go to the graveyard.
+//! DISCRIMINATING: with X=5, exile one of each of four types plus a duplicate
+//! creature; the unselected revealed creature goes to the graveyard; after
+//! declining the free cast, the four exiled picks reach hand via
+//! `ExiledBySource`, not chain `TrackedSet`.
 
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::parser::oracle_effect::parse_effect_chain;
@@ -69,6 +70,7 @@ fn portent_parses_dynamic_reveal_and_last_revealed_rest_to_graveyard() {
     let mut node = &def;
     let mut saw_for_each = false;
     let mut saw_rest_to_gy = false;
+    let mut saw_final_hand_cleanup = false;
     loop {
         match &*node.effect {
             Effect::ForEachCategory {
@@ -81,6 +83,15 @@ fn portent_parses_dynamic_reveal_and_last_revealed_rest_to_graveyard() {
                 target: TargetFilter::LastRevealed,
                 ..
             } => saw_rest_to_gy = true,
+            Effect::ChangeZoneAll {
+                origin: Some(Zone::Exile),
+                destination: Zone::Hand,
+                target: TargetFilter::TrackedSetFiltered {
+                    caused_by: Some(engine::types::ability::ThisWayCause::Exiled),
+                    ..
+                },
+                ..
+            } => saw_final_hand_cleanup = true,
             Effect::ChangeZoneAll {
                 origin: Some(Zone::Exile),
                 destination: Zone::Graveyard,
@@ -101,53 +112,131 @@ fn portent_parses_dynamic_reveal_and_last_revealed_rest_to_graveyard() {
         saw_rest_to_gy,
         "must emit ChangeZoneAll Library+LastRevealed→Graveyard for put-the-rest"
     );
+    assert!(
+        saw_final_hand_cleanup,
+        "final tail must bind to action-stamped TrackedSetFiltered(Exiled), not chain TrackedSet"
+    );
+
+    let mut node = &def;
+    let cast = loop {
+        if matches!(&*node.effect, Effect::CastFromZone { .. }) {
+            break node;
+        }
+        node = node
+            .sub_ability
+            .as_ref()
+            .expect("Portent chain must reach CastFromZone");
+    };
+    let hand_cleanup = |node: &engine::types::ability::AbilityDefinition| {
+        matches!(
+            &*node.effect,
+            Effect::ChangeZoneAll {
+                origin: Some(Zone::Exile),
+                destination: Zone::Hand,
+                target: TargetFilter::TrackedSetFiltered {
+                    caused_by: Some(engine::types::ability::ThisWayCause::Exiled),
+                    ..
+                },
+                ..
+            }
+        )
+    };
+    assert!(
+        cast.sub_ability.as_deref().is_some_and(hand_cleanup)
+            || cast.else_ability.as_deref().is_some_and(hand_cleanup),
+        "CastFromZone must chain into the exiled-card hand cleanup; sub={:?}, else={:?}",
+        cast.sub_ability.as_ref().map(|s| &*s.effect),
+        cast.else_ability.as_ref().map(|s| &*s.effect),
+    );
+    assert!(
+        cast.sub_ability
+            .as_deref()
+            .is_some_and(hand_cleanup),
+        "hand cleanup must be the accept/decline sub_ability (SequentialSibling), not only else_ability"
+    );
+    assert_eq!(
+        cast.sub_ability.as_ref().unwrap().sub_link,
+        engine::types::ability::SubAbilityLink::SequentialSibling,
+        "Portent hand cleanup must resolve on optional cast decline"
+    );
 }
 
 #[test]
-fn portent_exiled_picks_stay_exiled_not_dumped_to_graveyard() {
+fn portent_full_resolution_exiles_picks_to_hand_and_unselected_reveal_to_graveyard() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let spell = {
         let mut b =
             scenario.add_spell_to_hand_from_oracle(P0, "Portent of Calamity", false, PORTENT);
         b.with_mana_cost(ManaCost::Cost {
-            shards: vec![ManaCostShard::X, ManaCostShard::Blue, ManaCostShard::Blue],
+            shards: vec![ManaCostShard::X, ManaCostShard::Blue],
             generic: 0,
         });
         b.id()
     };
-    let types = [
-        CoreType::Creature,
-        CoreType::Artifact,
-        CoreType::Enchantment,
-        CoreType::Sorcery,
-    ];
-    let mut lib_ids = Vec::new();
-    for (i, ty) in types.iter().enumerate() {
-        let id = scenario
-            .add_spell_to_library_top(P0, &format!("Lib {i}"), true)
-            .id();
-        lib_ids.push((*ty, id));
-    }
+
+    // Five revealed cards: four distinct types plus a duplicate creature.
+    let creature_a = scenario
+        .add_spell_to_library_top(P0, "Creature A", true)
+        .id();
+    let creature_b = scenario
+        .add_spell_to_library_top(P0, "Creature B", true)
+        .id();
+    let artifact = scenario.add_spell_to_library_top(P0, "Artifact", true).id();
+    let enchantment = scenario
+        .add_spell_to_library_top(P0, "Enchantment", true)
+        .id();
+    let sorcery = scenario.add_spell_to_library_top(P0, "Sorcery", true).id();
+
     let mut runner = scenario.build();
-    for (ty, id) in &lib_ids {
-        runner
-            .state_mut()
-            .objects
-            .get_mut(id)
-            .unwrap()
-            .card_types
-            .core_types = vec![*ty];
-    }
-    // X=4 + {U}{U}
-    add_mana(&mut runner, 2, 4);
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&creature_a)
+        .unwrap()
+        .card_types
+        .core_types = vec![CoreType::Creature];
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&creature_b)
+        .unwrap()
+        .card_types
+        .core_types = vec![CoreType::Creature];
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&artifact)
+        .unwrap()
+        .card_types
+        .core_types = vec![CoreType::Artifact];
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&enchantment)
+        .unwrap()
+        .card_types
+        .core_types = vec![CoreType::Enchantment];
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&sorcery)
+        .unwrap()
+        .card_types
+        .core_types = vec![CoreType::Sorcery];
 
-    let _outcome = runner.cast(spell).x(4).resolve();
+    // X=5 + {U}
+    add_mana(&mut runner, 1, 5);
 
-    // Exile one card at each per-type prompt (four distinct types).
+    let _outcome = runner.cast(spell).x(5).resolve();
+
     let mut exiled = Vec::new();
     while let WaitingFor::ChooseFromZoneChoice { cards, .. } = &runner.state().waiting_for {
-        let pick = cards[0];
+        let pick = if cards.contains(&creature_a) && cards.contains(&creature_b) {
+            creature_a
+        } else {
+            cards[0]
+        };
         exiled.push(pick);
         runner
             .act(GameAction::SelectCards { cards: vec![pick] })
@@ -157,21 +246,53 @@ fn portent_exiled_picks_stay_exiled_not_dumped_to_graveyard() {
     assert_eq!(
         exiled.len(),
         4,
-        "must prompt once per distinct revealed type"
+        "must exile exactly one card per distinct revealed type"
     );
     for id in &exiled {
         assert_eq!(
             runner.state().objects[id].zone,
             Zone::Exile,
-            "exiled picks must remain in Exile — not dumped to GY by put-the-rest"
+            "exiled picks must remain in Exile through the revealed rest cleanup"
         );
     }
-    // Free-cast gate opens (4 exiled); decline or let the runner stop at the cast prompt.
-    // Either way, the four must not be in the graveyard.
+
+    let unselected_creature = if exiled.contains(&creature_a) {
+        creature_b
+    } else {
+        creature_a
+    };
+    assert_eq!(
+        runner.state().objects[&unselected_creature].zone,
+        Zone::Graveyard,
+        "the revealed-but-unselected duplicate creature must go to the graveyard"
+    );
+
+    // Decline the optional free cast, then drive the final hand cleanup.
+    while !matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
+        match &runner.state().waiting_for {
+            WaitingFor::OptionalEffectChoice { .. } => {
+                runner
+                    .act(GameAction::DecideOptionalEffect { accept: false })
+                    .expect("decline optional free cast");
+            }
+            WaitingFor::CastOffer { .. } => {
+                runner
+                    .act(GameAction::PassPriority)
+                    .expect("decline cast offer");
+            }
+            other => panic!("unexpected prompt before final cleanup: {other:?}"),
+        }
+    }
+
     for id in &exiled {
+        assert_eq!(
+            runner.state().objects[id].zone,
+            Zone::Hand,
+            "remaining exiled cards must reach hand via ExiledBySource tail"
+        );
         assert!(
             !runner.state().players[0].graveyard.contains(id),
-            "exiled pick must not be in the graveyard"
+            "exiled pick must not be stranded in the graveyard"
         );
     }
 }

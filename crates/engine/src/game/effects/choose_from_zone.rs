@@ -513,7 +513,13 @@ pub(crate) fn complete_per_category_exile(
     events: &mut Vec<GameEvent>,
 ) {
     if !chosen.is_empty() {
-        super::publish_tracked_set(state, chosen);
+        super::publish_tracked_set_with_causes(
+            state,
+            chosen
+                .iter()
+                .map(|&id| (id, Some(crate::types::ability::ThisWayCause::Exiled)))
+                .collect(),
+        );
     }
     let _ = prompt_next_category_member(state, &ability, &pool, remaining_member_filters, events);
 }
