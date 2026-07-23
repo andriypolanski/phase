@@ -3518,13 +3518,42 @@ mod tests {
     /// card count, not an Unimplemented gap.
     #[test]
     fn cost_increase_for_each_card_in_hand() {
-        use crate::types::ability::ZoneRef;
+        use crate::types::ability::{QuantityRef, ZoneRef};
         use crate::types::statics::CostModifyMode;
 
         let reduction = try_parse_cost_reduction(
             "this ability costs {1} more to activate for each card in your hand",
         )
         .expect("hand-size cost increase should parse");
+        assert_eq!(reduction.mode, CostModifyMode::Raise);
+        assert_eq!(reduction.amount_per, 1);
+        assert_eq!(reduction.condition, None);
+        match &reduction.count {
+            QuantityExpr::Ref {
+                qty:
+                    QuantityRef::ZoneCardCount {
+                        zone: ZoneRef::Hand,
+                        ..
+                    },
+            }
+            | QuantityExpr::Ref {
+                qty: QuantityRef::HandSize { .. },
+            } => {}
+            other => panic!("expected hand-size count, got {other:?}"),
+        }
+    }
+
+    /// CR 601.2f Raise: the spell-form verb follows the same directional
+    /// cost-modification grammar as the activated-ability form.
+    #[test]
+    fn cost_increase_spell_variant_for_each_card_in_hand() {
+        use crate::types::ability::{QuantityRef, ZoneRef};
+        use crate::types::statics::CostModifyMode;
+
+        let reduction = try_parse_cost_reduction(
+            "this spell costs {1} more to cast for each card in your hand",
+        )
+        .expect("spell-form hand-size cost increase should parse");
         assert_eq!(reduction.mode, CostModifyMode::Raise);
         assert_eq!(reduction.amount_per, 1);
         assert_eq!(reduction.condition, None);
