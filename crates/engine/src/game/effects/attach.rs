@@ -772,11 +772,9 @@ fn protection_blocks_attachment(
             any_matching_grant = true;
             if !protection_grant_exempts_attachment(
                 state,
-                host_id,
                 attachment_id,
                 source_id,
-                def_index,
-                mod_index,
+                (def_index, mod_index, host_id),
                 &resolved,
                 def.protection_does_not_remove.as_ref(),
             ) {
@@ -845,8 +843,8 @@ fn resolve_protection_target_for_grant(
     }
 }
 
-/// Composite key for a protection effect (`StaticGateKey::def_index` on the
-/// grant source) plus the host it applies to.
+/// Composite key for one protection modification on a host:
+/// `(static_definitions index, modifications index, host object id)`.
 use crate::game::game_object::ProtectionEffectHostKey;
 
 /// Live `static_definitions` index for an active static returned by
@@ -1003,7 +1001,8 @@ pub(crate) fn refresh_protection_start_attachment_snapshots(state: &mut GameStat
             let already_snapshotted = state.objects.get(&source_id).is_some_and(|source| {
                 source
                     .protection_start_exempt_attachments
-                    .contains_key(&key)
+                    .get(&key)
+                    .is_some_and(|entry| entry.resolved_quality == grant.resolved_pt)
             });
             if already_snapshotted {
                 continue;
@@ -1034,15 +1033,15 @@ pub(crate) fn refresh_protection_start_attachment_snapshots(state: &mut GameStat
 /// `attachment_id` on `host_id`?
 fn protection_grant_exempts_attachment(
     state: &GameState,
-    host_id: ObjectId,
     attachment_id: ObjectId,
     grant_source_id: ObjectId,
-    grant_def_index: usize,
-    grant_mod_index: usize,
+    grant_key: ProtectionEffectHostKey,
     resolved_pt: &crate::types::keywords::ProtectionTarget,
     exemption: Option<&crate::types::ability::ProtectionDoesNotRemove>,
 ) -> bool {
     use crate::types::ability::ProtectionDoesNotRemove;
+
+    let (grant_def_index, grant_mod_index, host_id) = grant_key;
 
     let Some(exemption) = exemption else {
         return false;
@@ -2745,13 +2744,12 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn reset_source_statics(state: &mut GameState, source_id: ObjectId) {
+    fn replace_source_protection_statics(state: &mut GameState, source_id: ObjectId) {
         use std::sync::Arc;
         let obj = state.objects.get_mut(&source_id).unwrap();
         obj.static_definitions.clear();
         obj.base_static_definitions = Arc::new(Vec::new());
         obj.base_characteristics_initialized = false;
-        obj.protection_start_exempt_attachments.clear();
     }
 
     #[test]
@@ -2930,7 +2928,7 @@ mod tests {
             "blue rider must snapshot the blue Equipment at effect start"
         );
 
-        reset_source_statics(&mut state, grant_source);
+        replace_source_protection_statics(&mut state, grant_source);
         apply_protection_grant(
             &mut state,
             grant_source,

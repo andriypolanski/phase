@@ -653,7 +653,6 @@ fn cr_702_16p_same_source_second_effect_does_not_inherit_first_snapshot() {
         obj.static_definitions.clear();
         obj.base_static_definitions = Arc::new(Vec::new());
         obj.base_characteristics_initialized = false;
-        obj.protection_start_exempt_attachments.clear();
     }
     apply_host_protection_grant(
         &mut state,
