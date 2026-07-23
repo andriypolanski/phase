@@ -208,6 +208,75 @@ fn dynamic_reveal_put_rest_emits_last_revealed_sibling() {
 }
 
 #[test]
+fn dynamic_reveal_put_rest_moves_revealed_cards_to_library_bottom() {
+    // CR 701.20a + CR 608.2c + CR 401.4: dynamic reveal-only Dig with a trailing
+    // put-the-rest clause must move the revealed library remainder to the bottom,
+    // leaving cards below the reveal window untouched (Enshrined Memories class).
+    const DYNAMIC_REVEAL_REST: &str = "Reveal the top X cards of your library. Put the rest on the bottom of your library in any order.";
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    // Library top-to-bottom: [rev3, rev2, rev1, deep]. X=3 reveals the top three.
+    let deep = scenario
+        .add_spell_to_library_top(P0, "Deep Card", true)
+        .id();
+    let rev1 = scenario
+        .add_spell_to_library_top(P0, "Revealed 1", true)
+        .id();
+    let rev2 = scenario
+        .add_spell_to_library_top(P0, "Revealed 2", true)
+        .id();
+    let rev3 = scenario
+        .add_spell_to_library_top(P0, "Revealed 3", true)
+        .id();
+
+    let spell = {
+        let mut b = scenario.add_spell_to_hand_from_oracle(
+            P0,
+            "Dynamic Reveal Probe",
+            false,
+            DYNAMIC_REVEAL_REST,
+        );
+        b.with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::X],
+            generic: 0,
+        });
+        b.id()
+    };
+
+    let mut runner = scenario.build();
+    add_mana(&mut runner, 0, 3);
+
+    let _outcome = runner.cast(spell).x(3).resolve();
+
+    let library = &runner.state().players[0].library;
+    assert_eq!(
+        library.len(),
+        4,
+        "spell must not remove the unrevealed fourth card from the library"
+    );
+    assert_eq!(
+        library[0], deep,
+        "the card below the X-card reveal window must remain on top"
+    );
+    for id in [rev1, rev2, rev3] {
+        assert_eq!(
+            runner.state().objects[&id].zone,
+            Zone::Library,
+            "revealed cards must stay in the library, not be stranded elsewhere"
+        );
+        let position = library
+            .iter()
+            .position(|&candidate| candidate == id)
+            .expect("revealed card must remain in the library");
+        assert!(
+            position >= 1,
+            "revealed remainder must be placed below the untouched top card"
+        );
+    }
+}
+
+#[test]
 fn portent_full_resolution_exiles_picks_to_hand_and_unselected_reveal_to_graveyard() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);

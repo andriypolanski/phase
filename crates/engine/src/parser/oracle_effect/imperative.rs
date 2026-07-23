@@ -6541,6 +6541,14 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
                     | TargetFilter::TrackedSetFiltered { .. }
             ) && enter_with_counters.is_empty()
             {
+                let origin = match target {
+                    TargetFilter::TrackedSetFiltered {
+                        caused_by: Some(crate::types::ability::ThisWayCause::Exiled),
+                        ..
+                    } => origin.or(Some(Zone::Exile)),
+                    TargetFilter::TrackedSetFiltered { .. } => origin,
+                    _ => origin.or(Some(Zone::Exile)),
+                };
                 Effect::ChangeZoneAll {
                     // CR 608.2c + CR 400.7: A tracked-set / impulse mass move
                     // defaults to scanning Exile (cascade, impulse-draw, and the
@@ -6549,7 +6557,7 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
                     // (Breach the Multiverse's graveyard choose stamps
                     // `origin: Some(Graveyard)` in `parse_put_ast`), honor it so
                     // the chosen cards are read out of the right zone.
-                    origin: origin.or(Some(Zone::Exile)),
+                    origin,
                     destination,
                     target,
                     // CR 110.2a: Preserve the parsed entering-controller override

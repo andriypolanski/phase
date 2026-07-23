@@ -4038,6 +4038,8 @@ pub(super) fn apply_clause_continuation(
                 // for the revealed-library remainder instead of patching an
                 // unused field (Sunbird's Invocation / Enshrined Memories class).
                 if !reorder_all && dig_needs_last_revealed_rest_sibling(&defs[bound_index].effect) {
+                    let library_position =
+                        (destination == Zone::Library).then_some(LibraryPosition::Bottom);
                     defs.push(AbilityDefinition::new(
                         kind,
                         Effect::ChangeZoneAll {
@@ -4048,7 +4050,7 @@ pub(super) fn apply_clause_continuation(
                             enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                             enter_with_counters: vec![],
                             face_down_profile: None,
-                            library_position: None,
+                            library_position,
                             random_order: false,
                         },
                     ));
