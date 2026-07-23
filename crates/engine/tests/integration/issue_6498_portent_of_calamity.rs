@@ -247,7 +247,11 @@ fn dynamic_reveal_put_rest_moves_revealed_cards_to_library_bottom() {
     let mut runner = scenario.build();
     add_mana(&mut runner, 0, 3);
 
-    let _outcome = runner.cast(spell).x(3).resolve();
+    let outcome = runner.cast(spell).x(3).resolve();
+    assert!(
+        matches!(outcome.final_waiting_for(), WaitingFor::Priority { .. }),
+        "dynamic reveal rest cleanup must finish without an unhandled prompt"
+    );
 
     let library = &runner.state().players[0].library;
     assert_eq!(
@@ -259,19 +263,20 @@ fn dynamic_reveal_put_rest_moves_revealed_cards_to_library_bottom() {
         library[0], deep,
         "the card below the X-card reveal window must remain on top"
     );
+    // CR 401.4: the three revealed cards must land on the bottom as a contiguous
+    // tail in the engine's deterministic batch order (no EffectZoneChoice when
+    // reorder_all is false and the clause only restates the default).
+    let bottom_tail: Vec<ObjectId> = library.iter().skip(1).copied().collect();
+    assert_eq!(
+        bottom_tail,
+        vec![rev2, rev3, rev1],
+        "revealed remainder must be placed on the library bottom as a contiguous tail"
+    );
     for id in [rev1, rev2, rev3] {
         assert_eq!(
             runner.state().objects[&id].zone,
             Zone::Library,
             "revealed cards must stay in the library, not be stranded elsewhere"
-        );
-        let position = library
-            .iter()
-            .position(|&candidate| candidate == id)
-            .expect("revealed card must remain in the library");
-        assert!(
-            position >= 1,
-            "revealed remainder must be placed below the untouched top card"
         );
     }
 }
