@@ -5,6 +5,7 @@ import {
   collectObjectActions,
   isManaObjectAction,
   requiresConfirmation,
+  resolveDirectPlayOrCastAction,
   resolveSingleActionDispatch,
 } from "../cardActionChoice.ts";
 import { abilityChoiceLabel } from "../costLabel.ts";
@@ -283,6 +284,41 @@ describe("resolveSingleActionDispatch", () => {
   it("returns null for a lone CastPreparedCopy", () => {
     const preparedAction: GameAction = { type: "CastPreparedCopy", data: { source: 1 } };
     expect(resolveSingleActionDispatch([preparedAction], makeGameObject())).toBeNull();
+  });
+});
+
+describe("resolveDirectPlayOrCastAction", () => {
+  const playLandAction: GameAction = {
+    type: "PlayLand",
+    data: { object_id: 1, card_id: 100 },
+  };
+  const cyclingAction: GameAction = {
+    type: "ActivateAbility",
+    data: { source_id: 1, ability_index: 0 },
+  };
+
+  it("returns the one unambiguous engine-provided play action", () => {
+    expect(
+      resolveDirectPlayOrCastAction({ "1": [playLandAction] }, makeGameObject()),
+    ).toBe(playLandAction);
+  });
+
+  it("does not promise release-to-cast when another action requires a choice", () => {
+    expect(
+      resolveDirectPlayOrCastAction(
+        { "1": [playLandAction, cyclingAction] },
+        makeGameObject(),
+      ),
+    ).toBeNull();
+  });
+
+  it("does not classify a lone non-cast ability as release-to-cast", () => {
+    expect(
+      resolveDirectPlayOrCastAction(
+        { "1": [cyclingAction] },
+        makeGameObject({ abilities: [{ consumes_source: false }] }),
+      ),
+    ).toBeNull();
   });
 });
 
