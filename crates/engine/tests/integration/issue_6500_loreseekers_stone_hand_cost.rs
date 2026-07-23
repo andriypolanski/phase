@@ -10,24 +10,22 @@
 //! self `CostReduction` with existing `CostModifyMode::Raise` (CR 601.2f) and
 //! applies the increase at cost-determination time (CR 602.2b).
 //!
-//! DISCRIMINATING: paid generic scales with hand size (0 → `{3}`, 5 → `{8}`).
-//! A revert (no Raise parse / no Raise apply) leaves paid generic at `{3}` for
-//! every hand size and fails the cross-case inequality.
+//! DISCRIMINATING: `can_activate_ability_now` (production affordability gate)
+//! accepts `{3}` with an empty hand but rejects `{3}` with five cards in hand.
+//! A revert leaves `{3}` payable at every hand size.
 
-use engine::game::quantity::resolve_quantity;
-use engine::game::zones::create_object;
+use engine::game::casting::can_activate_ability_now;
+use engine::game::scenario::{GameScenario, P0};
 use engine::parser::oracle::parse_oracle_text;
-use engine::types::ability::{
-    AbilityDefinition, CostReduction, QuantityExpr, QuantityRef, ZoneRef,
-};
-use engine::types::game_state::GameState;
-use engine::types::identifiers::{CardId, ObjectId};
-use engine::types::player::PlayerId;
+use engine::types::ability::{AbilityDefinition, CostReduction};
+use engine::types::mana::{ManaType, ManaUnit};
+use engine::types::phase::Phase;
 use engine::types::statics::CostModifyMode;
-use engine::types::zones::Zone;
 
 const LORESEEKERS_STONE: &str = "{3}, {T}: Draw three cards. This ability costs {1} more \
 to activate for each card in your hand.";
+
+const DRAW_ABILITY_INDEX: usize = 0;
 
 fn find_cost_reduction(def: &AbilityDefinition) -> Option<&CostReduction> {
     let mut cur = Some(def);
@@ -40,54 +38,47 @@ fn find_cost_reduction(def: &AbilityDefinition) -> Option<&CostReduction> {
     None
 }
 
-fn parsed_cost_reduction() -> CostReduction {
-    let parsed = parse_oracle_text(LORESEEKERS_STONE, "Loreseeker's Stone", &[], &[], &[]);
-    parsed
-        .abilities
-        .iter()
-        .find_map(find_cost_reduction)
-        .cloned()
-        .expect("Loreseeker's Stone must capture a self cost modification")
+fn add_mana(
+    state: &mut engine::types::game_state::GameState,
+    player: engine::types::player::PlayerId,
+    n: u32,
+) {
+    for _ in 0..n {
+        state.players[player.0 as usize]
+            .mana_pool
+            .add(ManaUnit::new(
+                ManaType::Colorless,
+                engine::types::identifiers::ObjectId(0),
+                false,
+                vec![],
+            ));
+    }
 }
 
-/// Mirror of runtime `apply_cost_reduction` Raise math (CR 601.2f):
-/// `paid = base + amount_per * count`.
-fn paid_generic_after_raise(
-    state: &GameState,
-    reduction: &CostReduction,
-    base_generic: u32,
-    player: PlayerId,
-    source: ObjectId,
-) -> u32 {
-    assert_eq!(
-        reduction.mode,
-        CostModifyMode::Raise,
-        "Loreseeker's Stone must Raise, not Reduce"
-    );
-    let count = resolve_quantity(state, &reduction.count, player, source);
-    let raise_by = (reduction.amount_per as i32 * count).max(0) as u32;
-    base_generic.saturating_add(raise_by)
+fn loreseekers_stone_on_battlefield(
+    scenario: &mut GameScenario,
+) -> engine::types::identifiers::ObjectId {
+    scenario
+        .add_creature(P0, "Loreseeker's Stone", 0, 0)
+        .as_artifact()
+        .from_oracle_text(LORESEEKERS_STONE)
+        .id()
 }
 
 #[test]
 fn loreseekers_stone_parses_raise_for_each_card_in_hand() {
-    let reduction = parsed_cost_reduction();
+    let reduction = {
+        let parsed = parse_oracle_text(LORESEEKERS_STONE, "Loreseeker's Stone", &[], &[], &[]);
+        parsed
+            .abilities
+            .iter()
+            .find_map(find_cost_reduction)
+            .cloned()
+            .expect("Loreseeker's Stone must capture a self cost modification")
+    };
     assert_eq!(reduction.mode, CostModifyMode::Raise);
     assert_eq!(reduction.amount_per, 1);
     assert_eq!(reduction.condition, None);
-    match &reduction.count {
-        QuantityExpr::Ref {
-            qty:
-                QuantityRef::ZoneCardCount {
-                    zone: ZoneRef::Hand,
-                    ..
-                },
-        }
-        | QuantityExpr::Ref {
-            qty: QuantityRef::HandSize { .. },
-        } => {}
-        other => panic!("expected hand-size count, got {other:?}"),
-    }
 
     let parsed = parse_oracle_text(LORESEEKERS_STONE, "Loreseeker's Stone", &[], &[], &[]);
     let ability = parsed
@@ -107,44 +98,33 @@ fn loreseekers_stone_parses_raise_for_each_card_in_hand() {
 }
 
 #[test]
-fn loreseekers_stone_paid_generic_scales_with_hand_size() {
-    let reduction = parsed_cost_reduction();
-    let base_generic = 3u32;
-
-    let build = |hand_cards: usize| -> (GameState, ObjectId) {
-        let mut state = GameState::new_two_player(42);
-        let source = create_object(
-            &mut state,
-            CardId(1),
-            PlayerId(0),
-            "Loreseeker's Stone".to_string(),
-            Zone::Battlefield,
-        );
-        for i in 0..hand_cards {
-            create_object(
-                &mut state,
-                CardId(100 + i as u64),
-                PlayerId(0),
-                format!("Hand Card {i}"),
-                Zone::Hand,
-            );
-        }
-        (state, source)
-    };
-
-    let (state0, src0) = build(0);
-    let paid0 = paid_generic_after_raise(&state0, &reduction, base_generic, PlayerId(0), src0);
-    assert_eq!(paid0, 3, "empty hand: {{3}} + {{0}} = {{3}}");
-
-    let (state5, src5) = build(5);
-    let paid5 = paid_generic_after_raise(&state5, &reduction, base_generic, PlayerId(0), src5);
-    assert_eq!(
-        paid5, 8,
-        "5 cards in hand: {{3}} + {{5}} = {{8}} (Discord report)"
+fn loreseekers_stone_activation_affordability_scales_with_hand_size() {
+    let mut empty_hand = GameScenario::new();
+    empty_hand.at_phase(Phase::PreCombatMain);
+    let stone_empty = loreseekers_stone_on_battlefield(&mut empty_hand);
+    let mut runner_empty = empty_hand.build();
+    add_mana(runner_empty.state_mut(), P0, 3);
+    assert!(
+        can_activate_ability_now(runner_empty.state(), P0, stone_empty, DRAW_ABILITY_INDEX),
+        "empty hand: {{3}} generic must afford the activation through apply_cost_reduction"
     );
 
-    assert_ne!(
-        paid0, paid5,
-        "paid generic must differ across hand sizes (revert leaves both at {{3}})"
+    let mut five_in_hand = GameScenario::new();
+    five_in_hand.at_phase(Phase::PreCombatMain);
+    let stone_five = loreseekers_stone_on_battlefield(&mut five_in_hand);
+    for i in 0..5 {
+        five_in_hand.add_card_to_hand(P0, &format!("Hand Filler {i}"));
+    }
+    let mut runner_five = five_in_hand.build();
+    add_mana(runner_five.state_mut(), P0, 3);
+    assert!(
+        !can_activate_ability_now(runner_five.state(), P0, stone_five, DRAW_ABILITY_INDEX),
+        "five cards in hand: {{3}} generic must NOT afford {{8}} total (Discord report)"
+    );
+
+    add_mana(runner_five.state_mut(), P0, 5);
+    assert!(
+        can_activate_ability_now(runner_five.state(), P0, stone_five, DRAW_ABILITY_INDEX),
+        "five cards in hand: {{8}} generic must afford the activation"
     );
 }
