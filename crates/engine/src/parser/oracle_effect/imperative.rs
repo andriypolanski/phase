@@ -6529,7 +6529,9 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
         } => {
             // CR 610.3: Mass filters (ExiledBySource, TrackedSet,
             // TrackedSetFiltered) act on all matching objects without individual
-            // targeting — use ChangeZoneAll.
+            // targeting — use ChangeZoneAll. Bounded "up to N" picks from the
+            // tracked set ("put up to one land discarded this way") remain
+            // `ChangeZone` so the player selects a subset at resolution.
             // ExiledBySource always originates from Exile regardless of inferred zone.
             // CR 122.1: ChangeZoneAll has no counter-stamping channel — those
             // patterns are single-target only in current Oracle text, so the
@@ -6540,6 +6542,7 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
                     | TargetFilter::TrackedSet { .. }
                     | TargetFilter::TrackedSetFiltered { .. }
             ) && enter_with_counters.is_empty()
+                && !up_to
             {
                 let origin = match target {
                     TargetFilter::TrackedSetFiltered {
