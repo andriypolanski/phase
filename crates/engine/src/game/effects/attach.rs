@@ -700,16 +700,191 @@ pub(crate) fn attachment_illegality(
     // being attached to the protected permanent.
     // CR 702.16d: Protection from a quality prevents Equipment or Fortifications
     // of that quality from being attached to the protected permanent.
+    // CR 702.16n / CR 702.16p: A protection grant that says "this effect doesn't
+    // remove …" does not make matching attachments illegal via *that* instance
+    // (Flickering Ward / Ward cycle / Benevolent Blessing). Other instances of
+    // protection from the same quality still apply normally.
     if let (Some(host), Some(attachment)) = (
         state.objects.get(&host_id),
         state.objects.get(&attachment_id),
     ) {
-        if crate::game::keywords::protection_prevents_from(host, attachment) {
+        if protection_blocks_attachment(state, host_id, attachment_id, host, attachment) {
             return Some(AttachIllegality::Protection);
         }
     }
 
     None
+}
+
+/// CR 702.16c/d + CR 702.16n/p: True when some protection instance on `host`
+/// matches `attachment` and is not exempted for that attachment.
+fn protection_blocks_attachment(
+    state: &GameState,
+    host_id: ObjectId,
+    attachment_id: ObjectId,
+    host: &crate::game::game_object::GameObject,
+    attachment: &crate::game::game_object::GameObject,
+) -> bool {
+    use crate::types::ability::ContinuousModification;
+    use crate::types::keywords::Keyword;
+    use crate::types::statics::StaticMode;
+
+    // CR 702.16: Printed / base protection on the host has no 702.16n rider —
+    // it always blocks matching attachments.
+    for kw in &host.base_keywords {
+        if let Keyword::Protection(ref pt) = kw {
+            if crate::game::keywords::source_matches_protection_target(pt, host, attachment) {
+                return true;
+            }
+        }
+    }
+
+    // Continuous grants: each matching protection instance blocks unless its
+    // StaticDefinition/TCE carries a CR 702.16n/p exemption covering this
+    // attachment.
+    let mut any_matching_grant = false;
+    for (source_obj, def) in crate::game::functioning_abilities::battlefield_active_statics(state) {
+        if !matches!(def.mode, StaticMode::Continuous) {
+            continue;
+        }
+        let source_id = source_obj.id;
+        let affected = def.affected.clone().unwrap_or(TargetFilter::Any);
+        let ctx = FilterContext::from_source(state, source_id);
+        if !matches_target_filter(state, host_id, &affected, &ctx) {
+            continue;
+        }
+        for modification in &def.modifications {
+            let ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(pt),
+            } = modification
+            else {
+                continue;
+            };
+            let resolved = resolve_protection_target_for_grant(state, source_id, pt);
+            let Some(resolved) = resolved else {
+                continue;
+            };
+            if !crate::game::keywords::source_matches_protection_target(&resolved, host, attachment)
+            {
+                continue;
+            }
+            any_matching_grant = true;
+            if !protection_grant_exempts_attachment(
+                state,
+                host_id,
+                attachment_id,
+                source_id,
+                def.protection_does_not_remove.as_ref(),
+            ) {
+                return true;
+            }
+        }
+    }
+
+    // Transient continuous protection grants (e.g. Mother of Runes) — no
+    // StaticDefinition rider today; treat as always-blocking when they match.
+    for tce in &state.transient_continuous_effects {
+        let ctx = FilterContext::from_source(state, tce.source_id);
+        if !matches_target_filter(state, host_id, &tce.affected, &ctx) {
+            continue;
+        }
+        for modification in &tce.modifications {
+            let ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(pt),
+            } = modification
+            else {
+                continue;
+            };
+            let resolved = resolve_protection_target_for_grant(state, tce.source_id, pt);
+            let Some(resolved) = resolved else {
+                continue;
+            };
+            if crate::game::keywords::source_matches_protection_target(&resolved, host, attachment)
+            {
+                // Transients currently carry no 702.16n rider field.
+                return true;
+            }
+        }
+    }
+
+    // If host.keywords still match (granted protection present) but we found no
+    // continuous grant — fall back to the pre-exemption query so we never open
+    // a hole when grant discovery misses a path.
+    if !any_matching_grant && crate::game::keywords::protection_prevents_from(host, attachment) {
+        return true;
+    }
+
+    false
+}
+
+/// CR 702.16 + CR 105.4: Resolve `ChosenColor` / `ChosenCardType` against the
+/// granting source before matching the attachment (mirrors layer bake-in).
+fn resolve_protection_target_for_grant(
+    state: &GameState,
+    source_id: ObjectId,
+    pt: &crate::types::keywords::ProtectionTarget,
+) -> Option<crate::types::keywords::ProtectionTarget> {
+    use crate::types::keywords::ProtectionTarget;
+    match pt {
+        ProtectionTarget::ChosenColor => state
+            .objects
+            .get(&source_id)
+            .and_then(|src| src.chosen_color())
+            .map(ProtectionTarget::Color),
+        ProtectionTarget::ChosenCardType => state
+            .objects
+            .get(&source_id)
+            .and_then(|src| src.chosen_card_type())
+            .and_then(|ct| ct.protection_quality_str())
+            .map(|quality| ProtectionTarget::CardType(quality.to_string())),
+        other => Some(other.clone()),
+    }
+}
+
+/// CR 702.16n / CR 702.16p: Does this protection grant's exemption rider cover
+/// `attachment_id` on `host_id`?
+fn protection_grant_exempts_attachment(
+    state: &GameState,
+    host_id: ObjectId,
+    attachment_id: ObjectId,
+    grant_source_id: ObjectId,
+    exemption: Option<&crate::types::ability::ProtectionDoesNotRemove>,
+) -> bool {
+    use crate::types::ability::ProtectionDoesNotRemove;
+
+    let Some(exemption) = exemption else {
+        return false;
+    };
+    let Some(attachment) = state.objects.get(&attachment_id) else {
+        return false;
+    };
+    match exemption {
+        // CR 702.16n: "this effect doesn't remove this Aura"
+        ProtectionDoesNotRemove::Source => attachment_id == grant_source_id,
+        // CR 702.16n: "this effect doesn't remove Auras"
+        ProtectionDoesNotRemove::Auras => attachment
+            .card_types
+            .subtypes
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case("Aura")),
+        // CR 702.16p: already-attached Auras/Equipment you control
+        ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached => {
+            let Some(source) = state.objects.get(&grant_source_id) else {
+                return false;
+            };
+            let is_aura_or_equipment = attachment
+                .card_types
+                .subtypes
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case("Aura") || s.eq_ignore_ascii_case("Equipment"));
+            let controlled_by_source_controller = attachment.controller == source.controller;
+            let already_on_host = matches!(
+                attachment.attached_to,
+                Some(AttachTarget::Object(h)) if h == host_id
+            );
+            is_aura_or_equipment && controlled_by_source_controller && already_on_host
+        }
+    }
 }
 
 /// CR 301.5 + CR 303.4 + CR 701.3a: True unless `host_id` is forbidden by a

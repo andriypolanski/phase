@@ -28669,25 +28669,30 @@ fn protection_chosen_color_drops_trailing_sba_exemption_benevolent_blessing() {
 /// yield `Protection(ChosenColor)`. (fail-if-reverted)
 #[test]
 fn protection_chosen_color_drops_trailing_this_aura_exemption() {
+    use crate::types::ability::ProtectionDoesNotRemove;
     use crate::types::keywords::{Keyword, ProtectionTarget};
 
-    let mods = parse_continuous_modifications(
-        "Enchanted creature has protection from the chosen color. This effect doesn't remove this Aura.",
-    );
+    let text =
+        "Enchanted creature has protection from the chosen color. This effect doesn't remove this Aura.";
+    let mods = parse_continuous_modifications(text);
     assert!(
         mods.contains(&ContinuousModification::AddKeyword {
             keyword: Keyword::Protection(ProtectionTarget::ChosenColor),
         }),
         "expected Protection(ChosenColor), got {mods:?}"
     );
-    assert!(
-        !mods.iter().any(|m| matches!(
-            m,
-            ContinuousModification::AddKeyword {
-                keyword: Keyword::Protection(ProtectionTarget::CardType(_)),
-            }
-        )),
-        "trailing prose must not be swallowed into Protection(CardType(_)), got {mods:?}"
+    assert_eq!(
+        parse_protection_does_not_remove(text),
+        Some(ProtectionDoesNotRemove::Source),
+        "CR 702.16n rider must parse as Source exemption"
+    );
+    // `parse_oracle_text` rewrites "this Aura" → `~` before static dispatch.
+    assert_eq!(
+        parse_protection_does_not_remove(
+            "Enchanted creature has protection from the chosen color. This effect doesn't remove ~."
+        ),
+        Some(ProtectionDoesNotRemove::Source),
+        "normalized self-ref `~` must still stamp Source"
     );
 }
 

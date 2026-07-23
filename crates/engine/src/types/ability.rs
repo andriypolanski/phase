@@ -19613,6 +19613,30 @@ pub struct StaticDefinition {
     /// serialized statics (all unrestricted) round-trip unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bypass_beneficiary: Option<ControllerRef>,
+    /// CR 702.16n / CR 702.16p: When this continuous static grants protection,
+    /// attachments matching this exemption are not put into their owners'
+    /// graveyards as a state-based action by *this* protection instance
+    /// (Flickering Ward / Pentarch Ward / Ward cycle / Benevolent Blessing).
+    /// Other protection instances from the same quality still apply normally.
+    /// `None` = no exemption (ordinary protection). Serde-defaulted so
+    /// pre-existing card-data round-trips unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection_does_not_remove: Option<ProtectionDoesNotRemove>,
+}
+
+/// CR 702.16n / CR 702.16p: Which attachments a protection-granting continuous
+/// effect does not remove via SBA (and, for the already-attached form, which
+/// may remain attached when the effect starts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProtectionDoesNotRemove {
+    /// CR 702.16n: "This effect doesn't remove this Aura." — the grant source.
+    Source,
+    /// CR 702.16n: "This effect doesn't remove Auras." (Spectra Ward).
+    Auras,
+    /// CR 702.16p: "doesn't remove Auras and Equipment you control that are
+    /// already attached to it" (Benevolent Blessing). New same-quality
+    /// attachments remain illegal; only already-attached controlled ones stay.
+    ControlledAttachmentsAlreadyAttached,
 }
 
 impl StaticDefinition {
@@ -19632,6 +19656,7 @@ impl StaticDefinition {
             source_controller: None,
             source_object: None,
             bypass_beneficiary: None,
+            protection_does_not_remove: None,
         }
     }
 
@@ -19646,6 +19671,12 @@ impl StaticDefinition {
 
     pub fn modifications(mut self, mods: Vec<ContinuousModification>) -> Self {
         self.modifications = mods;
+        self
+    }
+
+    /// CR 702.16n / CR 702.16p: Attach the protection SBA exemption rider.
+    pub fn protection_does_not_remove(mut self, exemption: ProtectionDoesNotRemove) -> Self {
+        self.protection_does_not_remove = Some(exemption);
         self
     }
 
@@ -23173,6 +23204,7 @@ mod tests {
             source_controller: None,
             source_object: None,
             bypass_beneficiary: None,
+            protection_does_not_remove: None,
         };
         let json = serde_json::to_string(&static_def).unwrap();
         let deserialized: StaticDefinition = serde_json::from_str(&json).unwrap();
@@ -23466,6 +23498,7 @@ mod tests {
                 source_controller: None,
                 source_object: None,
                 bypass_beneficiary: None,
+                protection_does_not_remove: None,
             }],
             duration: Some(Duration::UntilEndOfTurn),
             target: None,
