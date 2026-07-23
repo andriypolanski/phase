@@ -15,7 +15,7 @@
 //! A revert leaves `{3}` payable at every hand size.
 
 use engine::game::casting::can_activate_ability_now;
-use engine::game::scenario::{GameScenario, P0};
+use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{AbilityDefinition, CostReduction};
 use engine::types::mana::{ManaType, ManaUnit};
@@ -102,11 +102,14 @@ fn loreseekers_stone_activation_affordability_scales_with_hand_size() {
     let mut empty_hand = GameScenario::new();
     empty_hand.at_phase(Phase::PreCombatMain);
     let stone_empty = loreseekers_stone_on_battlefield(&mut empty_hand);
+    for i in 0..5 {
+        empty_hand.add_card_to_hand(P1, &format!("Opponent Hand Filler {i}"));
+    }
     let mut runner_empty = empty_hand.build();
     add_mana(runner_empty.state_mut(), P0, 3);
     assert!(
         can_activate_ability_now(runner_empty.state(), P0, stone_empty, DRAW_ABILITY_INDEX),
-        "empty hand: {{3}} generic must afford the activation through apply_cost_reduction"
+        "five cards in the opponent's hand must not raise the controller's {{3}} activation"
     );
 
     let mut five_in_hand = GameScenario::new();
