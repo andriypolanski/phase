@@ -1497,6 +1497,32 @@ impl GameRunner {
                 super::triggers::drain_order_triggers_with_identity(&mut self.state);
                 continue;
             }
+            // CR 401.4: mass library-bottom placement parks `EffectZoneChoice` even
+            // when the stack is empty (Teferi's Puzzle Box draw-step trigger). Tests
+            // that drive phase advancement without an explicit `.effect_zone()` policy
+            // submit the engine-listed card order so resolution can finish.
+            if let WaitingFor::EffectZoneChoice {
+                cards,
+                count,
+                min_count,
+                up_to,
+                ..
+            } = &self.state.waiting_for
+            {
+                if *up_to || cards.len() < *min_count as usize {
+                    break;
+                }
+                let chosen: Vec<_> = cards.iter().take(*count as usize).copied().collect();
+                if chosen.len() != *count as usize {
+                    break;
+                }
+                if apply_as_current(&mut self.state, GameAction::SelectCards { cards: chosen })
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
             if self.state.stack.is_empty() {
                 break;
             }
