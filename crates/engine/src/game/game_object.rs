@@ -340,6 +340,14 @@ pub struct EmblemSource {
     pub printed_ref: Option<PrintedCardRef>,
 }
 
+/// CR 702.16p: Start-time attachment exemption captured for one continuous
+/// protection effect (`StaticGateKey::def_index` on the grant source) and host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtectionStartSnapshot {
+    pub resolved_quality: crate::types::keywords::ProtectionTarget,
+    pub attachment_ids: Vec<ObjectId>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameObject {
     pub id: ObjectId,
@@ -381,12 +389,11 @@ pub struct GameObject {
     /// `None` if unattached. See `AttachTarget` for variants.
     pub attached_to: Option<AttachTarget>,
     pub attachments: Vec<ObjectId>,
-    /// CR 702.16p: For each host this object grants protection to with a
-    /// `ControlledAttachmentsAlreadyAttached` rider, the attachment `ObjectId`s
-    /// that matched the grant's protection quality and were already attached
-    /// when that grant first started applying to that host.
+    /// CR 702.16p: Per [`StaticGateKey::def_index`] on this source and enchanted
+    /// host, the controlled attachments matching that effect's resolved protection
+    /// quality when it first started applying to that host.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub protection_start_exempt_attachments: HashMap<ObjectId, Vec<ObjectId>>,
+    pub protection_start_exempt_attachments: HashMap<(usize, ObjectId), ProtectionStartSnapshot>,
     /// CR 702.95b-d: Soulbond pair relationship. Pairing is symmetric:
     /// if `A.paired_with == Some(B)`, then `B.paired_with == Some(A)`.
     /// This is independent from attachments; paired creatures are not

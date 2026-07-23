@@ -748,6 +748,7 @@ fn protection_blocks_attachment(
             continue;
         }
         let source_id = source_obj.id;
+        let def_index = live_static_def_index(source_obj, def);
         let affected = def.affected.clone().unwrap_or(TargetFilter::Any);
         let ctx = FilterContext::from_source(state, source_id);
         if !matches_target_filter(state, host_id, &affected, &ctx) {
@@ -774,6 +775,8 @@ fn protection_blocks_attachment(
                 host_id,
                 attachment_id,
                 source_id,
+                def_index,
+                &resolved,
                 def.protection_does_not_remove.as_ref(),
             ) {
                 return true;
@@ -841,6 +844,23 @@ fn resolve_protection_target_for_grant(
     }
 }
 
+/// Composite key for a protection effect (`StaticGateKey::def_index` on the
+/// grant source) plus the host it applies to.
+type ProtectionEffectHostKey = (usize, ObjectId);
+
+/// Live `static_definitions` index for an active static returned by
+/// `battlefield_active_statics`.
+fn live_static_def_index(
+    source: &crate::game::game_object::GameObject,
+    def: &crate::types::ability::StaticDefinition,
+) -> usize {
+    source
+        .static_definitions
+        .iter_all()
+        .position(|d| std::ptr::eq(d, def))
+        .expect("active static definition must index live static_definitions")
+}
+
 /// CR 702.16p: Capture attachment IDs matching `resolved_pt` that are already
 /// on `host_id` and controlled by `grant_controller` at protection-start time.
 fn capture_protection_start_attachment_snapshot(
@@ -889,6 +909,7 @@ pub(crate) fn refresh_protection_start_attachment_snapshots(state: &mut GameStat
     use std::collections::{HashMap, HashSet};
 
     struct ActiveGrant {
+        def_index: usize,
         host_id: ObjectId,
         resolved_pt: crate::types::keywords::ProtectionTarget,
         controller: PlayerId,
@@ -906,6 +927,7 @@ pub(crate) fn refresh_protection_start_attachment_snapshots(state: &mut GameStat
             continue;
         }
         let source_id = source_obj.id;
+        let def_index = live_static_def_index(source_obj, def);
         let affected = def.affected.clone().unwrap_or(TargetFilter::Any);
         let ctx = FilterContext::from_source(state, source_id);
         for modification in &def.modifications {
@@ -927,6 +949,7 @@ pub(crate) fn refresh_protection_start_attachment_snapshots(state: &mut GameStat
                     .entry(source_id)
                     .or_default()
                     .push(ActiveGrant {
+                        def_index,
                         host_id,
                         resolved_pt: resolved_pt.clone(),
                         controller: source_obj.controller,
@@ -944,9 +967,14 @@ pub(crate) fn refresh_protection_start_attachment_snapshots(state: &mut GameStat
         if source.protection_start_exempt_attachments.is_empty() {
             continue;
         }
-        let active_hosts = active_by_source
+        let active_keys = active_by_source
             .get(&source_id)
-            .map(|grants| grants.iter().map(|g| g.host_id).collect::<HashSet<_>>())
+            .map(|grants| {
+                grants
+                    .iter()
+                    .map(|g| (g.def_index, g.host_id))
+                    .collect::<HashSet<ProtectionEffectHostKey>>()
+            })
             .unwrap_or_default();
         if active_sources.contains(&source_id) {
             state
@@ -954,7 +982,7 @@ pub(crate) fn refresh_protection_start_attachment_snapshots(state: &mut GameStat
                 .get_mut(&source_id)
                 .expect("battlefield object")
                 .protection_start_exempt_attachments
-                .retain(|host_id, _| active_hosts.contains(host_id));
+                .retain(|key, _| active_keys.contains(key));
         } else {
             state
                 .objects
@@ -968,32 +996,35 @@ pub(crate) fn refresh_protection_start_attachment_snapshots(state: &mut GameStat
     let mut to_capture = Vec::new();
     for (source_id, grants) in active_by_source {
         for grant in grants {
+            let key = (grant.def_index, grant.host_id);
             let already_snapshotted = state.objects.get(&source_id).is_some_and(|source| {
                 source
                     .protection_start_exempt_attachments
-                    .contains_key(&grant.host_id)
+                    .get(&key)
+                    .is_some_and(|entry| entry.resolved_quality == grant.resolved_pt)
             });
             if already_snapshotted {
                 continue;
             }
-            to_capture.push((
-                source_id,
-                grant.host_id,
-                grant.resolved_pt,
-                grant.controller,
-            ));
+            to_capture.push((source_id, key, grant.resolved_pt, grant.controller));
         }
     }
 
-    for (source_id, host_id, resolved_pt, controller) in to_capture {
+    for (source_id, key, resolved_pt, controller) in to_capture {
         let snapshot =
-            capture_protection_start_attachment_snapshot(state, host_id, controller, &resolved_pt);
+            capture_protection_start_attachment_snapshot(state, key.1, controller, &resolved_pt);
         state
             .objects
             .get_mut(&source_id)
             .expect("grant source must exist")
             .protection_start_exempt_attachments
-            .insert(host_id, snapshot);
+            .insert(
+                key,
+                crate::game::game_object::ProtectionStartSnapshot {
+                    resolved_quality: resolved_pt,
+                    attachment_ids: snapshot,
+                },
+            );
     }
 }
 
@@ -1004,6 +1035,8 @@ fn protection_grant_exempts_attachment(
     host_id: ObjectId,
     attachment_id: ObjectId,
     grant_source_id: ObjectId,
+    grant_def_index: usize,
+    resolved_pt: &crate::types::keywords::ProtectionTarget,
     exemption: Option<&crate::types::ability::ProtectionDoesNotRemove>,
 ) -> bool {
     use crate::types::ability::ProtectionDoesNotRemove;
@@ -1023,13 +1056,20 @@ fn protection_grant_exempts_attachment(
             .subtypes
             .iter()
             .any(|s| s.eq_ignore_ascii_case("Aura")),
-        // CR 702.16p: only attachments that matched the grant's protection
-        // quality and were already attached when this grant started applying.
+        // CR 702.16p: only attachments snapshotted for this specific effect
+        // (`StaticGateKey::def_index`) and host when it started applying.
         ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached => state
             .objects
             .get(&grant_source_id)
-            .and_then(|source| source.protection_start_exempt_attachments.get(&host_id))
-            .is_some_and(|snapshot| snapshot.contains(&attachment_id)),
+            .and_then(|source| {
+                source
+                    .protection_start_exempt_attachments
+                    .get(&(grant_def_index, host_id))
+            })
+            .is_some_and(|entry| {
+                entry.resolved_quality == *resolved_pt
+                    && entry.attachment_ids.contains(&attachment_id)
+            }),
     }
 }
 
@@ -2681,6 +2721,33 @@ mod tests {
         crate::game::layers::evaluate_layers(state);
     }
 
+    fn protection_snapshot_ids(
+        state: &GameState,
+        source_id: ObjectId,
+        def_index: usize,
+        host_id: ObjectId,
+    ) -> Vec<ObjectId> {
+        state
+            .objects
+            .get(&source_id)
+            .and_then(|source| {
+                source
+                    .protection_start_exempt_attachments
+                    .get(&(def_index, host_id))
+            })
+            .map(|entry| entry.attachment_ids.clone())
+            .unwrap_or_default()
+    }
+
+    fn reset_source_statics(state: &mut GameState, source_id: ObjectId) {
+        use std::sync::Arc;
+        let obj = state.objects.get_mut(&source_id).unwrap();
+        obj.static_definitions.clear();
+        obj.base_static_definitions = Arc::new(Vec::new());
+        obj.base_characteristics_initialized = false;
+        obj.protection_start_exempt_attachments.clear();
+    }
+
     #[test]
     fn cr_702_16p_exempts_matching_controlled_attachment_at_grant_start() {
         use crate::types::ability::ProtectionDoesNotRemove;
@@ -2706,14 +2773,7 @@ mod tests {
         );
         evaluate_protection_layers(&mut state);
 
-        let snapshot = state
-            .objects
-            .get(&grant_source)
-            .unwrap()
-            .protection_start_exempt_attachments
-            .get(&host)
-            .cloned()
-            .unwrap_or_default();
+        let snapshot = protection_snapshot_ids(&state, grant_source, 0, host);
         assert!(
             snapshot.contains(&equipment),
             "CR 702.16p: matching controlled attachment at grant start must be snapshotted"
@@ -2755,13 +2815,7 @@ mod tests {
         evaluate_protection_layers(&mut state);
 
         assert!(
-            !state
-                .objects
-                .get(&grant_source)
-                .unwrap()
-                .protection_start_exempt_attachments
-                .get(&host)
-                .is_some_and(|snapshot| snapshot.contains(&equipment)),
+            !protection_snapshot_ids(&state, grant_source, 0, host).contains(&equipment),
             "colorless Equipment must not enter the start-time snapshot"
         );
 
@@ -2838,6 +2892,117 @@ mod tests {
             state.objects.get(&equipment).unwrap().attached_to,
             None,
             "second un-ridered grant must remove despite the first grant's snapshot"
+        );
+    }
+
+    #[test]
+    fn cr_702_16p_same_source_second_effect_does_not_inherit_first_snapshot() {
+        use crate::types::ability::ProtectionDoesNotRemove;
+        use crate::types::keywords::ProtectionTarget;
+        use crate::types::mana::ManaColor;
+
+        let mut state = setup();
+        let host = spawn_creature(&mut state, "Bear");
+        let equipment = spawn_equipment(&mut state, "Sword", 40);
+        {
+            let obj = state.objects.get_mut(&equipment).unwrap();
+            obj.color.push(ManaColor::Blue);
+        }
+        attach_to(&mut state, equipment, host);
+
+        let grant_source = spawn_grant_source(&mut state, "Dual Blessing", 41);
+        apply_protection_grant(
+            &mut state,
+            grant_source,
+            host,
+            ProtectionTarget::Color(ManaColor::Blue),
+            Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+        );
+        evaluate_protection_layers(&mut state);
+        assert!(
+            protection_snapshot_ids(&state, grant_source, 0, host).contains(&equipment),
+            "blue rider must snapshot the blue Equipment at effect start"
+        );
+
+        reset_source_statics(&mut state, grant_source);
+        apply_protection_grant(
+            &mut state,
+            grant_source,
+            host,
+            ProtectionTarget::Color(ManaColor::White),
+            Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+        );
+        evaluate_protection_layers(&mut state);
+        assert!(
+            !protection_snapshot_ids(&state, grant_source, 0, host).contains(&equipment),
+            "white rider must not inherit the prior blue snapshot at the same def_index"
+        );
+
+        state
+            .objects
+            .get_mut(&equipment)
+            .unwrap()
+            .base_color
+            .push(ManaColor::White);
+        evaluate_protection_layers(&mut state);
+
+        assert_eq!(
+            attachment_illegality(&state, equipment, host),
+            Some(AttachIllegality::Protection),
+            "white Equipment must be illegal once it matches the white rider"
+        );
+
+        let mut events = Vec::new();
+        crate::game::sba::check_state_based_actions(&mut state, &mut events);
+        assert_eq!(
+            state.objects.get(&equipment).unwrap().attached_to,
+            None,
+            "Equipment that became white after the white rider started must unattach"
+        );
+    }
+
+    #[test]
+    fn cr_702_16p_opponent_controlled_matching_attachment_not_exempt() {
+        use crate::types::ability::ProtectionDoesNotRemove;
+        use crate::types::keywords::ProtectionTarget;
+        use crate::types::mana::ManaColor;
+
+        let mut state = setup();
+        let host = spawn_creature(&mut state, "Bear");
+        let equipment = spawn_equipment(&mut state, "Sword", 50);
+        {
+            let obj = state.objects.get_mut(&equipment).unwrap();
+            obj.color.push(ManaColor::White);
+            obj.controller = PlayerId(1);
+            obj.base_controller = Some(PlayerId(1));
+        }
+        attach_to(&mut state, equipment, host);
+
+        let grant_source = spawn_grant_source(&mut state, "Blessing", 51);
+        apply_protection_grant(
+            &mut state,
+            grant_source,
+            host,
+            ProtectionTarget::Color(ManaColor::White),
+            Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+        );
+        evaluate_protection_layers(&mut state);
+
+        assert!(
+            !protection_snapshot_ids(&state, grant_source, 0, host).contains(&equipment),
+            "702.16p only exempts attachments you control at effect start"
+        );
+        assert_eq!(
+            attachment_illegality(&state, equipment, host),
+            Some(AttachIllegality::Protection)
+        );
+
+        let mut events = Vec::new();
+        crate::game::sba::check_state_based_actions(&mut state, &mut events);
+        assert_eq!(
+            state.objects.get(&equipment).unwrap().attached_to,
+            None,
+            "opponent-controlled matching Equipment must unattach"
         );
     }
 }

@@ -280,8 +280,8 @@ fn cr_702_16p_snapshots_matching_controlled_attachment_at_grant_start() {
             .get(&grant_source)
             .unwrap()
             .protection_start_exempt_attachments
-            .get(&host)
-            .is_some_and(|snapshot| snapshot.contains(&equipment)),
+            .get(&(0, host))
+            .is_some_and(|snapshot| snapshot.attachment_ids.contains(&equipment)),
         "CR 702.16p: white Equipment already attached when the grant starts must be snapshotted"
     );
 
@@ -441,5 +441,181 @@ fn cr_702_16p_second_unridered_protection_grant_still_removes_despite_snapshot()
         state.objects.get(&equipment).and_then(|o| o.attached_to),
         None,
         "second protection from white without a rider must remove despite the first grant's 702.16p snapshot"
+    );
+}
+
+#[test]
+fn cr_702_16p_same_source_second_effect_does_not_inherit_first_snapshot() {
+    use std::sync::Arc;
+
+    let mut state = GameState::new_two_player(42);
+    let host = create_object(
+        &mut state,
+        CardId(30),
+        PlayerId(0),
+        "Bear".to_string(),
+        Zone::Battlefield,
+    );
+    state.objects.get_mut(&host).unwrap().card_types.core_types = vec![CoreType::Creature];
+
+    let equipment = create_object(
+        &mut state,
+        CardId(31),
+        PlayerId(0),
+        "Sword".to_string(),
+        Zone::Battlefield,
+    );
+    {
+        let obj = state.objects.get_mut(&equipment).unwrap();
+        obj.card_types.core_types = vec![CoreType::Artifact];
+        obj.card_types.subtypes.push("Equipment".to_string());
+        obj.color.push(ManaColor::Blue);
+        obj.attached_to = Some(host.into());
+    }
+    state
+        .objects
+        .get_mut(&host)
+        .unwrap()
+        .attachments
+        .push(equipment);
+
+    let grant_source = create_object(
+        &mut state,
+        CardId(32),
+        PlayerId(0),
+        "Dual Blessing".to_string(),
+        Zone::Battlefield,
+    );
+    apply_host_protection_grant(
+        &mut state,
+        grant_source,
+        host,
+        ProtectionTarget::Color(ManaColor::Blue),
+        Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+    );
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+    assert!(state
+        .objects
+        .get(&grant_source)
+        .unwrap()
+        .protection_start_exempt_attachments
+        .get(&(0, host))
+        .is_some_and(|snapshot| snapshot.attachment_ids.contains(&equipment)));
+
+    {
+        let obj = state.objects.get_mut(&grant_source).unwrap();
+        obj.static_definitions.clear();
+        obj.base_static_definitions = Arc::new(Vec::new());
+        obj.base_characteristics_initialized = false;
+        obj.protection_start_exempt_attachments.clear();
+    }
+    apply_host_protection_grant(
+        &mut state,
+        grant_source,
+        host,
+        ProtectionTarget::Color(ManaColor::White),
+        Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+    );
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+    assert!(
+        !state
+            .objects
+            .get(&grant_source)
+            .unwrap()
+            .protection_start_exempt_attachments
+            .get(&(0, host))
+            .is_some_and(|snapshot| snapshot.attachment_ids.contains(&equipment)),
+        "white rider must not inherit blue-rider snapshot at the same effect slot"
+    );
+
+    state
+        .objects
+        .get_mut(&equipment)
+        .unwrap()
+        .base_color
+        .push(ManaColor::White);
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+
+    let mut events = Vec::new();
+    check_state_based_actions(&mut state, &mut events);
+    assert_eq!(
+        state.objects.get(&equipment).and_then(|o| o.attached_to),
+        None,
+        "Equipment that became white after the white rider started must unattach"
+    );
+}
+
+#[test]
+fn cr_702_16p_opponent_controlled_matching_attachment_not_exempt() {
+    let mut state = GameState::new_two_player(42);
+    let host = create_object(
+        &mut state,
+        CardId(40),
+        PlayerId(0),
+        "Bear".to_string(),
+        Zone::Battlefield,
+    );
+    state.objects.get_mut(&host).unwrap().card_types.core_types = vec![CoreType::Creature];
+
+    let equipment = create_object(
+        &mut state,
+        CardId(41),
+        PlayerId(1),
+        "Sword".to_string(),
+        Zone::Battlefield,
+    );
+    {
+        let obj = state.objects.get_mut(&equipment).unwrap();
+        obj.card_types.core_types = vec![CoreType::Artifact];
+        obj.card_types.subtypes.push("Equipment".to_string());
+        obj.color.push(ManaColor::White);
+        obj.controller = PlayerId(1);
+        obj.base_controller = Some(PlayerId(1));
+        obj.attached_to = Some(host.into());
+    }
+    state
+        .objects
+        .get_mut(&host)
+        .unwrap()
+        .attachments
+        .push(equipment);
+
+    let grant_source = create_object(
+        &mut state,
+        CardId(42),
+        PlayerId(0),
+        "Blessing".to_string(),
+        Zone::Battlefield,
+    );
+    apply_host_protection_grant(
+        &mut state,
+        grant_source,
+        host,
+        ProtectionTarget::Color(ManaColor::White),
+        Some(ProtectionDoesNotRemove::ControlledAttachmentsAlreadyAttached),
+    );
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+
+    assert!(
+        !state
+            .objects
+            .get(&grant_source)
+            .unwrap()
+            .protection_start_exempt_attachments
+            .get(&(0, host))
+            .is_some_and(|snapshot| snapshot.attachment_ids.contains(&equipment)),
+        "702.16p only exempts controlled attachments at effect start"
+    );
+
+    let mut events = Vec::new();
+    check_state_based_actions(&mut state, &mut events);
+    assert_eq!(
+        state.objects.get(&equipment).and_then(|o| o.attached_to),
+        None,
+        "opponent-controlled matching Equipment must unattach"
     );
 }
