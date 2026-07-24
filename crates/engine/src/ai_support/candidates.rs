@@ -1732,7 +1732,7 @@ pub fn candidate_actions_broad_with_probe(
             } else if modal.mode_costs.is_empty() {
                 actions
             } else {
-                // CR 702.172b: For Spree spells, filter out mode combinations the player
+                // CR 702.172a: For Spree spells, filter out mode combinations the player
                 // cannot afford. Each mode has an additional cost that sums with the base cost.
                 let local_probe = casting::PriorityCastProbe::new(state, *player);
                 actions
@@ -1835,7 +1835,7 @@ pub fn candidate_actions_broad_with_probe(
                     Some(*player),
                 ));
             }
-            // CR 702.172b: Batched repeated-optional modals (Hawkeye) and Spree-
+            // CR 702.172a: Batched repeated-optional modals (Hawkeye) and Spree-
             // shaped ability modals carry per-mode mana costs. Prune combinations
             // the player cannot afford; the engine already capped max_choices.
             if modal.mode_pawprints.is_empty() && !modal.mode_costs.is_empty() {

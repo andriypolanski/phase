@@ -5623,7 +5623,7 @@ fn is_synchronous_mana_pay_cost(effect: &Effect) -> bool {
 
 /// CR 603.12a: Fire the repeated-optional-payment process and stash the
 /// continuation. Modal reflexives (Hawkeye, Tranquil Frillback) batch payment
-/// and mode choice into one `AbilityModeChoice` (CR 702.172b Spree-shaped
+/// and mode choice into one `AbilityModeChoice` (CR 702.172a Spree-shaped
 /// `mode_costs`). Non-modal reflexives keep the legacy per-iteration
 /// `OptionalEffectChoice` driver.
 fn drive_repeated_optional_payment(
@@ -5656,9 +5656,10 @@ fn repeated_optional_reflexive_is_modal(reflexive: &ResolvedAbility) -> bool {
     reflexive.modal.is_some() && !reflexive.mode_abilities.is_empty()
 }
 
-/// CR 702.172b + CR 603.12a: Batch "pay up to N × {cost}" with "choose up to
+/// CR 702.172a + CR 603.12a: Batch "pay up to N × {cost}" with "choose up to
 /// that many modes" into a single `AbilityModeChoice`. Affordability is probed
-/// once at prompt time; `mode_costs` carries the per-mode payment unit for display.
+/// once at prompt time; `mode_costs` carries the per-mode payment unit for
+/// display and `max_affordable_selections` stamps the engine-authoritative cap.
 fn drive_batched_repeated_optional_modal_payment(
     state: &mut GameState,
     ability: &ResolvedAbility,
@@ -5698,6 +5699,7 @@ fn drive_batched_repeated_optional_modal_payment(
     modal.mode_costs = vec![payment_mana.clone(); mode_count];
     modal.min_choices = 0;
     modal.max_choices = max_choices;
+    modal.max_affordable_selections = Some(max_affordable);
     modal.dynamic_max_choices = None;
 
     let mut reflexive_prepared = reflexive.clone();
@@ -5818,7 +5820,7 @@ fn drive_sequential_repeated_optional_payment(
     Ok(())
 }
 
-/// CR 603.12a + CR 702.172b: Settle a batched repeated-optional payment when the
+/// CR 603.12a + CR 702.172a: Settle a batched repeated-optional payment when the
 /// player submits `SelectModes`. Empty indices decline without paying; non-empty
 /// indices pay `len × unit` via the single PayCost authority, then mode
 /// resolution proceeds with K = len.

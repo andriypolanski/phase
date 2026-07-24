@@ -15940,9 +15940,16 @@ pub struct ModalChoice {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<ModalSelectionConstraint>,
     /// Per-mode additional mana costs (Spree). Empty for standard modal spells.
-    /// CR 702.172b: Chosen mode costs are additional costs, not part of the base mana cost.
+    /// CR 702.172a: Chosen mode costs are additional costs, not part of the base mana cost.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mode_costs: Vec<ManaCost>,
+    /// CR 118.1 + CR 702.172a: When `mode_costs` is non-empty, the engine probes
+    /// how many mode selections the controller can pay for with current mana
+    /// sources (including feasible auto-tap). The UI must cap interactive
+    /// selection to this value and must not infer affordability from mana-pool
+    /// entry count or pip arithmetic. Omitted when `mode_costs` is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_affordable_selections: Option<u32>,
     /// CR 700.2i: Per-mode pawprint weight for points-budget modals ("up to N {P}
     /// worth of modes"). Empty for all non-pawprint modals. When non-empty, the
     /// modal is a pawprint budget modal and `max_choices` is reinterpreted as the

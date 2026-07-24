@@ -3877,6 +3877,7 @@ fn rw_modal_choice(m: &ModalChoice) -> RwProfile {
         allow_repeat_modes: _,
         constraints: _,
         mode_costs: _,
+        max_affordable_selections: _,
         mode_pawprints: _,
         entwine_cost: _,
         selection: _,

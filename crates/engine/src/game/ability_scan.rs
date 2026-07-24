@@ -369,6 +369,7 @@ fn scan_modal_choice(m: &ModalChoice, mode: ScanMode) -> Axes {
         allow_repeat_modes: _,
         constraints: _, // cast-time modal-cap predicates (announcement-time, not resolution)
         mode_costs: _,
+        max_affordable_selections: _,
         mode_pawprints: _,
         entwine_cost: _,
         selection: _,

@@ -49,7 +49,7 @@ pub struct PendingRepeatedOptionalPayment {
     pub payment_unit: Box<ResolvedAbility>,
     pub reflexive: Box<ResolvedAbility>,
     pub remaining: u32,
-    /// CR 603.12a + CR 702.172b: When true, payment and mode choice are batched
+    /// CR 603.12a + CR 702.172a: When true, payment and mode choice are batched
     /// into one `AbilityModeChoice` (Hawkeye / Tranquil Frillback class). When
     /// false, the legacy per-iteration `OptionalEffectChoice` driver applies.
     #[serde(default)]

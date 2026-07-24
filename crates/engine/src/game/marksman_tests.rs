@@ -230,6 +230,13 @@ fn modal_cap(state: &GameState) -> Option<(usize, usize)> {
     }
 }
 
+fn max_affordable_mode_selections(state: &GameState) -> Option<u32> {
+    match &state.waiting_for {
+        WaitingFor::AbilityModeChoice { modal, .. } => modal.max_affordable_selections,
+        _ => None,
+    }
+}
+
 fn mode_cost_count(state: &GameState) -> Option<usize> {
     match &state.waiting_for {
         WaitingFor::AbilityModeChoice { modal, .. } => Some(modal.mode_costs.len()),
@@ -250,6 +257,7 @@ fn batched_modal_offered_once_with_static_cap_from_affordability() {
         "batched path emits one AbilityModeChoice, not sequential OptionalEffectChoice"
     );
     assert_eq!(modal_cap(runner.state()), Some((0, 3)));
+    assert_eq!(max_affordable_mode_selections(runner.state()), Some(3));
     assert_eq!(mode_cost_count(runner.state()), Some(3));
     assert!(
         repeated_payment_driver_is_pending(runner.state()),
@@ -261,6 +269,7 @@ fn batched_modal_offered_once_with_static_cap_from_affordability() {
 fn afford_zero_caps_modal_at_zero_and_accepts_empty_decline() {
     let mut runner = hawkeye_runtime(0, &[]);
     assert_eq!(modal_cap(runner.state()), Some((0, 0)));
+    assert_eq!(max_affordable_mode_selections(runner.state()), Some(0));
     runner
         .act(GameAction::SelectModes { indices: vec![] })
         .expect("decline with empty selection");
@@ -282,6 +291,7 @@ fn afford_zero_caps_modal_at_zero_and_accepts_empty_decline() {
 fn afford_two_of_three_caps_modal_at_two() {
     let runner = hawkeye_runtime(2, &[]);
     assert_eq!(modal_cap(runner.state()), Some((0, 2)));
+    assert_eq!(max_affordable_mode_selections(runner.state()), Some(2));
 }
 
 #[test]
@@ -462,6 +472,7 @@ fn explosive_targeted_mode_resolves_once_through_apply() {
 fn ability_mode_choice_with_mode_costs_survives_serde_roundtrip() {
     let mut runner = hawkeye_runtime(3, &[]);
     assert_eq!(modal_cap(runner.state()), Some((0, 3)));
+    assert_eq!(max_affordable_mode_selections(runner.state()), Some(3));
     assert_eq!(mode_cost_count(runner.state()), Some(3));
 
     let v2 = serde_json::to_value(ResolutionStateWire::from_game_state(runner.state().clone()))
@@ -472,6 +483,7 @@ fn ability_mode_choice_with_mode_costs_survives_serde_roundtrip() {
         .into_game_state();
 
     assert_eq!(modal_cap(&restored), Some((0, 3)));
+    assert_eq!(max_affordable_mode_selections(&restored), Some(3));
     assert_eq!(mode_cost_count(&restored), Some(3));
     assert!(
         repeated_payment_driver_is_pending(&restored),

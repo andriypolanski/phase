@@ -40,9 +40,10 @@ pub(super) fn handle_ability_mode_choice(
 
     validate_modal_indices(&modal, &indices, &unavailable_modes)?;
 
-    // Batched repeated-optional prompts snapshot `max_choices` at offer time.
-    // Re-probe affordability on submit so a stale selection cannot take the
-    // payment path after the pool/board changed (CR 118.1 / CR 702.172b).
+    // Batched repeated-optional prompts snapshot `max_choices` and
+    // `max_affordable_selections` at offer time. Re-probe affordability on submit
+    // so a stale selection cannot take the payment path after the pool/board
+    // changed (CR 118.1 / CR 702.172a).
     if !indices.is_empty()
         && !modal.mode_costs.is_empty()
         && state
