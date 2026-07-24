@@ -79,6 +79,28 @@ pub fn resolve(
                 obj.tapped = true;
             }
         }
+        GiftKind::CreatureToken(spec) => {
+            let obj_id = create_gift_token(
+                state,
+                events,
+                opponent,
+                &spec.name,
+                ability.source_id,
+                |ct| {
+                    ct.core_types.push(CoreType::Creature);
+                    ct.subtypes.extend(spec.subtypes.iter().cloned());
+                },
+            );
+            if let Some(obj) = state.objects.get_mut(&obj_id) {
+                obj.color = spec.colors.clone();
+                obj.base_color = spec.colors.clone();
+                obj.power = Some(spec.power);
+                obj.toughness = Some(spec.toughness);
+                obj.base_power = Some(spec.power);
+                obj.base_toughness = Some(spec.toughness);
+                obj.tapped = spec.tapped;
+            }
+        }
     }
 
     events.push(GameEvent::EffectResolved {
@@ -276,5 +298,37 @@ mod tests {
         assert!(token.is_some(), "Food token should exist for opponent");
         let token = token.unwrap();
         assert!(token.card_types.subtypes.contains(&"Food".to_string()));
+    }
+
+    #[test]
+    fn gift_creature_token_creates_octopus_for_opponent() {
+        use crate::types::keywords::GiftCreatureToken;
+
+        let mut state = GameState::new_two_player(42);
+        let mut events = Vec::new();
+
+        let ability = make_gift_ability(
+            GiftKind::CreatureToken(GiftCreatureToken {
+                name: "Octopus".to_string(),
+                power: 8,
+                toughness: 8,
+                colors: vec![ManaColor::Blue],
+                subtypes: vec!["Octopus".to_string()],
+                tapped: false,
+            }),
+            true,
+        );
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let token = state
+            .objects
+            .values()
+            .find(|o| o.card_id == CardId(0) && o.owner == PlayerId(1));
+        assert!(token.is_some(), "Octopus token should exist for opponent");
+        let token = token.unwrap();
+        assert_eq!(token.power, Some(8));
+        assert_eq!(token.toughness, Some(8));
+        assert!(token.color.contains(&ManaColor::Blue));
+        assert!(token.card_types.subtypes.contains(&"Octopus".to_string()));
     }
 }

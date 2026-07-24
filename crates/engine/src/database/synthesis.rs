@@ -27,7 +27,7 @@ use crate::types::card_type::{CardType, CoreType, Supertype};
 use crate::types::counter::{CounterMatch, CounterType};
 use crate::types::format::DeckCopyLimit;
 use crate::types::keywords::{
-    BloodthirstValue, BuybackCost, CyclingCost, EchoCost, Keyword, PartnerType,
+    BloodthirstValue, BuybackCost, CyclingCost, EchoCost, GiftKind, Keyword, PartnerType,
 };
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
 use crate::types::phase::Phase;
@@ -1420,10 +1420,10 @@ pub(crate) fn bargain_additional_cost() -> AdditionalCost {
 /// when the player promises the gift. Conditional branches ("if the gift was promised" /
 /// "wasn't promised") are handled by the parser via `strip_additional_cost_conditional`.
 ///
-/// Gift delivery (opponent receives the gift) is injected as a `GiftDelivery` effect
-/// wrapping the first spell ability. The delivery checks `additional_cost_paid` at
-/// resolution time — if the gift wasn't promised, it's a no-op and the spell resolves
-/// normally. If promised, the opponent receives the gift before the spell's other effects.
+/// Gift delivery (opponent receives the gift) is injected as a `GiftDelivery` effect.
+/// Instants and sorceries wrap the first spell ability so delivery resolves before other
+/// spell effects (CR 702.174j). Permanent gifts synthesize an ETB trigger instead
+/// (CR 702.174b: "when it enters, they …").
 pub fn synthesize_gift(face: &mut CardFace) {
     if face.additional_cost.is_some() {
         return;
@@ -1447,16 +1447,61 @@ pub fn synthesize_gift(face: &mut CardFace) {
         repeatability: crate::types::ability::AdditionalCostRepeatability::Once,
     });
 
-    // Inject GiftDelivery as a wrapper around the first spell ability.
-    // The delivery effect is a no-op when the gift wasn't promised, so the
-    // chain always flows through to the spell's normal effects.
-    if let Some(first_ability) = face.abilities.first_mut() {
-        let original = std::mem::replace(
-            first_ability,
-            AbilityDefinition::new(AbilityKind::Spell, Effect::GiftDelivery { kind: gift_kind }),
-        );
-        first_ability.sub_ability = Some(Box::new(original));
+    let is_instant_or_sorcery = face
+        .card_type
+        .core_types
+        .iter()
+        .any(|t| matches!(t, CoreType::Instant | CoreType::Sorcery));
+
+    if is_instant_or_sorcery {
+        // CR 702.174j: Inject GiftDelivery as a wrapper around the first spell ability.
+        // The delivery effect is a no-op when the gift wasn't promised, so the
+        // chain always flows through to the spell's normal effects.
+        if let Some(first_ability) = face.abilities.first_mut() {
+            let original = std::mem::replace(
+                first_ability,
+                AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::GiftDelivery { kind: gift_kind },
+                ),
+            );
+            first_ability.sub_ability = Some(Box::new(original));
+        }
+    } else {
+        synthesize_gift_etb_delivery_trigger(face, gift_kind);
     }
+}
+
+/// CR 702.174b: Permanent gifts deliver on ETB via a ChangesZone trigger rather
+/// than wrapping a printed spell ability (Kitnap, Octomancer, Starforged Sword).
+fn synthesize_gift_etb_delivery_trigger(face: &mut CardFace, kind: GiftKind) {
+    use crate::types::zones::Zone;
+
+    let already_has_trigger = face.triggers.iter().any(|t| {
+        matches!(t.mode, TriggerMode::ChangesZone)
+            && t.destination == Some(Zone::Battlefield)
+            && matches!(t.valid_card, Some(TargetFilter::SelfRef))
+            && matches!(
+                t.execute.as_deref().map(|a| &*a.effect),
+                Some(Effect::GiftDelivery { kind: existing }) if existing == &kind
+            )
+    });
+    if already_has_trigger {
+        return;
+    }
+
+    face.triggers.insert(
+        0,
+        TriggerDefinition::new(TriggerMode::ChangesZone)
+            .destination(Zone::Battlefield)
+            .valid_card(TargetFilter::SelfRef)
+            .trigger_zones(vec![Zone::Battlefield])
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GiftDelivery { kind },
+            ))
+            .description("Gift delivery".to_string()),
+    );
 }
 
 /// CR 719.2: Synthesize the intrinsic Case auto-solve trigger.
