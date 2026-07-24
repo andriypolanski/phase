@@ -157,4 +157,52 @@ describe("ModeChoiceModal", () => {
       data: { indices: [0] },
     });
   });
+
+  it("caps repeatable mode-cost selection at modal.max_choices", () => {
+    const modal: ModalChoice = {
+      min_choices: 0,
+      max_choices: 2,
+      max_affordable_selections: 3,
+      mode_count: 2,
+      mode_descriptions: ["Mode A", "Mode B"],
+      allow_repeat_modes: true,
+      mode_costs: [
+        { type: "Cost", generic: 1, shards: [] },
+        { type: "Cost", generic: 1, shards: [] },
+      ],
+    };
+    const gameState = buildGameState({
+      objects: {},
+      priority_player: 0,
+      players: buildPlayers([1, 1]),
+      waiting_for: {
+        type: "AbilityModeChoice",
+        data: {
+          player: 0,
+          modal,
+          source_id: 90,
+          mode_abilities: [],
+          is_activated: false,
+        },
+      },
+    });
+
+    useGameStore.setState({
+      gameState,
+      waitingFor: gameState.waiting_for,
+      dispatch: dispatchMock,
+    });
+
+    render(<ModeChoiceModal />);
+
+    fireEvent.click(screen.getByText("Mode A"));
+    fireEvent.click(screen.getByText("Mode A"));
+    fireEvent.click(screen.getByText("Mode B"));
+    expect(screen.getByRole("button", { name: "Confirm (2/2 modes)" })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm (2/2 modes)" }));
+    expect(dispatchMock).toHaveBeenCalledWith({
+      type: "SelectModes",
+      data: { indices: [0, 0] },
+    });
+  });
 });

@@ -38,6 +38,12 @@ const FRILLBACK_ORACLE: &str = "When this creature enters, you may pay {G} up to
      • Exile target player's graveyard.\n\
      • You gain 4 life.";
 
+const TWO_MODE_REPEAT_ORACLE: &str =
+    "When this creature enters, you may pay {1} up to three times. \
+     When you pay this cost one or more times, choose up to that many —\n\
+     • Deal 1 damage to any target.\n\
+     • You gain 1 life.";
+
 const P0: PlayerId = PlayerId(0);
 const P1: PlayerId = PlayerId(1);
 
@@ -202,6 +208,40 @@ fn hawkeye_runtime(mana: usize, p0_hand: &[&str]) -> crate::game::scenario::Game
     runner
 }
 
+fn two_mode_repeat_runtime(mana: usize) -> crate::game::scenario::GameRunner {
+    let mut scenario = GameScenario::new();
+    let source = scenario
+        .add_creature_from_oracle(P0, "Two Mode Repeat", 2, 2, TWO_MODE_REPEAT_ORACLE)
+        .id();
+    if mana > 0 {
+        scenario.with_mana_pool(
+            P0,
+            vec![
+                ManaUnit::new(
+                    ManaType::Colorless,
+                    crate::types::identifiers::ObjectId(9_999),
+                    false,
+                    vec![],
+                );
+                mana
+            ],
+        );
+    }
+    let mut runner = scenario.build();
+    let parsed = parse_oracle_text(
+        TWO_MODE_REPEAT_ORACLE,
+        "Two Mode Repeat",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let execute = parsed.triggers[0].execute.as_deref().expect("ETB execute");
+    let resolved = build_resolved_from_def(execute, source, P0);
+    resolve_ability_chain(runner.state_mut(), &resolved, &mut Vec::new(), 0)
+        .expect("trigger resolution");
+    runner
+}
+
 fn k_count(state: &GameState) -> u32 {
     state
         .active_repeated_optional_payment_frame()
@@ -292,6 +332,17 @@ fn afford_two_of_three_caps_modal_at_two() {
     let runner = hawkeye_runtime(2, &[]);
     assert_eq!(modal_cap(runner.state()), Some((0, 2)));
     assert_eq!(max_affordable_mode_selections(runner.state()), Some(2));
+}
+
+#[test]
+fn max_affordable_selections_is_capped_by_modal_max_choices() {
+    let runner = two_mode_repeat_runtime(3);
+    assert_eq!(modal_cap(runner.state()), Some((0, 2)));
+    assert_eq!(
+        max_affordable_mode_selections(runner.state()),
+        Some(2),
+        "affordability probe may exceed mode_count; serialized cap must not"
+    );
 }
 
 #[test]

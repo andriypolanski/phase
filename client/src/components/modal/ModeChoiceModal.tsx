@@ -41,9 +41,11 @@ export function ModeChoiceModal() {
   const isModeCost = !isBudget && modeCosts.length > 0;
   const budget = modal?.max_choices ?? 0;
   // CR 118.1 + CR 702.172a: per-mode payment caps come from the engine probe,
-  // not mana-pool entry count or pip arithmetic in the display layer.
-  const maxAffordableSelections =
-    modal?.max_affordable_selections ?? modal?.max_choices ?? 0;
+  // bounded by the modal's legal selection cap (`max_choices`).
+  const maxAffordableSelections = Math.min(
+    modal?.max_affordable_selections ?? modal?.max_choices ?? 0,
+    modal?.max_choices ?? 0,
+  );
   const spent = useMemo(
     () =>
       isBudget ? selected.reduce((sum, i) => sum + (pawprints[i] ?? 0), 0) : 0,

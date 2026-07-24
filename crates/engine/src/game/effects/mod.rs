@@ -5719,7 +5719,7 @@ fn drive_batched_repeated_optional_modal_payment(
     modal.mode_costs = vec![payment_mana.clone(); mode_count];
     modal.min_choices = 0;
     modal.max_choices = max_choices;
-    modal.max_affordable_selections = Some(max_affordable);
+    modal.max_affordable_selections = Some(max_affordable.min(max_choices as u32));
     modal.dynamic_max_choices = None;
 
     let mut reflexive_prepared = reflexive.clone();
