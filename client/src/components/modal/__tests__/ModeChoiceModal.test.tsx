@@ -120,9 +120,9 @@ describe("ModeChoiceModal", () => {
           id: 0,
           mana_pool: {
             mana: [
-              { color: "R", source_id: 1, pip_id: 1, snow: false, restrictions: [] },
-              { color: "R", source_id: 2, pip_id: 2, snow: false, restrictions: [] },
-              { color: "R", source_id: 3, pip_id: 3, snow: false, restrictions: [] },
+              { color: "Red", source_id: 1, pip_id: 1, snow: false, restrictions: [] },
+              { color: "Red", source_id: 2, pip_id: 2, snow: false, restrictions: [] },
+              { color: "Red", source_id: 3, pip_id: 3, snow: false, restrictions: [] },
             ],
           },
         },

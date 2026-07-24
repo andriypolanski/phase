@@ -295,6 +295,35 @@ fn afford_two_of_three_caps_modal_at_two() {
 }
 
 #[test]
+fn over_cap_submit_with_intact_pool_rejects_without_payment() {
+    let mut runner = hawkeye_runtime(2, &[]);
+    assert_eq!(p0_pool_total(runner.state()), 2);
+    let err = runner.act(GameAction::SelectModes {
+        indices: vec![0, 1, 2],
+    });
+    assert!(
+        err.is_err(),
+        "three modes must be rejected when only two are affordable"
+    );
+    assert_eq!(
+        p0_pool_total(runner.state()),
+        2,
+        "no mana consumed on rejected over-cap submit"
+    );
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::AbilityModeChoice { .. }
+        ),
+        "batched prompt remains live"
+    );
+    assert!(
+        repeated_payment_driver_is_pending(runner.state()),
+        "repeated-payment frame survives rejected over-cap submit"
+    );
+}
+
+#[test]
 fn select_three_modes_pays_three_mana() {
     let mut runner = hawkeye_runtime(3, &[]);
     runner

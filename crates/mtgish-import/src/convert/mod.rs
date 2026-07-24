@@ -1321,6 +1321,7 @@ pub(crate) fn build_ability_from_actions(
                 allow_repeat_modes,
                 constraints,
                 mode_costs: Vec::new(),
+                max_affordable_selections: None,
                 // Mechanical compile-keep-alive for the shared engine ModalChoice
                 // field add; mtgish does not (yet) author pawprint modals.
                 mode_pawprints: Vec::new(),
