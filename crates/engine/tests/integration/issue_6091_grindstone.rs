@@ -12,6 +12,7 @@
 use engine::game::layers::evaluate_layers;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::ability::ChosenAttribute;
+use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::PlayerId;
@@ -69,6 +70,16 @@ fn setup_painter_red(runner: &mut GameRunner, painter: engine::types::identifier
         .chosen_attributes
         .push(ChosenAttribute::Color(ManaColor::Red));
     evaluate_layers(runner.state_mut());
+}
+
+fn assert_objects_include_red(runner: &GameRunner, object_ids: &[ObjectId]) {
+    for &id in object_ids {
+        let colors = &runner.state().objects.get(&id).unwrap().color;
+        assert!(
+            colors.contains(&ManaColor::Red),
+            "expected {id:?} to include red under Painter, got {colors:?}"
+        );
+    }
 }
 
 fn activate_grindstone_mill_p1(
@@ -161,10 +172,8 @@ fn grindstone_painter_red_mills_more_than_two() {
         .as_artifact()
         .id();
 
-    // One blue + one green on top: without Painter they do not share a color;
-    // with Painter red they both gain red and repeat.
-    add_colored_library_card(&mut scenario, P1, "Blue Top", ManaCostShard::Blue);
-    add_colored_library_card(&mut scenario, P1, "Green Second", ManaCostShard::Green);
+    // Trailing blue pads first; Blue/Green on top so the first mill is the
+    // unlike-color pair that only repeats once Painter grants shared red.
     for idx in 0..6 {
         add_colored_library_card(
             &mut scenario,
@@ -173,11 +182,15 @@ fn grindstone_painter_red_mills_more_than_two() {
             ManaCostShard::Blue,
         );
     }
+    let green_second =
+        add_colored_library_card(&mut scenario, P1, "Green Second", ManaCostShard::Green);
+    let blue_top = add_colored_library_card(&mut scenario, P1, "Blue Top", ManaCostShard::Blue);
 
     scenario.with_mana_pool(P0, three_generic());
 
     let mut runner = scenario.build();
     setup_painter_red(&mut runner, painter);
+    assert_objects_include_red(&runner, &[blue_top, green_second]);
 
     let lib_before = runner.state().players[P1.0 as usize].library.len();
     activate_grindstone_mill_p1(&mut runner, grindstone);
@@ -188,6 +201,10 @@ fn grindstone_painter_red_mills_more_than_two() {
     assert_eq!(
         milled, 8,
         "Painter red must mill the whole library through shared-color repeats (milled {milled})"
+    );
+    assert_eq!(
+        lib_after, 0,
+        "full-library mill must leave no trailing cards"
     );
 }
 
@@ -201,8 +218,16 @@ fn grindstone_without_painter_stops_at_two_unlike_colors() {
         .as_artifact()
         .id();
 
-    add_colored_library_card(&mut scenario, P1, "Blue Top", ManaCostShard::Blue);
+    for idx in 0..4 {
+        add_colored_library_card(
+            &mut scenario,
+            P1,
+            &format!("Blue Trailing {idx}"),
+            ManaCostShard::Blue,
+        );
+    }
     add_colored_library_card(&mut scenario, P1, "Green Second", ManaCostShard::Green);
+    add_colored_library_card(&mut scenario, P1, "Blue Top", ManaCostShard::Blue);
     scenario.with_mana_pool(P0, three_generic());
 
     let mut runner = scenario.build();
@@ -216,6 +241,10 @@ fn grindstone_without_painter_stops_at_two_unlike_colors() {
         milled, 2,
         "reach guard: blue+green without Painter must not repeat (milled {milled})"
     );
+    assert_eq!(
+        lib_after, 4,
+        "trailing blue cards must remain when the repeat loop does not fire"
+    );
 }
 
 #[test]
@@ -228,8 +257,10 @@ fn grindstone_colorless_pair_stops_at_two() {
         .as_artifact()
         .id();
 
-    scenario.add_spell_to_library_top(P1, "Colorless A", true);
+    scenario.add_spell_to_library_top(P1, "Colorless Trailing A", true);
+    scenario.add_spell_to_library_top(P1, "Colorless Trailing B", true);
     scenario.add_spell_to_library_top(P1, "Colorless B", true);
+    scenario.add_spell_to_library_top(P1, "Colorless A", true);
     scenario.with_mana_pool(P0, three_generic());
 
     let mut runner = scenario.build();
@@ -242,5 +273,9 @@ fn grindstone_colorless_pair_stops_at_two() {
     assert_eq!(
         milled, 2,
         "two colorless cards produce Max 0 shared-color buckets, so the loop stops at two (milled {milled})"
+    );
+    assert_eq!(
+        lib_after, 2,
+        "trailing colorless cards must remain when the repeat loop does not fire"
     );
 }

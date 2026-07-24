@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::arithmetic::{u32_to_i32_saturating, usize_to_i32_saturating};
 use crate::game::filter::{
-    matches_target_filter, matches_target_filter_on_attack_declaration_record,
+    filter_contains_last_zone_changed, matches_target_filter,
+    matches_target_filter_on_attack_declaration_record,
     matches_target_filter_on_counter_added_record, matches_target_filter_on_damage_record_source,
     matches_target_filter_on_zone_change_record, player_matches_target_filter_in_state,
     spell_record_matches_filter, type_filter_matches, FilterContext,
@@ -1902,20 +1903,26 @@ pub(crate) fn object_count_matching_ids(
     filter_ctx: &FilterContext<'_>,
     source_id: ObjectId,
 ) -> Vec<ObjectId> {
-    if matches!(filter, TargetFilter::LastZoneChanged) {
-        return state.last_zone_changed_ids.clone();
-    }
-    let zones = filter.extract_zones();
-    let zones = if zones.is_empty() {
-        vec![crate::types::zones::Zone::Battlefield]
+    let mut ids: Vec<ObjectId> = if filter_contains_last_zone_changed(filter) {
+        state
+            .last_zone_changed_ids
+            .iter()
+            .copied()
+            .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
+            .collect()
     } else {
+        let zones = filter.extract_zones();
+        let zones = if zones.is_empty() {
+            vec![crate::types::zones::Zone::Battlefield]
+        } else {
+            zones
+        };
         zones
+            .into_iter()
+            .flat_map(|zone| crate::game::targeting::zone_object_ids(state, zone))
+            .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
+            .collect()
     };
-    let mut ids: Vec<ObjectId> = zones
-        .into_iter()
-        .flat_map(|zone| crate::game::targeting::zone_object_ids(state, zone))
-        .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
-        .collect();
     // Drop the triggering object for an "other than" filter (Valakut's "five
     // other Mountains" — the newly-entered Mountain matches the per-object filter
     // as a pass-through and is removed here). The exclusion is the Oracle-text
@@ -7733,6 +7740,52 @@ mod tests {
             0,
             "colorless milled pairs produce no shared-color bucket (Max 0)"
         );
+    }
+
+    #[test]
+    fn object_count_matching_ids_applies_compound_last_zone_changed_filter() {
+        let mut state = GameState::new_two_player(46);
+        let red_a = create_object(
+            &mut state,
+            CardId(405),
+            PlayerId(1),
+            "Red A".to_string(),
+            Zone::Graveyard,
+        );
+        let red_b = create_object(
+            &mut state,
+            CardId(406),
+            PlayerId(1),
+            "Red B".to_string(),
+            Zone::Graveyard,
+        );
+        let green = create_object(
+            &mut state,
+            CardId(407),
+            PlayerId(1),
+            "Green C".to_string(),
+            Zone::Graveyard,
+        );
+        for (id, color) in [
+            (red_a, ManaColor::Red),
+            (red_b, ManaColor::Red),
+            (green, ManaColor::Green),
+        ] {
+            state.objects.get_mut(&id).unwrap().color = vec![color];
+        }
+        state.last_zone_changed_ids = vec![red_a, red_b, green];
+
+        let filter = TargetFilter::And {
+            filters: vec![
+                TargetFilter::LastZoneChanged,
+                TargetFilter::Typed(TypedFilter::card().properties(vec![FilterProp::HasColor {
+                    color: ManaColor::Red,
+                }])),
+            ],
+        };
+        let ctx = FilterContext::from_source(&state, ObjectId(0));
+        let ids = object_count_matching_ids(&state, &filter, &ctx, ObjectId(0));
+        assert_eq!(ids, vec![red_a, red_b]);
     }
 
     #[test]

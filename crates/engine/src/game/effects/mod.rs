@@ -2703,14 +2703,7 @@ fn condition_depends_on_effect_performed(condition: &AbilityCondition) -> bool {
 /// resolves and `last_zone_changed_ids` reflects the moved objects. Predicate
 /// helper, not rule-implementing code.
 fn filter_contains_last_zone_changed(filter: &TargetFilter) -> bool {
-    match filter {
-        TargetFilter::LastZoneChanged => true,
-        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
-            filters.iter().any(filter_contains_last_zone_changed)
-        }
-        TargetFilter::Not { filter } => filter_contains_last_zone_changed(filter),
-        _ => false,
-    }
+    crate::game::filter::filter_contains_last_zone_changed(filter)
 }
 
 fn quantity_expr_depends_on_zone_change_this_way(expr: &QuantityExpr) -> bool {

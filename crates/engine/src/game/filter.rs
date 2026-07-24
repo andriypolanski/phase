@@ -963,6 +963,21 @@ pub(crate) fn controller_ref_player(
         ControllerRef::ActivePlayer => Some(state.active_player),
     }
 }
+/// Whether `filter` references the resolution-local `last_zone_changed_ids`
+/// ledger population (bare or nested inside compound filters).
+pub(crate) fn filter_contains_last_zone_changed(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::LastZoneChanged => true,
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            filters.iter().any(filter_contains_last_zone_changed)
+        }
+        TargetFilter::Not { filter } => filter_contains_last_zone_changed(filter),
+        TargetFilter::TrackedSetFiltered { filter, .. } => {
+            filter_contains_last_zone_changed(filter)
+        }
+        _ => false,
+    }
+}
 /// Check if an object matches a typed TargetFilter against the given context.
 ///
 /// This is the unified entry point for filter evaluation. Build a
