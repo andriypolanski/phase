@@ -1771,6 +1771,7 @@ pub fn candidate_actions_broad_with_probe(
             modal,
             unavailable_modes,
             is_activated,
+            source_id,
             ..
         } => {
             let available: Vec<usize> = (0..modal.mode_count)
@@ -1833,6 +1834,33 @@ pub fn candidate_actions_broad_with_probe(
                     TacticalClass::Pass,
                     Some(*player),
                 ));
+            }
+            // CR 702.172b: Batched repeated-optional modals (Hawkeye) and Spree-
+            // shaped ability modals carry per-mode mana costs. Prune combinations
+            // the player cannot afford; the engine already capped max_choices.
+            if modal.mode_pawprints.is_empty() && !modal.mode_costs.is_empty() {
+                let local_probe = casting::PriorityCastProbe::new(state, *player);
+                actions.retain(|ca| match &ca.action {
+                    GameAction::SelectModes { indices } => {
+                        let total = indices.iter().fold(
+                            crate::types::mana::ManaCost::zero(),
+                            |acc, &idx| {
+                                crate::game::restrictions::add_mana_cost(
+                                    &acc,
+                                    &modal.mode_costs[idx],
+                                )
+                            },
+                        );
+                        casting::can_pay_cost_after_auto_tap_with_probe(
+                            local_probe.state(),
+                            *player,
+                            *source_id,
+                            &total,
+                            Some(&local_probe),
+                        )
+                    }
+                    _ => true,
+                });
             }
             actions
         }

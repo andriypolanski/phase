@@ -195,7 +195,7 @@ pub fn resolve(
 /// `times` times and the generic component scaled. `times == 0` yields `{0}`
 /// (`Cost { shards: [], generic: 0 }`), which the existing mana-payment path
 /// treats as trivially paid.
-fn scale_mana_cost(base: &ManaCost, times: u32) -> ManaCost {
+pub(crate) fn scale_mana_cost(base: &ManaCost, times: u32) -> ManaCost {
     match base {
         ManaCost::NoCost
         | ManaCost::SelfManaCost

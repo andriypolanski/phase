@@ -10,6 +10,7 @@ use super::ability_utils::{
     record_modal_mode_choices, selected_mode_labels, target_constraints_from_modal,
     validate_modal_indices,
 };
+use super::effects;
 use super::engine::EngineError;
 use super::engine_stack;
 use super::triggers;
@@ -38,6 +39,40 @@ pub(super) fn handle_ability_mode_choice(
     };
 
     validate_modal_indices(&modal, &indices, &unavailable_modes)?;
+
+    // Batched repeated-optional prompts snapshot `max_choices` at offer time.
+    // Re-probe affordability on submit so a stale selection cannot take the
+    // payment path after the pool/board changed (CR 118.1 / CR 702.172b).
+    if !indices.is_empty()
+        && !modal.mode_costs.is_empty()
+        && state
+            .active_repeated_optional_payment_frame()
+            .and_then(|frame| frame.pending.as_ref())
+            .is_some_and(|pending| pending.batched)
+    {
+        let total = indices.iter().fold(ManaCost::zero(), |acc, &idx| {
+            let mode_cost = modal
+                .mode_costs
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(ManaCost::zero);
+            crate::game::restrictions::add_mana_cost(&acc, &mode_cost)
+        });
+        if !casting::can_pay_cost_after_auto_tap(state, player, source_id, &total) {
+            return Err(EngineError::InvalidAction(
+                "Cannot afford selected ability modes".to_string(),
+            ));
+        }
+    }
+
+    if effects::settle_batched_repeated_optional_payment_on_mode_choice(state, &indices, events)
+        .map_err(|e| EngineError::InvalidAction(e.to_string()))?
+        && indices.is_empty()
+    {
+        priority::clear_priority_passes(state);
+        return Ok(WaitingFor::Priority { player });
+    }
+
     record_modal_mode_choices(state, source_id, &modal, &indices);
 
     let mut resolved =

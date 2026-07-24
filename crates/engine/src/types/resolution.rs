@@ -49,6 +49,11 @@ pub struct PendingRepeatedOptionalPayment {
     pub payment_unit: Box<ResolvedAbility>,
     pub reflexive: Box<ResolvedAbility>,
     pub remaining: u32,
+    /// CR 603.12a + CR 702.172b: When true, payment and mode choice are batched
+    /// into one `AbilityModeChoice` (Hawkeye / Tranquil Frillback class). When
+    /// false, the legacy per-iteration `OptionalEffectChoice` driver applies.
+    #[serde(default)]
+    pub batched: bool,
 }
 
 /// The complete parked repeated optional-payment authority.
@@ -291,6 +296,10 @@ impl ResolutionFrame {
     pub const fn gate(&self) -> FrameGate {
         match self {
             Self::RepeatedOptionalPayment(RepeatedOptionalPaymentFrame {
+                pending: Some(pending),
+                ..
+            }) if pending.batched => FrameGate::DirectChoice(DirectChoiceGate::AbilityModeChoice),
+            Self::RepeatedOptionalPayment(RepeatedOptionalPaymentFrame {
                 pending: Some(_),
                 ..
             })
@@ -336,6 +345,7 @@ pub enum FrameGate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DirectChoiceGate {
     OptionalEffect,
+    AbilityModeChoice,
     CoinFlipKeep,
     Proliferate,
     MutateMerge,
@@ -349,6 +359,10 @@ impl DirectChoiceGate {
                 Self::OptionalEffect,
                 WaitingFor::OptionalEffectChoice { .. }
             ) | (Self::OptionalEffect, WaitingFor::OpponentMayChoice { .. })
+                | (
+                    Self::AbilityModeChoice,
+                    WaitingFor::AbilityModeChoice { .. }
+                )
                 | (Self::CoinFlipKeep, WaitingFor::CoinFlipKeepChoice { .. })
                 | (Self::Proliferate, WaitingFor::ProliferateChoice { .. })
                 | (Self::MutateMerge, WaitingFor::MutateMergeChoice { .. })
@@ -4505,6 +4519,7 @@ mod tests {
                     payment_unit: Box::new(resolved_draw(100)),
                     reflexive: Box::new(resolved_draw(101)),
                     remaining: 0,
+                    batched: false,
                 })),
                 optional_cost_payments_this_resolution: 0,
             },

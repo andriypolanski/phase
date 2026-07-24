@@ -1,10 +1,16 @@
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { ModalChoice } from "../../adapter/types.ts";
+import type { ManaCost, ModalChoice } from "../../adapter/types.ts";
 import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
+import { ManaCostPips } from "../mana/ManaCostPips.tsx";
 import { DialogShell } from "./DialogShell.tsx";
+
+function manaCostPipCount(cost: ManaCost): number {
+  if (cost.type !== "Cost") return 0;
+  return cost.generic + cost.shards.length;
+}
 
 export function ModeChoiceModal() {
   const { t } = useTranslation("game");
@@ -14,6 +20,14 @@ export function ModeChoiceModal() {
   const [selected, setSelected] = useState<number[]>([]);
 
   const isModeChoice = waitingFor?.type === "ModeChoice" || waitingFor?.type === "AbilityModeChoice";
+  const actingPlayerId =
+    isModeChoice && waitingFor ? waitingFor.data.player : undefined;
+  const availableManaUnits = useGameStore(
+    (s) =>
+      actingPlayerId === undefined
+        ? 0
+        : (s.gameState?.players[actingPlayerId]?.mana_pool.mana.length ?? 0),
+  );
   const isAbilityMode = waitingFor?.type === "AbilityModeChoice";
   const modal: ModalChoice | null = isModeChoice ? waitingFor.data.modal : null;
   const sourceObjectId = !isModeChoice
@@ -35,11 +49,18 @@ export function ModeChoiceModal() {
   // (Σ of chosen mode weights ≤ budget), NOT a mode count. The engine remains
   // the legality authority; this is pure display arithmetic over engine data.
   const pawprints = useMemo(() => modal?.mode_pawprints ?? [], [modal]);
+  const modeCosts = useMemo(() => modal?.mode_costs ?? [], [modal]);
   const isBudget = pawprints.length > 0;
+  const isModeCost = !isBudget && modeCosts.length > 0;
   const budget = modal?.max_choices ?? 0;
   const spent = useMemo(
-    () => (isBudget ? selected.reduce((sum, i) => sum + (pawprints[i] ?? 0), 0) : 0),
-    [isBudget, selected, pawprints],
+    () =>
+      isBudget
+        ? selected.reduce((sum, i) => sum + (pawprints[i] ?? 0), 0)
+        : isModeCost
+          ? selected.reduce((sum, i) => sum + manaCostPipCount(modeCosts[i] ?? { type: "NoCost" }), 0)
+          : 0,
+    [isBudget, isModeCost, selected, pawprints, modeCosts],
   );
 
   const toggleMode = useCallback(
@@ -52,6 +73,15 @@ export function ModeChoiceModal() {
           if (isBudget) {
             const spentPrev = prev.reduce((sum, i) => sum + (pawprints[i] ?? 0), 0);
             if (spentPrev + (pawprints[index] ?? 0) > budget) {
+              return prev;
+            }
+          } else if (isModeCost) {
+            const nextSpent =
+              prev.reduce(
+                (sum, i) => sum + manaCostPipCount(modeCosts[i] ?? { type: "NoCost" }),
+                0,
+              ) + manaCostPipCount(modeCosts[index] ?? { type: "NoCost" });
+            if (prev.length >= modal.max_choices || nextSpent > availableManaUnits) {
               return prev;
             }
           } else if (prev.length >= modal.max_choices) {
@@ -68,13 +98,31 @@ export function ModeChoiceModal() {
           if (spentPrev + (pawprints[index] ?? 0) > budget) {
             return prev;
           }
+        } else if (isModeCost) {
+          const nextSpent =
+            prev.reduce(
+              (sum, i) => sum + manaCostPipCount(modeCosts[i] ?? { type: "NoCost" }),
+              0,
+            ) + manaCostPipCount(modeCosts[index] ?? { type: "NoCost" });
+          if (prev.length >= modal.max_choices || nextSpent > availableManaUnits) {
+            return prev;
+          }
         } else if (prev.length >= modal.max_choices) {
           return prev;
         }
         return [...prev, index].sort((a, b) => a - b);
       });
     },
-    [modal, unavailableModes, isBudget, pawprints, budget],
+    [
+      modal,
+      unavailableModes,
+      isBudget,
+      isModeCost,
+      pawprints,
+      modeCosts,
+      budget,
+      availableManaUnits,
+    ],
   );
 
   const handleConfirm = useCallback(() => {
@@ -84,12 +132,27 @@ export function ModeChoiceModal() {
     if (isBudget) {
       const spentSum = indices.reduce((sum, i) => sum + (pawprints[i] ?? 0), 0);
       if (spentSum > modal.max_choices) return;
+    } else if (isModeCost) {
+      const spentSum = indices.reduce(
+        (sum, i) => sum + manaCostPipCount(modeCosts[i] ?? { type: "NoCost" }),
+        0,
+      );
+      if (indices.length > modal.max_choices || spentSum > availableManaUnits) return;
     } else if (indices.length > modal.max_choices) {
       return;
     }
     dispatch({ type: "SelectModes", data: { indices } });
     setSelected([]);
-  }, [modal, selected, dispatch, isBudget, pawprints]);
+  }, [
+    modal,
+    selected,
+    dispatch,
+    isBudget,
+    isModeCost,
+    pawprints,
+    modeCosts,
+    availableManaUnits,
+  ]);
 
   const handleCancel = useCallback(() => {
     dispatch({ type: "CancelCast" });
@@ -100,11 +163,27 @@ export function ModeChoiceModal() {
 
   const canConfirm =
     selected.length >= modal.min_choices &&
-    (isBudget ? spent <= budget : selected.length <= modal.max_choices);
+    (isBudget
+      ? spent <= budget
+      : isModeCost
+        ? selected.length <= modal.max_choices && spent <= availableManaUnits
+        : selected.length <= modal.max_choices);
   // A pawprint budget modal (budget 5, min weight 1) is never a single-choice
   // dispatch; only a genuine 1-of-1 count modal collapses to immediate dispatch.
-  const isSingleChoice = !isBudget && modal.min_choices === 1 && modal.max_choices === 1;
-  const canAdd = (index: number) => !isBudget || spent + (pawprints[index] ?? 0) <= budget;
+  const isSingleChoice =
+    !isBudget && !isModeCost && modal.min_choices === 1 && modal.max_choices === 1;
+  const canAdd = (index: number) => {
+    if (isBudget) {
+      return spent + (pawprints[index] ?? 0) <= budget;
+    }
+    if (isModeCost) {
+      return (
+        selected.length < modal.max_choices &&
+        spent + manaCostPipCount(modeCosts[index] ?? { type: "NoCost" }) <= availableManaUnits
+      );
+    }
+    return selected.length < modal.max_choices;
+  };
 
   // CR 602.2b vs CR 603.3c: only an ACTIVATED modal ability is cancellable at the
   // mode-choice step; a triggered one must resolve its mode. Read engine-provided
@@ -133,7 +212,14 @@ export function ModeChoiceModal() {
         >
           {isBudget
             ? t("modeChoice.confirmBudget", { spent, budget })
-            : t("modeChoice.confirm", { selected: selected.length, count: modal.max_choices })}
+            : isModeCost
+              ? t("modeChoice.confirmModeCost", {
+                  spent,
+                  available: availableManaUnits,
+                  selected: selected.length,
+                  count: modal.max_choices,
+                })
+              : t("modeChoice.confirm", { selected: selected.length, count: modal.max_choices })}
         </button>
       )}
       {!isSingleChoice && selected.length > 0 && (
@@ -159,7 +245,11 @@ export function ModeChoiceModal() {
     <DialogShell
       eyebrow={isAbilityMode ? t("modeChoice.eyebrowAbility") : t("modeChoice.eyebrowSpell")}
       title={chooseLabel}
-      subtitle={t("modeChoice.subtitle")}
+      subtitle={
+        isModeCost
+          ? t("modeChoice.subtitleModeCost", { spent, available: availableManaUnits })
+          : t("modeChoice.subtitle")
+      }
       size="md"
       scrollable
       footer={footer}
@@ -201,6 +291,11 @@ export function ModeChoiceModal() {
                 {isBudget && weight > 0 && (
                   <span className="mr-2 inline-flex items-center justify-center rounded-full bg-amber-300/20 px-2 py-0.5 text-xs font-semibold text-amber-100">
                     {"{P}".repeat(weight)}
+                  </span>
+                )}
+                {isModeCost && modeCosts[index] && (
+                  <span className="mr-2 inline-flex align-middle">
+                    <ManaCostPips cost={modeCosts[index]!} size="xs" />
                   </span>
                 )}
                 <span className={`font-semibold ${isDisabled ? "text-slate-500" : "text-white"}`}>{desc}</span>

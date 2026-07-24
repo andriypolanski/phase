@@ -1936,10 +1936,12 @@
     "eyebrowAbility": "Ability Modes",
     "eyebrowSpell": "Spell Modes",
     "subtitle": "Select the mode or modes to apply.",
+    "subtitleModeCost": "Selected mode costs: {{spent}} / {{available}} mana available.",
     "chooseExact": "Choose {{count}}",
     "chooseRange": "Choose {{min}} to {{max}}",
     "confirm": "Confirm ({{selected}}/{{count}})",
     "confirmBudget": "Confirm ({{spent}}/{{budget}} {P})",
+    "confirmModeCost": "Confirm ({{selected}}/{{count}}, {{spent}}/{{available}} mana)",
     "clear": "Clear",
     "alreadyChosen": "(already chosen)"
   },

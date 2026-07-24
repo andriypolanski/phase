@@ -1899,10 +1899,12 @@
     "eyebrowAbility": "Modos de habilidad",
     "eyebrowSpell": "Modos de hechizo",
     "subtitle": "Selecciona el modo o los modos a aplicar.",
+    "subtitleModeCost": "Coste de modos seleccionados: {{spent}} / {{available}} maná disponible.",
     "chooseExact": "Elige {{count}}",
     "chooseRange": "Elige de {{min}} a {{max}}",
     "confirm": "Confirmar ({{selected}}/{{count}})",
     "confirmBudget": "Confirmar ({{spent}}/{{budget}} {P})",
+    "confirmModeCost": "Confirmar ({{selected}}/{{count}}, {{spent}}/{{available}} maná)",
     "clear": "Limpiar",
     "alreadyChosen": "(ya elegido)"
   },
