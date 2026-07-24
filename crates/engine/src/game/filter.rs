@@ -978,6 +978,24 @@ pub(crate) fn filter_contains_last_zone_changed(filter: &TargetFilter) -> bool {
         _ => false,
     }
 }
+
+/// Whether every object matching `filter` must be drawn from `last_zone_changed_ids`.
+///
+/// Positive presence only: `Or`, `Not`, and other negative contexts return false
+/// so candidate population can use ledger seeding without silently dropping objects
+/// outside the ledger (see `object_count_matching_ids`).
+pub(crate) fn filter_matching_set_subset_of_last_zone_changed(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::LastZoneChanged => true,
+        TargetFilter::And { filters } => filters
+            .iter()
+            .any(filter_matching_set_subset_of_last_zone_changed),
+        TargetFilter::TrackedSetFiltered { filter, .. } => {
+            filter_matching_set_subset_of_last_zone_changed(filter)
+        }
+        _ => false,
+    }
+}
 /// Check if an object matches a typed TargetFilter against the given context.
 ///
 /// This is the unified entry point for filter evaluation. Build a

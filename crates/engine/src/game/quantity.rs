@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::arithmetic::{u32_to_i32_saturating, usize_to_i32_saturating};
 use crate::game::filter::{
-    filter_contains_last_zone_changed, matches_target_filter,
+    filter_matching_set_subset_of_last_zone_changed, matches_target_filter,
     matches_target_filter_on_attack_declaration_record,
     matches_target_filter_on_counter_added_record, matches_target_filter_on_damage_record_source,
     matches_target_filter_on_zone_change_record, player_matches_target_filter_in_state,
@@ -1897,31 +1897,58 @@ pub(crate) fn aggregate_property_over(
     }
 }
 
+fn object_count_zone_object_ids(state: &GameState, filter: &TargetFilter) -> Vec<ObjectId> {
+    let zones = filter.extract_zones();
+    let zones = if zones.is_empty() {
+        vec![crate::types::zones::Zone::Battlefield]
+    } else {
+        zones
+    };
+    zones
+        .into_iter()
+        .flat_map(|zone| crate::game::targeting::zone_object_ids(state, zone))
+        .collect()
+}
+
 pub(crate) fn object_count_matching_ids(
     state: &GameState,
     filter: &TargetFilter,
     filter_ctx: &FilterContext<'_>,
     source_id: ObjectId,
 ) -> Vec<ObjectId> {
-    let mut ids: Vec<ObjectId> = if filter_contains_last_zone_changed(filter) {
-        state
+    let mut ids: Vec<ObjectId> = match filter {
+        TargetFilter::Or { filters } => {
+            let mut seen = HashSet::new();
+            let mut out = Vec::new();
+            for branch in filters {
+                for id in object_count_matching_ids(state, branch, filter_ctx, source_id) {
+                    if seen.insert(id) {
+                        out.push(id);
+                    }
+                }
+            }
+            out
+        }
+        TargetFilter::Not { filter: inner }
+            if matches!(inner.as_ref(), TargetFilter::LastZoneChanged) =>
+        {
+            let ledger: HashSet<ObjectId> = state.last_zone_changed_ids.iter().copied().collect();
+            object_count_zone_object_ids(state, filter)
+                .into_iter()
+                .filter(|&id| !ledger.contains(&id))
+                .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
+                .collect()
+        }
+        _ if filter_matching_set_subset_of_last_zone_changed(filter) => state
             .last_zone_changed_ids
             .iter()
             .copied()
             .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
-            .collect()
-    } else {
-        let zones = filter.extract_zones();
-        let zones = if zones.is_empty() {
-            vec![crate::types::zones::Zone::Battlefield]
-        } else {
-            zones
-        };
-        zones
+            .collect(),
+        _ => object_count_zone_object_ids(state, filter)
             .into_iter()
-            .flat_map(|zone| crate::game::targeting::zone_object_ids(state, zone))
             .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
-            .collect()
+            .collect(),
     };
     // Drop the triggering object for an "other than" filter (Valakut's "five
     // other Mountains" — the newly-entered Mountain matches the per-object filter
@@ -7786,6 +7813,118 @@ mod tests {
         let ctx = FilterContext::from_source(&state, ObjectId(0));
         let ids = object_count_matching_ids(&state, &filter, &ctx, ObjectId(0));
         assert_eq!(ids, vec![red_a, red_b]);
+    }
+
+    #[test]
+    fn object_count_matching_ids_or_last_zone_changed_includes_typed_outside_ledger() {
+        let mut state = GameState::new_two_player(46);
+        let red_a = create_object(
+            &mut state,
+            CardId(405),
+            PlayerId(1),
+            "Red A".to_string(),
+            Zone::Graveyard,
+        );
+        let red_b = create_object(
+            &mut state,
+            CardId(406),
+            PlayerId(1),
+            "Red B".to_string(),
+            Zone::Graveyard,
+        );
+        let green = create_object(
+            &mut state,
+            CardId(407),
+            PlayerId(1),
+            "Green C".to_string(),
+            Zone::Graveyard,
+        );
+        let red_on_battlefield = create_object(
+            &mut state,
+            CardId(408),
+            PlayerId(0),
+            "Red D".to_string(),
+            Zone::Battlefield,
+        );
+        for (id, color) in [
+            (red_a, ManaColor::Red),
+            (red_b, ManaColor::Red),
+            (green, ManaColor::Green),
+            (red_on_battlefield, ManaColor::Red),
+        ] {
+            state.objects.get_mut(&id).unwrap().color = vec![color];
+        }
+        state.last_zone_changed_ids = vec![red_a, red_b, green];
+
+        let filter = TargetFilter::Or {
+            filters: vec![
+                TargetFilter::LastZoneChanged,
+                TargetFilter::Typed(TypedFilter::card().properties(vec![FilterProp::HasColor {
+                    color: ManaColor::Red,
+                }])),
+            ],
+        };
+        let ctx = FilterContext::from_source(&state, ObjectId(0));
+        let ids = object_count_matching_ids(&state, &filter, &ctx, ObjectId(0));
+        assert_eq!(
+            ids.len(),
+            4,
+            "Or must union ledger objects with typed reds outside the ledger"
+        );
+        assert!(ids.contains(&red_on_battlefield));
+    }
+
+    #[test]
+    fn object_count_matching_ids_not_last_zone_changed_excludes_ledger() {
+        let mut state = GameState::new_two_player(46);
+        let red_a = create_object(
+            &mut state,
+            CardId(405),
+            PlayerId(1),
+            "Red A".to_string(),
+            Zone::Graveyard,
+        );
+        let red_b = create_object(
+            &mut state,
+            CardId(406),
+            PlayerId(1),
+            "Red B".to_string(),
+            Zone::Graveyard,
+        );
+        let green = create_object(
+            &mut state,
+            CardId(407),
+            PlayerId(1),
+            "Green C".to_string(),
+            Zone::Graveyard,
+        );
+        let red_on_battlefield = create_object(
+            &mut state,
+            CardId(408),
+            PlayerId(0),
+            "Red D".to_string(),
+            Zone::Battlefield,
+        );
+        for (id, color) in [
+            (red_a, ManaColor::Red),
+            (red_b, ManaColor::Red),
+            (green, ManaColor::Green),
+            (red_on_battlefield, ManaColor::Red),
+        ] {
+            state.objects.get_mut(&id).unwrap().color = vec![color];
+        }
+        state.last_zone_changed_ids = vec![red_a, red_b, green];
+
+        let filter = TargetFilter::Not {
+            filter: Box::new(TargetFilter::LastZoneChanged),
+        };
+        let ctx = FilterContext::from_source(&state, ObjectId(0));
+        let ids = object_count_matching_ids(&state, &filter, &ctx, ObjectId(0));
+        assert_eq!(
+            ids,
+            vec![red_on_battlefield],
+            "Not(LastZoneChanged) must count battlefield objects outside the ledger"
+        );
     }
 
     #[test]
