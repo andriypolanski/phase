@@ -8,8 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::arithmetic::{u32_to_i32_saturating, usize_to_i32_saturating};
 use crate::game::filter::{
-    filter_matching_set_subset_of_last_zone_changed, matches_target_filter,
-    matches_target_filter_on_attack_declaration_record,
+    matches_target_filter, matches_target_filter_on_attack_declaration_record,
     matches_target_filter_on_counter_added_record, matches_target_filter_on_damage_record_source,
     matches_target_filter_on_zone_change_record, player_matches_target_filter_in_state,
     spell_record_matches_filter, type_filter_matches, FilterContext,
@@ -1910,18 +1909,15 @@ fn object_count_zone_object_ids(state: &GameState, filter: &TargetFilter) -> Vec
         .collect()
 }
 
-pub(crate) fn object_count_matching_ids(
-    state: &GameState,
-    filter: &TargetFilter,
-    filter_ctx: &FilterContext<'_>,
-    source_id: ObjectId,
-) -> Vec<ObjectId> {
-    let mut ids: Vec<ObjectId> = match filter {
-        TargetFilter::Or { filters } => {
+/// Candidate universe for `object_count_matching_ids`: union ledger, explicit
+/// zones, and recursive branch populations for every boolean node.
+fn object_count_candidate_universe(state: &GameState, filter: &TargetFilter) -> Vec<ObjectId> {
+    match filter {
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
             let mut seen = HashSet::new();
             let mut out = Vec::new();
             for branch in filters {
-                for id in object_count_matching_ids(state, branch, filter_ctx, source_id) {
+                for id in object_count_candidate_universe(state, branch) {
                     if seen.insert(id) {
                         out.push(id);
                     }
@@ -1936,20 +1932,26 @@ pub(crate) fn object_count_matching_ids(
             object_count_zone_object_ids(state, filter)
                 .into_iter()
                 .filter(|&id| !ledger.contains(&id))
-                .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
                 .collect()
         }
-        _ if filter_matching_set_subset_of_last_zone_changed(filter) => state
-            .last_zone_changed_ids
-            .iter()
-            .copied()
-            .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
-            .collect(),
-        _ => object_count_zone_object_ids(state, filter)
-            .into_iter()
-            .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
-            .collect(),
-    };
+        TargetFilter::LastZoneChanged => state.last_zone_changed_ids.clone(),
+        TargetFilter::TrackedSetFiltered { filter, .. } => {
+            object_count_candidate_universe(state, filter)
+        }
+        _ => object_count_zone_object_ids(state, filter),
+    }
+}
+
+pub(crate) fn object_count_matching_ids(
+    state: &GameState,
+    filter: &TargetFilter,
+    filter_ctx: &FilterContext<'_>,
+    source_id: ObjectId,
+) -> Vec<ObjectId> {
+    let mut ids: Vec<ObjectId> = object_count_candidate_universe(state, filter)
+        .into_iter()
+        .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
+        .collect();
     // Drop the triggering object for an "other than" filter (Valakut's "five
     // other Mountains" — the newly-entered Mountain matches the per-object filter
     // as a pass-through and is removed here). The exclusion is the Oracle-text
@@ -7924,6 +7926,69 @@ mod tests {
             ids,
             vec![red_on_battlefield],
             "Not(LastZoneChanged) must count battlefield objects outside the ledger"
+        );
+    }
+
+    #[test]
+    fn object_count_matching_ids_and_or_last_zone_changed_includes_off_battlefield_ledger() {
+        let mut state = GameState::new_two_player(46);
+        let red_a = create_object(
+            &mut state,
+            CardId(405),
+            PlayerId(1),
+            "Red A".to_string(),
+            Zone::Graveyard,
+        );
+        let red_b = create_object(
+            &mut state,
+            CardId(406),
+            PlayerId(1),
+            "Red B".to_string(),
+            Zone::Graveyard,
+        );
+        let green = create_object(
+            &mut state,
+            CardId(407),
+            PlayerId(1),
+            "Green C".to_string(),
+            Zone::Graveyard,
+        );
+        let red_on_battlefield = create_object(
+            &mut state,
+            CardId(408),
+            PlayerId(0),
+            "Red D".to_string(),
+            Zone::Battlefield,
+        );
+        for (id, color) in [
+            (red_a, ManaColor::Red),
+            (red_b, ManaColor::Red),
+            (green, ManaColor::Green),
+            (red_on_battlefield, ManaColor::Red),
+        ] {
+            state.objects.get_mut(&id).unwrap().color = vec![color];
+        }
+        state.last_zone_changed_ids = vec![red_a, red_b, green];
+
+        let filter = TargetFilter::And {
+            filters: vec![
+                TargetFilter::Or {
+                    filters: vec![
+                        TargetFilter::LastZoneChanged,
+                        TargetFilter::Typed(TypedFilter::card()),
+                    ],
+                },
+                TargetFilter::Typed(TypedFilter::card().properties(vec![FilterProp::HasColor {
+                    color: ManaColor::Red,
+                }])),
+            ],
+        };
+        let ctx = FilterContext::from_source(&state, ObjectId(0));
+        let ids = object_count_matching_ids(&state, &filter, &ctx, ObjectId(0));
+        assert_eq!(
+            ids,
+            vec![red_a, red_b, red_on_battlefield],
+            "nested And(Or(LC, Typed), Typed) must union ledger graveyard members with typed reds"
         );
     }
 
