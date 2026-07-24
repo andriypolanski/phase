@@ -258,6 +258,7 @@ fn resolved_ability_axes(a: &ResolvedAbility, mode: ScanMode) -> Axes {
         chosen_players: _,         // concrete chosen player ids
         replacement_applied: _,    // replacement provenance set, no dynamic read
         sub_link: _,               // SubAbilityLink kind tag
+        sibling_condition: _,      // SiblingCondition replication marker, no dynamic read
         parent_target_missing_reason: _, // seam flag
     } = a;
 
@@ -1044,6 +1045,13 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             acc
         }
         Effect::Transform { target } => {
+            let mut acc = Axes::NONE;
+            acc = acc.or(scan_target_filter(target, target_ctx, mode));
+            acc
+        }
+        // CR 710.4: identical scan shape to `Transform` — the only read is the
+        // effect's own target filter.
+        Effect::FlipPermanent { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target, target_ctx, mode));
             acc
@@ -4234,6 +4242,7 @@ fn ability_definition_axes(def: &AbilityDefinition, mode: ScanMode) -> Axes {
         target_selection_mode: _,
         sub_link: _,
         iteration_kind_binding: _,
+        sibling_condition: _,
     } = def;
 
     let mut acc = scan_effect(effect, mode);
@@ -5015,6 +5024,10 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
         // its `CopyValues` sibling (the real grant is the installed TCE).
         | ContinuousModification::CopyChosen
         | ContinuousModification::GrantTrigger { .. }
+        // A granted object-hosted replacement's `ReplacementDefinition` execute
+        // is outside the scanner's traversal closure — fail-closed CONSERVATIVE,
+        // same class as GrantTrigger / GrantStaticAbility.
+        | ContinuousModification::GrantReplacement { .. }
         | ContinuousModification::GrantAllActivatedAbilitiesOf { .. }
         | ContinuousModification::GrantAllTriggeredAbilitiesOf { .. }
         | ContinuousModification::AddStaticMode { .. }
@@ -5302,6 +5315,8 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         | Effect::Discard { .. }
         | Effect::Shuffle { .. }
         | Effect::Transform { .. }
+        // CR 710.4: same single-target read context as `Transform`.
+        | Effect::FlipPermanent { .. }
         | Effect::SearchLibrary { .. }
         | Effect::SearchOutsideGame { .. }
         | Effect::RevealHand { .. }
@@ -5686,6 +5701,9 @@ fn effect_census_role(e: &Effect) -> CensusRole {
         | Effect::Discard { .. }
         | Effect::Shuffle { .. }
         | Effect::Transform { .. }
+        // CR 710.4: a flip reads only its own self-referential target — not a
+        // board census, mirroring `Transform`.
+        | Effect::FlipPermanent { .. }
         | Effect::TargetOnly { .. }
         | Effect::Choose { .. }
         | Effect::ChooseDamageSource { .. }
@@ -5960,6 +5978,9 @@ fn effect_resolution_choice_freedom(e: &Effect) -> ResolutionChoiceFreedom {
         | Effect::Discard { .. }
         | Effect::Shuffle { .. }
         | Effect::Transform { .. }
+        // CR 710.4: `flip_permanent` offers no resolution-time choice (it is a
+        // status change or a silent no-op), exactly like `Transform`.
+        | Effect::FlipPermanent { .. }
         | Effect::SearchLibrary { .. }
         | Effect::SearchOutsideGame { .. }
         | Effect::RevealHand { .. }
@@ -6228,6 +6249,8 @@ pub(crate) fn effect_is_randomness_bearing(e: &Effect) -> bool {
         | Effect::Mana { .. }
         | Effect::Shuffle { .. }
         | Effect::Transform { .. }
+        // CR 710.4: flipping is deterministic — no RNG draw, mirroring `Transform`.
+        | Effect::FlipPermanent { .. }
         | Effect::SearchLibrary { .. }
         | Effect::SearchOutsideGame { .. }
         | Effect::RevealFromHand { .. }
@@ -6431,6 +6454,7 @@ pub(crate) fn ability_resolution_choice_freedom(a: &ResolvedAbility) -> Resoluti
         chosen_players: _, // concrete chosen player ids (already selected)
         replacement_applied: _, // replacement provenance set, no prompt
         sub_link: _,  // SubAbilityLink kind tag
+        sibling_condition: _, // SiblingCondition replication marker, no resolution-time choice
         parent_target_missing_reason: _, // seam flag
     } = a;
 

@@ -1710,6 +1710,23 @@
     "targetCreature": "la cible de créature",
     "targetChoice": "ce choix de cible"
   },
+  "giftRecipient": {
+    "title": "Choisir le destinataire du cadeau",
+    "subtitle": "Choisissez quel adversaire reçoit le cadeau promis."
+  },
+  "optionalCost": {
+    "gift": {
+      "title": "Promettre un cadeau ?",
+      "pay": "Promettre {{gift}}",
+      "decline": "Lancer sans promettre",
+      "kind": {
+        "card": "une carte",
+        "treasure": "un Trésor",
+        "food": "un Aliment",
+        "tappedFish": "un Poisson engagé"
+      }
+    }
+  },
   "clashOpponent": {
     "title": "Choisir l'adversaire pour la confrontation",
     "subtitle": "Choisissez quel adversaire fera la confrontation avec vous."

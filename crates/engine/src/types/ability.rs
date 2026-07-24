@@ -8773,6 +8773,10 @@ pub enum AdditionalCostOrigin {
     /// any optional additional cost) and lets Teamwork compose with another
     /// object additional cost in the announcement queue.
     Teamwork,
+    /// CR 702.174a: Gift — optional “choose an opponent” additional cost. A
+    /// dedicated origin distinguishes a promised gift from an unrelated optional
+    /// additional cost and lets the UI present Gift-specific promise copy.
+    Gift,
     #[default]
     Other,
 }
@@ -11208,6 +11212,27 @@ pub enum Effect {
         target: TargetFilter,
     },
     Transform {
+        #[serde(default = "default_target_filter_self_ref")]
+        target: TargetFilter,
+    },
+    /// CR 710.4: Flip a Kamigawa flip permanent — a one-way status change
+    /// (CR 110.5) after which the card's alternative name, text box, type line,
+    /// power, and toughness apply (CR 710.1b) while it remains on the
+    /// battlefield.
+    ///
+    /// Deliberately a sibling of [`Effect::Transform`] rather than a
+    /// parameterization of it: CR 701.27a restricts transforming to permanents
+    /// represented by double-faced cards, and CR 710.1c holds a flipped
+    /// permanent's color and mana cost FIXED where transforming swaps them.
+    /// The two live in different CR sections (701.27 vs 710) with different
+    /// copiable-value semantics, so the shared "turn the card over" surface is
+    /// not a single parameterized axis.
+    ///
+    /// Every printed flip instruction names the permanent itself ("flip this
+    /// creature" / "flip it" / "flip <name>"), so `target` is `SelfRef` for the
+    /// whole corpus; it is a `TargetFilter` for uniformity with `Transform` and
+    /// so an anaphoric trigger subject can bind the flipping permanent.
+    FlipPermanent {
         #[serde(default = "default_target_filter_self_ref")]
         target: TargetFilter,
     },
@@ -14136,6 +14161,9 @@ impl Effect {
             | Effect::Discard { target, .. }
             | Effect::Shuffle { target, .. }
             | Effect::Transform { target, .. }
+            // CR 710.4: the flipping permanent is named by the effect's target
+            // slot exactly like `Transform`'s.
+            | Effect::FlipPermanent { target, .. }
             | Effect::RevealHand { target, .. }
             | Effect::Reveal { target, .. }
             | Effect::TargetOnly { target, .. }
@@ -14758,6 +14786,7 @@ impl Effect {
             | Effect::SetRoomDoorLock { .. }
             | Effect::ExtraTurn { .. }
             | Effect::Transform { .. }
+            | Effect::FlipPermanent { .. }
             | Effect::RevealTop { .. }
             | Effect::Reveal { .. }
             | Effect::TargetOnly { .. }
@@ -15013,6 +15042,7 @@ impl Effect {
             | Effect::SetRoomDoorLock { .. }
             | Effect::ExtraTurn { .. }
             | Effect::Transform { .. }
+            | Effect::FlipPermanent { .. }
             | Effect::RevealTop { .. }
             | Effect::Reveal { .. }
             | Effect::TargetOnly { .. }
@@ -15226,6 +15256,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Discard { .. } => "Discard",
         Effect::Shuffle { .. } => "Shuffle",
         Effect::Transform { .. } => "Transform",
+        Effect::FlipPermanent { .. } => "FlipPermanent",
         Effect::SearchLibrary { .. } => "SearchLibrary",
         Effect::SearchOutsideGame { .. } => "SearchOutsideGame",
         Effect::RevealHand { .. } => "RevealHand",
@@ -15608,6 +15639,8 @@ pub enum EffectKind {
     DraftFromSpellbook,
     ChooseOneOf,
     ChooseCounterAdjustment,
+    /// CR 710.4: a Kamigawa flip permanent was flipped to its alternative face.
+    FlipPermanent,
     Unimplemented,
     /// Engine-level equip action (not via an Effect handler).
     Equip,
@@ -15729,6 +15762,7 @@ impl From<&Effect> for EffectKind {
             Effect::Discard { .. } => EffectKind::Discard,
             Effect::Shuffle { .. } => EffectKind::Shuffle,
             Effect::Transform { .. } => EffectKind::Transform,
+            Effect::FlipPermanent { .. } => EffectKind::FlipPermanent,
             Effect::SearchLibrary { .. } => EffectKind::SearchLibrary,
             Effect::SearchOutsideGame { .. } => EffectKind::SearchOutsideGame,
             Effect::RevealHand { .. } => EffectKind::Reveal,
@@ -16432,6 +16466,12 @@ pub struct AbilityDefinition {
     /// counter type must be rewritten to the current iteration's counter kind
     /// before resolution. `None` (default) = branch is fixed (e.g. "+1/+1").
     pub iteration_kind_binding: Option<IterationKindBinding>,
+    /// CR 702.1c ("the same is true") + CR 608.2c (written order): whether a
+    /// `SequentialSibling` continuation with its OWN gating condition must still be
+    /// checked when a PRECEDING sibling's condition was
+    /// false. See `SiblingCondition`. `Dependent` (default) preserves today's
+    /// behavior; `ReplicatedOrBranch` marks per-item keyword-list replication.
+    pub sibling_condition: SiblingCondition,
 }
 
 /// Private serialization mirror for `AbilityDefinition`. Holds a borrowed view
@@ -16507,6 +16547,8 @@ struct AbilityDefinitionRepr<'a> {
     sub_link: SubAbilityLink,
     #[serde(skip_serializing_if = "Option::is_none")]
     iteration_kind_binding: &'a Option<IterationKindBinding>,
+    #[serde(skip_serializing_if = "SiblingCondition::is_default")]
+    sibling_condition: SiblingCondition,
 }
 
 impl Serialize for AbilityDefinition {
@@ -16551,6 +16593,7 @@ impl Serialize for AbilityDefinition {
             repeat_until,
             sub_link,
             iteration_kind_binding,
+            sibling_condition,
         } = self;
         let repr = AbilityDefinitionRepr {
             kind,
@@ -16590,6 +16633,7 @@ impl Serialize for AbilityDefinition {
             repeat_until,
             sub_link: *sub_link,
             iteration_kind_binding,
+            sibling_condition: *sibling_condition,
         };
         /// Flatten wrapper: the mirror carries the real field set;
         /// `consumes_source` (#506) and `is_mana_ability` (CR 605.1a) are
@@ -16698,6 +16742,8 @@ struct AbilityDefinitionDe {
     sub_link: SubAbilityLink,
     #[serde(default)]
     iteration_kind_binding: Option<IterationKindBinding>,
+    #[serde(default)]
+    sibling_condition: SiblingCondition,
 }
 
 impl<'de> Deserialize<'de> for AbilityDefinition {
@@ -16747,6 +16793,7 @@ impl<'de> Deserialize<'de> for AbilityDefinition {
             repeat_until: de.repeat_until,
             sub_link: de.sub_link,
             iteration_kind_binding: de.iteration_kind_binding,
+            sibling_condition: de.sibling_condition,
         })
     }
 }
@@ -16777,6 +16824,36 @@ impl SubAbilityLink {
     /// `skip_serializing_if` predicate — the default needs no JSON byte.
     pub fn is_continuation(link: &Self) -> bool {
         matches!(link, Self::ContinuationStep)
+    }
+}
+
+/// CR 702.1c ("the same is true") + CR 608.2c (written order): whether a
+/// `SequentialSibling` continuation with its OWN gating condition must still be
+/// checked when a PRECEDING sibling's condition was
+/// false. `Dependent` (default) is today's behavior — the continuation's own
+/// condition/effect may presuppose the preceding sibling's effect actually ran
+/// (Thieving Skydiver's "If that artifact is an Equipment" presupposes
+/// `GainControl` produced a target), so it is skipped alongside a failed
+/// predecessor. `ReplicatedOrBranch` marks a sibling produced by per-item
+/// keyword-list replication ("The same is true for…" is CR 702.1c; "Repeat
+/// this process for…" follows CR 608.2c) — each item is an INDEPENDENT OR-branch checked on its own
+/// keyword, so it must be evaluated regardless of any other branch's outcome.
+/// Stamped ONLY by the `ReplicatePerKeyword` lowering helpers
+/// (`attach_repeat_process_keywords`, `attach_perpetual_keyword_grants`) —
+/// never by ordinary sentence-boundary `SequentialSibling` stamping — so it
+/// cannot leak into a Thieving-Skydiver-shaped dependent continuation that
+/// also happens to carry `SequentialSibling`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SiblingCondition {
+    #[default]
+    Dependent,
+    ReplicatedOrBranch,
+}
+
+impl SiblingCondition {
+    /// `skip_serializing_if` predicate — the default needs no JSON byte.
+    pub fn is_default(cond: &Self) -> bool {
+        matches!(cond, Self::Dependent)
     }
 }
 
@@ -16901,6 +16978,7 @@ impl AbilityDefinition {
             repeat_until: None,
             sub_link: SubAbilityLink::ContinuationStep,
             iteration_kind_binding: None,
+            sibling_condition: SiblingCondition::Dependent,
         }
     }
 
@@ -17741,6 +17819,10 @@ pub struct SpellContext {
     /// `None` until that choice is made (and for the single-opponent default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub announcing_opponent: Option<PlayerId>,
+    /// CR 702.174a: Opponent chosen when the Gift additional cost was paid.
+    /// Distinct from `announcing_opponent` (CR 115.1 target-chooser).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gift_recipient: Option<PlayerId>,
     /// Whether the spell's optional additional cost was paid during casting.
     #[serde(default)]
     pub additional_cost_paid: bool,
@@ -19689,6 +19771,30 @@ pub struct StaticDefinition {
     /// serialized statics (all unrestricted) round-trip unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bypass_beneficiary: Option<ControllerRef>,
+    /// CR 702.16n / CR 702.16p: When this continuous static grants protection,
+    /// attachments matching this exemption are not put into their owners'
+    /// graveyards as a state-based action by *this* protection instance
+    /// (Flickering Ward / Pentarch Ward / Ward cycle / Benevolent Blessing).
+    /// Other protection instances from the same quality still apply normally.
+    /// `None` = no exemption (ordinary protection). Serde-defaulted so
+    /// pre-existing card-data round-trips unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection_does_not_remove: Option<ProtectionDoesNotRemove>,
+}
+
+/// CR 702.16n / CR 702.16p: Which attachments a protection-granting continuous
+/// effect does not remove via SBA (and, for the already-attached form, which
+/// may remain attached when the effect starts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProtectionDoesNotRemove {
+    /// CR 702.16n: "This effect doesn't remove this Aura." — the grant source.
+    Source,
+    /// CR 702.16n: "This effect doesn't remove Auras." (Spectra Ward).
+    Auras,
+    /// CR 702.16p: "doesn't remove Auras and Equipment you control that are
+    /// already attached to it" (Benevolent Blessing). New same-quality
+    /// attachments remain illegal; only already-attached controlled ones stay.
+    ControlledAttachmentsAlreadyAttached,
 }
 
 impl StaticDefinition {
@@ -19708,6 +19814,7 @@ impl StaticDefinition {
             source_controller: None,
             source_object: None,
             bypass_beneficiary: None,
+            protection_does_not_remove: None,
         }
     }
 
@@ -19722,6 +19829,12 @@ impl StaticDefinition {
 
     pub fn modifications(mut self, mods: Vec<ContinuousModification>) -> Self {
         self.modifications = mods;
+        self
+    }
+
+    /// CR 702.16n / CR 702.16p: Attach the protection SBA exemption rider.
+    pub fn protection_does_not_remove(mut self, exemption: ProtectionDoesNotRemove) -> Self {
+        self.protection_does_not_remove = Some(exemption);
         self
     }
 
@@ -20770,6 +20883,25 @@ pub enum ContinuousModification {
     GrantTrigger {
         trigger: Box<TriggerDefinition>,
     },
+    /// CR 614.1a + CR 614.6 + CR 613.1f: Grant an object-hosted replacement
+    /// effect to the affected object (Layer 6, ability-adding). The layer-6
+    /// mirror of `GrantTrigger`: where that variant pushes a `TriggerDefinition`
+    /// onto `obj.trigger_definitions`, this pushes a `ReplacementDefinition` onto
+    /// `obj.replacement_definitions` so the granted replacement's event/scope
+    /// metadata is preserved and it fires as a genuine replacement (CR 614.6).
+    ///
+    /// Models the "it gains 'If ~ would leave the battlefield, exile it instead
+    /// of putting it anywhere else'" reanimation rider (Geth, Thane of Contracts;
+    /// Llanowar Greenwidow; Realmbreaker, the Invasion Tree; Spirit-Sister's
+    /// Call; Elemental Expressionist's until-EOT grant). The rider's `~`
+    /// self-reference resolves to the object that gains the ability (CR 201.5b),
+    /// which is the reanimated permanent, not the granting source. Re-derived
+    /// each layer pass (`obj.replacement_definitions` is reset to base at the
+    /// start of the pass); structural-equality dedup keeps repeated grants
+    /// idempotent, exactly like `GrantTrigger` / `GrantStaticAbility`.
+    GrantReplacement {
+        replacement: Box<ReplacementDefinition>,
+    },
     RemoveAllAbilities,
     AddType {
         core_type: CoreType,
@@ -21395,6 +21527,15 @@ pub struct ResolvedAbility {
     /// `SequentialSibling` subs resolve even when an optional parent is declined.
     #[serde(default, skip_serializing_if = "SubAbilityLink::is_continuation")]
     pub sub_link: SubAbilityLink,
+    /// CR 702.1c ("the same is true") + CR 608.2c (written order): Copied through
+    /// from the originating `AbilityDefinition`. When `ReplicatedOrBranch`, this
+    /// `SequentialSibling` is an INDEPENDENT
+    /// per-item OR-branch produced by keyword-list replication (Mutable Pupa,
+    /// Kathril) and must be evaluated by `resolve_chain_body` regardless of a
+    /// preceding sibling's failed gate. `Dependent` (default) preserves the
+    /// prior skip-with-failed-predecessor behavior. See [`SiblingCondition`].
+    #[serde(default, skip_serializing_if = "SiblingCondition::is_default")]
+    pub sibling_condition: SiblingCondition,
     /// CR 700.2b + CR 603.3c: Modal choice for a reflexive modal trigger whose modes
     /// are gated behind an optional cost (Caesar). Carried from the def so
     /// try_begin_reflexive_target_selection can hand it to the PendingTrigger and
@@ -21469,6 +21610,7 @@ impl ResolvedAbility {
             repeat_until: None,
             replacement_applied: HashSet::new(),
             sub_link: SubAbilityLink::ContinuationStep,
+            sibling_condition: SiblingCondition::Dependent,
             source_incarnation: None,
             trigger_source: None,
             trigger_definition_ref: None,
@@ -23302,6 +23444,7 @@ mod tests {
             source_controller: None,
             source_object: None,
             bypass_beneficiary: None,
+            protection_does_not_remove: None,
         };
         let json = serde_json::to_string(&static_def).unwrap();
         let deserialized: StaticDefinition = serde_json::from_str(&json).unwrap();
@@ -23595,6 +23738,7 @@ mod tests {
                 source_controller: None,
                 source_object: None,
                 bypass_beneficiary: None,
+                protection_does_not_remove: None,
             }],
             duration: Some(Duration::UntilEndOfTurn),
             target: None,

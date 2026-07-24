@@ -1095,6 +1095,16 @@ export interface GameObject {
     abilities: SerializedAbility[];
     color: ManaColor[];
     printed_ref?: PrintedRef | null;
+    /**
+     * Engine-owned discriminant for what this stored half actually IS. The
+     * `back_face` slot is shared by several printed layouts, so its presence
+     * alone does NOT mean the object is double-faced: CR 710 Kamigawa flip
+     * cards park their alternative (bottom) half here, and Adventure/Omen
+     * cards park their alternative spell here. Only `"Transform"`, `"Modal"`,
+     * and `"Meld"` are real second faces (CR 712). Absent when the engine has
+     * no layout to report.
+     */
+    layout_kind?: LayoutKind | null;
   } | null;
   /**
    * CR 702.143c-d: Whether this card in exile is foretold. Its owner may look
@@ -1108,6 +1118,22 @@ export interface PrintedRef {
   oracle_id: string;
   face_name: string;
 }
+
+/**
+ * Mirror of the engine's `types::card::LayoutKind` (serialized as its plain
+ * variant name). Describes the printed layout that produced an object's stored
+ * `back_face`.
+ */
+export type LayoutKind =
+  | "Single"
+  | "Split"
+  | "Flip"
+  | "Transform"
+  | "Meld"
+  | "Adventure"
+  | "Modal"
+  | "Omen"
+  | "Prepare";
 
 export interface ObjectIncarnationRef {
   object_id: ObjectId;
@@ -1673,7 +1699,7 @@ export type WaitingFor =
   | { type: "ModeChoice"; data: { player: PlayerId; modal: ModalChoice; pending_cast: PendingCast; unavailable_modes?: number[] } }
   | { type: "AbilityModeChoice"; data: { player: PlayerId; modal: ModalChoice; source_id: ObjectId; mode_abilities: unknown[]; is_activated: boolean; ability_index?: number; ability_cost?: unknown; unavailable_modes?: number[] } }
   | { type: "DiscardToHandSize"; data: { player: PlayerId; count: number; cards: ObjectId[] } }
-  | { type: "OptionalCostChoice"; data: { player: PlayerId; cost: AdditionalCost; times_kicked: number; pending_cast: PendingCast } }
+  | { type: "OptionalCostChoice"; data: { player: PlayerId; cost: AdditionalCost; times_kicked: number; origin?: string; gift_kind?: { type: string }; pending_cast: PendingCast } }
   | { type: "CostTypeChoice"; data: { player: PlayerId; choice_type: string | Record<string, unknown>; options: string[]; pending_cast: PendingCast } }
   | { type: "SpliceOffer"; data: { player: PlayerId; pending_cast: PendingCast; eligible: ObjectId[] } }
   | { type: "DefilerPayment"; data: { player: PlayerId; life_cost: number; mana_reduction: ManaCost; pending_cast: PendingCast } }
@@ -1802,6 +1828,7 @@ export type WaitingFor =
   // picks WHICH opponent makes the choice before the zone choice is presented.
   | { type: "ChooseFromZoneOpponentChooser"; data: { player: PlayerId; candidates: PlayerId[]; ability: unknown } }
   | { type: "ChooseAnnouncingOpponent"; data: { player: PlayerId; candidates: PlayerId[]; choice_index: number; choice_count: number; target_type?: CoreType; pending_cast: unknown } }
+  | { type: "ChooseGiftRecipient"; data: { player: PlayerId; candidates: PlayerId[]; gift_kind?: { type: string }; pending_cast: unknown } }
   | { type: "ClashCardPlacement"; data: { player: PlayerId; card: ObjectId; remaining: [PlayerId, ObjectId][] } }
   | { type: "VoteChoice"; data: {
       player: PlayerId;
@@ -2238,6 +2265,7 @@ export type GameAction =
   | { type: "ChooseZoneOpponentChooser"; data: { opponent: PlayerId } }
   | { type: "ChoosePileOpponent"; data: { opponent: PlayerId } }
   | { type: "ChooseAnnouncingOpponent"; data: { opponent: PlayerId } }
+  | { type: "ChooseGiftRecipient"; data: { opponent: PlayerId } }
   | { type: "ChooseAssistPlayer"; data: { player: PlayerId | null } }
   | { type: "CommitAssistPayment"; data: { generic: number } }
   | {
@@ -2380,6 +2408,8 @@ export type GameEvent =
   | { type: "BecomesTarget"; data: { target: TargetRef; source_id: ObjectId } }
   | { type: "ReplacementApplied"; data: { source_id: ObjectId; event_type: string } }
   | { type: "Transformed"; data: { object_id: ObjectId } }
+  // CR 710.4: a Kamigawa flip permanent flipped to its alternative face.
+  | { type: "Flipped"; data: { object_id: ObjectId } }
   | { type: "DayNightChanged"; data: { new_state: string } }
   | { type: "TurnedFaceUp"; data: { object_id: ObjectId } }
   | { type: "TurnedFaceDown"; data: { object_id: ObjectId } }

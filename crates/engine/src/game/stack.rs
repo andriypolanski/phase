@@ -1,8 +1,8 @@
 use crate::types::ability::{
     AbilityKind, ContinuousModification, CopyCountStatus, Duration, Effect, EffectKind, FilterProp,
     KeywordAction, ObjectScope, PlayerFilter, QuantityExpr, QuantityRef, ResolvedAbility,
-    SpellContext, SubAbilityLink, TargetChoiceTiming, TargetFilter, TargetRef, TargetSelectionMode,
-    TriggerCondition,
+    SiblingCondition, SpellContext, SubAbilityLink, TargetChoiceTiming, TargetFilter, TargetRef,
+    TargetSelectionMode, TriggerCondition,
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
@@ -1044,6 +1044,7 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
             if let Some(ability) = ability.as_ref() {
                 if let Some(obj) = state.objects.get_mut(&entry.id) {
                     obj.kickers_paid = ability.context.kickers_paid.clone();
+                    obj.gift_recipient = ability.context.gift_recipient;
                     obj.additional_cost_payment_count =
                         ability.context.additional_cost_payment_count;
                     obj.additional_cost_payments = ability.context.additional_cost_payments.clone();
@@ -2297,6 +2298,7 @@ fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
         repeat_until,
         replacement_applied: _,
         sub_link,
+        sibling_condition,
         modal,
         mode_abilities,
         parent_target_missing_reason,
@@ -2362,6 +2364,11 @@ fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
         && chosen_players.is_empty()
         && repeat_until.is_none()
         && *sub_link == SubAbilityLink::ContinuationStep
+        // CR 702.1c ("the same is true") + CR 608.2c (written order): a
+        // `ReplicatedOrBranch` per-item keyword-list sibling (Mutable Pupa,
+        // Kathril) is not the vanilla batchable shape this proof
+        // covers — its independent OR-branch gate must be evaluated per entry.
+        && *sibling_condition == SiblingCondition::Dependent
         && modal.is_none()
         && mode_abilities.is_empty()
         && parent_target_missing_reason.is_none()
@@ -2492,6 +2499,7 @@ fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbili
         repeat_until,
         replacement_applied: _,
         sub_link,
+        sibling_condition,
         modal,
         mode_abilities,
         parent_target_missing_reason,
@@ -2540,6 +2548,11 @@ fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbili
         && chosen_players.is_empty()
         && repeat_until.is_none()
         && *sub_link == SubAbilityLink::ContinuationStep
+        // CR 702.1c ("the same is true") + CR 608.2c (written order): a
+        // `ReplicatedOrBranch` per-item keyword-list sibling (Mutable Pupa,
+        // Kathril) is not the vanilla batchable shape this proof
+        // covers — its independent OR-branch gate must be evaluated per entry.
+        && *sibling_condition == SiblingCondition::Dependent
         && modal.is_none()
         && mode_abilities.is_empty()
         && parent_target_missing_reason.is_none()
@@ -2672,6 +2685,7 @@ fn fixed_opponent_lose_life_ability_is_batch_candidate(ability: &ResolvedAbility
         repeat_until,
         replacement_applied: _,
         sub_link,
+        sibling_condition,
         modal,
         mode_abilities,
         parent_target_missing_reason,
@@ -2720,6 +2734,11 @@ fn fixed_opponent_lose_life_ability_is_batch_candidate(ability: &ResolvedAbility
         && chosen_players.is_empty()
         && repeat_until.is_none()
         && *sub_link == SubAbilityLink::ContinuationStep
+        // CR 702.1c ("the same is true") + CR 608.2c (written order): a
+        // `ReplicatedOrBranch` per-item keyword-list sibling (Mutable Pupa,
+        // Kathril) is not the vanilla batchable shape this proof
+        // covers — its independent OR-branch gate must be evaluated per entry.
+        && *sibling_condition == SiblingCondition::Dependent
         && modal.is_none()
         && mode_abilities.is_empty()
         && parent_target_missing_reason.is_none()
@@ -3277,6 +3296,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         repeat_until: a_repeat_until,
         replacement_applied: a_replacement_applied,
         sub_link: a_sub_link,
+        sibling_condition: a_sibling_condition,
         modal: a_modal,
         mode_abilities: a_mode_abilities,
         parent_target_missing_reason: a_parent_target_missing_reason,
@@ -3328,6 +3348,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         repeat_until: b_repeat_until,
         replacement_applied: b_replacement_applied,
         sub_link: b_sub_link,
+        sibling_condition: b_sibling_condition,
         modal: b_modal,
         mode_abilities: b_mode_abilities,
         parent_target_missing_reason: b_parent_target_missing_reason,
@@ -3383,6 +3404,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         && a_repeat_until == b_repeat_until
         && a_replacement_applied == b_replacement_applied
         && a_sub_link == b_sub_link
+        && a_sibling_condition == b_sibling_condition
         && a_modal == b_modal
         && a_mode_abilities == b_mode_abilities
         && a_parent_target_missing_reason == b_parent_target_missing_reason

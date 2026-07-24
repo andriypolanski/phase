@@ -1710,6 +1710,23 @@
     "targetCreature": "das Kreaturenziel",
     "targetChoice": "diese Zielwahl"
   },
+  "giftRecipient": {
+    "title": "Geschenk-Empfänger wählen",
+    "subtitle": "Wähle, welcher Gegner das versprochene Geschenk erhält."
+  },
+  "optionalCost": {
+    "gift": {
+      "title": "Ein Geschenk versprechen?",
+      "pay": "{{gift}} versprechen",
+      "decline": "Wirken ohne zu versprechen",
+      "kind": {
+        "card": "eine Karte",
+        "treasure": "einen Schatz",
+        "food": "eine Nahrung",
+        "tappedFish": "einen getappten Fisch"
+      }
+    }
+  },
   "clashOpponent": {
     "title": "Kampf-Gegner wählen",
     "subtitle": "Wähle, welcher Gegner mit dir kämpft."

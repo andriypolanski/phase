@@ -1710,6 +1710,23 @@
     "targetCreature": "cel stwora",
     "targetChoice": "ten wybór celu"
   },
+  "giftRecipient": {
+    "title": "Wybierz odbiorcę prezentu",
+    "subtitle": "Wybierz przeciwnika, który otrzyma obiecany prezent."
+  },
+  "optionalCost": {
+    "gift": {
+      "title": "Obiecać prezent?",
+      "pay": "Obiecaj {{gift}}",
+      "decline": "Rzuć bez obietnicy",
+      "kind": {
+        "card": "kartę",
+        "treasure": "Skarb",
+        "food": "Pożywienie",
+        "tappedFish": "zakręconą Rybę"
+      }
+    }
+  },
   "clashOpponent": {
     "title": "Wybierz przeciwnika do starcia",
     "subtitle": "Wybierz, który przeciwnik stoczy z tobą starcie."

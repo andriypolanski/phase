@@ -103,11 +103,11 @@ use crate::types::ability::{
     DelayedTriggerLifetime, DoubleTarget, Duration, Effect, EffectOutcomeSignal, EffectScope,
     FilterProp, GameRestriction, GuessSubject, IntensityScope, IterationKindBinding,
     KeeperConstraint, LibraryPosition, ManaProduction, ManaSpendPermission, MultiTargetSpec,
-    NumberDistinctness, ObjectProperty, ObjectScope, OriginConstraint, PlayPermissionInvalidation,
-    PlayerFilter, PlayerRelation, PlayerScope, PreventionAmount, PreventionScope,
-    ProhibitedActivity, PtValue, QuantityExpr, QuantityRef, ReplacementCondition,
+    NumberDistinctness, ObjectProperty, ObjectScope, OriginConstraint, PerpetualModification,
+    PlayPermissionInvalidation, PlayerFilter, PlayerRelation, PlayerScope, PreventionAmount,
+    PreventionScope, ProhibitedActivity, PtValue, QuantityExpr, QuantityRef, ReplacementCondition,
     ReplacementDefinition, RestrictionExpiry, RestrictionPlayerScope, RevealUntilDisposition,
-    RoundingMode, SharedQuality, SharedQualityRelation, SkipScope,
+    RoundingMode, SharedQuality, SharedQualityRelation, SiblingCondition, SkipScope,
     SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition, StepSkipTarget,
     SubAbilityLink, TapStateChange, TargetFilter, TargetSelectionMode, ThisWayCause,
     TrackedAnaphorSource, TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter,
@@ -1790,6 +1790,12 @@ fn parse_leave_battlefield_rider_ref(input: &str) -> OracleResult<'_, ()> {
     value(
         (),
         alt((
+            // CR 201.5 + CR 201.5b: `normalize_card_name_refs` (oracle_util.rs)
+            // rewrites every "this creature/permanent/land" self-reference to `~`
+            // card-wide before parsing, so a quoted rider reaching the parser reads
+            // "if ~ would leave the battlefield, ...". Match `~` first; it never
+            // prefix-collides with the "it"/"the …"/"that …"/"this …" arms below.
+            tag("~"),
             tag("it"),
             tag("the card"),
             tag("the creature"),
@@ -1807,11 +1813,77 @@ fn parse_leave_battlefield_rider_ref(input: &str) -> OracleResult<'_, ()> {
     .parse(input)
 }
 
+/// CR 614.1a + CR 614.6: The object-hosted "exile this permanent instead of
+/// letting it leave the battlefield" replacement. A `Moved` replacement whose
+/// `valid_card: SelfRef` binds it to its own host object and whose `execute`
+/// redirects any battlefield-exit to exile. Shared single authority for the
+/// #6538 targeted-rider front door (`try_parse_leave_battlefield_exile_replacement`,
+/// wrapping `target: Any`), unearth's synthesis (`database/unearth.rs`), and the
+/// #6566 reanimation-rider grant path. Callers add their own
+/// `AddTargetReplacement` / `GrantReplacement` wrapper.
+///
+/// **The returned definition is deliberately UNSTAMPED (`expiry: None`); the
+/// lifetime is the caller's decision.** The two *standalone* consumers (#6538's
+/// front door and unearth) compose `.expiry(RestrictionExpiry::UntilHostLeavesPlay)`
+/// themselves, because there the rider is a runtime effect bound to the object it
+/// was installed on. The *granted* consumer (`classify_quoted_inner` →
+/// `ContinuousModification::GrantReplacement`) must NOT: a granted replacement's
+/// lifetime is governed by the granting continuous effect's duration and is
+/// re-derived every layer pass (CR 613.1f), with the grant itself ending per
+/// CR 611.2a. A host-lifetime stamp there would be read by #6538's machinery
+/// (`is_runtime_host_lifetime_replacement` → base-install + non-copiable +
+/// host-exit prune), so the granted rider would be base-installed and outlive the
+/// continuous effect that granted it — Elemental Expressionist's until-end-of-turn
+/// grant would never lapse.
+///
+/// Production visibility is `pub(crate)`; the `test-support` feature widens it to
+/// `pub` so integration tests (compiled with that feature) assemble the exact
+/// production replacement shape instead of a hand-copied duplicate. Both arms
+/// delegate to the single `_impl` body — mirrors the `game::zones` module
+/// visibility gate in `game/mod.rs`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn leave_battlefield_exile_replacement() -> ReplacementDefinition {
+    leave_battlefield_exile_replacement_impl()
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) fn leave_battlefield_exile_replacement() -> ReplacementDefinition {
+    leave_battlefield_exile_replacement_impl()
+}
+
+fn leave_battlefield_exile_replacement_impl() -> ReplacementDefinition {
+    ReplacementDefinition::new(ReplacementEvent::Moved)
+        .valid_card(TargetFilter::SelfRef)
+        .execute(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ChangeZone {
+                origin: Some(Zone::Battlefield),
+                destination: Zone::Exile,
+                target: TargetFilter::SelfRef,
+                owner_library: false,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                face_down_profile: None,
+                enters_modified_if: None,
+            },
+        ))
+}
+
 /// CR 614.1a + CR 614.6: Detect "If it would leave the battlefield, exile it
 /// instead of putting it anywhere else." riders attached to a previously
 /// selected object. The carried `ReplacementDefinition` is installed on the
 /// parent target, where `valid_card: SelfRef` binds to that host object.
-fn try_parse_leave_battlefield_exile_replacement(lower: &str) -> Option<Effect> {
+///
+/// This is the STANDALONE (printed-rider) front door, so it stamps the #6538
+/// host-lifetime expiry on the shared unstamped definition. Callers that grant
+/// the rider as a continuous effect must use `leave_battlefield_exile_replacement`
+/// directly and treat this function purely as a detector — see its doc.
+pub(crate) fn try_parse_leave_battlefield_exile_replacement(lower: &str) -> Option<Effect> {
     let (rest, _) = nom::combinator::opt(tag::<_, _, OracleError<'_>>("if "))
         .parse(lower)
         .ok()?;
@@ -1830,37 +1902,17 @@ fn try_parse_leave_battlefield_exile_replacement(lower: &str) -> Option<Effect> 
         .ok()?;
     parse_optional_period_and_end(rest)?;
 
-    let replacement = ReplacementDefinition::new(ReplacementEvent::Moved)
-        .valid_card(TargetFilter::SelfRef)
-        // CR 400.7: The rider is bound to the lifetime of the object it is
-        // installed on; stamp the expiry here so the lifetime is self-contained
+    Some(Effect::AddTargetReplacement {
+        // CR 400.7: The standalone rider is bound to the lifetime of the object it
+        // is installed on; stamp the expiry here so the lifetime is self-contained
         // (not dependent on the ability frame's duration threading) and so
         // `expiry_from_duration`'s `is_none` guard never retags it — mirrors the
         // die-exile stamp precedent at `try_parse_die_exile_rider` /
         // `parse_token_creation_replacement_effect`. Base-installed to survive
         // CR 613.1 layer reseeds, non-copiable (CR 707.2), pruned on host exit.
-        .expiry(RestrictionExpiry::UntilHostLeavesPlay)
-        .execute(AbilityDefinition::new(
-            AbilityKind::Spell,
-            Effect::ChangeZone {
-                origin: Some(Zone::Battlefield),
-                destination: Zone::Exile,
-                target: TargetFilter::SelfRef,
-                owner_library: false,
-                enter_transformed: false,
-                enters_under: None,
-                enter_tapped: crate::types::zones::EtbTapState::Unspecified,
-                enters_attacking: false,
-                up_to: false,
-                enter_with_counters: vec![],
-                conditional_enter_with_counters: vec![],
-                face_down_profile: None,
-                enters_modified_if: None,
-            },
-        ));
-
-    Some(Effect::AddTargetReplacement {
-        replacement: Box::new(replacement),
+        replacement: Box::new(
+            leave_battlefield_exile_replacement().expiry(RestrictionExpiry::UntilHostLeavesPlay),
+        ),
         target: TargetFilter::Any,
     })
 }
@@ -6504,6 +6556,13 @@ pub(crate) fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedE
         );
     }
     let original_lower = text.to_lowercase();
+    if let Some(mut clause) = try_parse_for_each_target_copy_token(text, &original_lower, ctx) {
+        peel_ctx.apply_optional(&mut clause.optional);
+        if clause.condition.is_none() {
+            clause.condition = peel_ctx.condition().cloned().or(unless_condition.clone());
+        }
+        return attach_unless_slots(clause, None, unless_pay_deferred);
+    }
     if let Some(mut clause) = try_parse_for_each_copy_token_source(text, &original_lower, ctx) {
         peel_ctx.apply_optional(&mut clause.optional);
         if clause.condition.is_none() {
@@ -6636,6 +6695,98 @@ fn try_parse_for_each_copy_token_source(
         extra_keywords,
         additional_modifications,
     }))
+}
+
+/// CR 115.1d + CR 601.2c + CR 707.2: "For each of <N> target <type>, create <M>
+/// tokens that are copies of that <noun>" — Doppelgang. The "for each of"
+/// distributor iterates an EXACT-count *targeted* set (`<N>` target permanents);
+/// the body creates `<M>` copy-tokens of each chosen target.
+///
+/// This is distinct from both sibling for-each copy paths:
+/// * `try_parse_for_each_copy_token_source` handles a NON-targeted object filter
+///   ("for each creature you control, …") — no target slot, no `MultiTargetSpec`.
+/// * Twinflame's "for each of them, create a token …" relies on a prior "Choose
+///   any number of target creatures" sentence to establish the target slot, then
+///   its body only recurses onto `ParentTarget`.
+///
+/// Here the target set is declared inline, so we lift the exact count onto the
+/// clause's `multi_target` and bind the copy source directly to the targeted
+/// `<type>` filter. The `CopyTokenOf` resolver iterates the ability's chosen
+/// targets and creates `count` copies of each (game/effects/token_copy.rs), so
+/// `N` targets × `M` copies = `N·M` tokens. The body's anaphor ("that permanent"
+/// lowers to `TriggeringSource`) has no trigger event on a spell, so it is
+/// discarded and replaced by the concrete targeted filter.
+fn try_parse_for_each_target_copy_token(
+    text: &str,
+    lower: &str,
+    ctx: &mut ParseContext,
+) -> Option<ParsedEffectClause> {
+    // "for each of <count> " distributor prefix over an exact-count target set.
+    let (after_prefix, _) = tag::<_, _, OracleError<'_>>("for each of ")
+        .parse(lower)
+        .ok()?;
+    let (after_count, target_count) = parse_multi_target_count_expr(after_prefix).ok()?;
+    let (after_count, _) = space1::<&str, OracleError<'_>>(after_count).ok()?;
+    // The iterated set must be a printed target ("target permanents"); require
+    // the "target " keyword so a bare "for each of them, …" (Twinflame) or a
+    // non-targeted filter never reaches this arm.
+    peek(tag::<_, _, OracleError<'_>>("target "))
+        .parse(after_count)
+        .ok()?;
+    // Let the target parser itself consume the filter and hand back the
+    // distributor comma + body — the parser IS the detector, so a compound
+    // filter with internal commas ("target artifact, creature, or land
+    // permanent") that a naive ", " split would truncate is handled correctly.
+    // Map the lowercase offset back onto the original-case `text` (ASCII Oracle
+    // text keeps byte offsets aligned).
+    let target_start = lower.len() - after_count.len();
+    let mut target_ctx = ctx.clone();
+    let (target, target_rem) = parse_target_with_ctx(&text[target_start..], &mut target_ctx);
+    if !matches!(target, TargetFilter::Typed(_)) {
+        return None;
+    }
+    // The distributor comma separates the target set from the body; consume it
+    // with a combinator (the target parser may or may not have already eaten
+    // it, so `opt`). `opt` never fails, so this only extracts the body slice.
+    let (body, _) = opt(tag::<_, _, OracleError<'_>>(","))
+        .parse(target_rem.trim_start())
+        .ok()?;
+    let body = body.trim();
+    if body.is_empty() {
+        return None;
+    }
+    let body_lower = body.to_lowercase();
+
+    // The body must be a bare "create <M> tokens that are copies of that <noun>"
+    // whose copy source is an anaphor (no independent target of its own).
+    let mut body_ctx = ctx.clone();
+    let effect = token::try_parse_token(&body_lower, body, &mut body_ctx)?;
+    let Effect::CopyTokenOf {
+        target: TargetFilter::ParentTarget | TargetFilter::SelfRef | TargetFilter::TriggeringSource,
+        owner,
+        source_filter: None,
+        enters_attacking,
+        tapped,
+        count,
+        extra_keywords,
+        additional_modifications,
+    } = effect
+    else {
+        return None;
+    };
+    *ctx = body_ctx;
+    let mut clause = parsed_clause(Effect::CopyTokenOf {
+        target,
+        owner,
+        source_filter: None,
+        enters_attacking,
+        tapped,
+        count,
+        extra_keywords,
+        additional_modifications,
+    });
+    clause.multi_target = Some(MultiTargetSpec::exact(target_count));
+    Some(clause)
 }
 
 /// Parse the residual of a "choose ..." head as a bare battlefield-object
@@ -7784,6 +7935,9 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         return parsed_clause(effect);
     }
 
+    if let Some(clause) = try_parse_for_each_target_copy_token(text, &lower, ctx) {
+        return clause;
+    }
     if let Some(clause) = try_parse_for_each_copy_token_source(text, &lower, ctx) {
         return clause;
     }
@@ -8605,7 +8759,14 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
     }
 
     // Digital-only Alchemy: "[~/that X] perpetually gains [keyword(s)]" — persistent
-    // keyword grant (Monoist Gravliner station trigger).
+    // keyword grant (Monoist Gravliner station trigger). Mutable Pupa's
+    // keyword-MIRROR antecedent ("… perpetually gains <K0> if that creature has
+    // <K0>") also lands here: the trailing "if that creature has <K0>" gate is
+    // peeled UPSTREAM by `strip_suffix_conditional` (its trigger-gated
+    // `ZoneChangeObjectMatchesFilter` branch) in the effect-chain chunk loop —
+    // the ONLY production path that reaches this dispatch — so the text arriving
+    // here is already the short bare-keyword form and the peeled condition is
+    // reattached at the chunk level.
     if let Some(effect) = try_parse_perpetual_grant_keywords(tp) {
         return parsed_clause(effect);
     }
@@ -17715,6 +17876,8 @@ fn replace_target_with_parent(effect: &mut Effect) {
         | Effect::Pump { target, .. }
         | Effect::Counter { target, .. }
         | Effect::Transform { target, .. }
+        // CR 710.4: same single-target-slot shape as `Transform`.
+        | Effect::FlipPermanent { target, .. }
         | Effect::Connive { target, .. }
         | Effect::PhaseOut { target }
         // CR 702.26c: PhaseIn is the symmetric partner of PhaseOut; route its
@@ -17840,6 +18003,11 @@ fn replace_target_with_self(effect: &mut Effect) {
             *target = TargetFilter::SelfRef;
         }
         Effect::Transform { target, .. } => {
+            *target = TargetFilter::SelfRef;
+        }
+        // CR 710.4: every printed flip instruction is self-referential, so the
+        // same source-binding fixup applies.
+        Effect::FlipPermanent { target, .. } => {
             *target = TargetFilter::SelfRef;
         }
         Effect::GenericEffect {
@@ -20041,6 +20209,8 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         | Effect::MoveCounters { target, .. }
         | Effect::Animate { target, .. }
         | Effect::Transform { target, .. }
+        // CR 710.4: same single-target-slot shape as `Transform`.
+        | Effect::FlipPermanent { target, .. }
         | Effect::RevealHand { target, .. }
         | Effect::TargetOnly { target, .. }
         | Effect::PreventDamage { target, .. }
@@ -22044,6 +22214,12 @@ fn attach_repeat_process_keywords(
         }
         // Each replicated counter placement is its own sequential instruction.
         new_def.sub_link = SubAbilityLink::SequentialSibling;
+        // CR 608.2c: each per-keyword sibling is an INDEPENDENT OR-branch gated on
+        // its own keyword, so it must resolve even when a preceding sibling's
+        // condition (K0's graveyard-keyword gate) was false. Without this, K1..Kn
+        // never place their counters once K0's gate fails (the same "list
+        // collapse" bug this marker fixes for Mutable Pupa's perpetual grants).
+        new_def.sibling_condition = SiblingCondition::ReplicatedOrBranch;
         new_def.sub_ability = None;
         defs.push(new_def);
     }
@@ -22059,6 +22235,58 @@ pub(super) fn def_is_keyword_counter_placement(def: &AbilityDefinition) -> bool 
             ..
         }
     )
+}
+
+/// Membership mirror for `AntecedentRole::PerpetualKeywordGrantHead` — the shape
+/// `attach_perpetual_keyword_grants` clones its sibling template from (Mutable
+/// Pupa's "perpetually gains <K0> if that creature has <K0>" antecedent).
+pub(super) fn def_is_perpetual_keyword_grant(def: &AbilityDefinition) -> bool {
+    matches!(
+        &*def.effect,
+        Effect::ApplyPerpetual {
+            modification: PerpetualModification::GrantKeywords { .. },
+            ..
+        }
+    )
+}
+
+/// CR 702.1c + CR 608.2c: Apply a "The same is true for <keyword list>" continuation whose
+/// antecedent is a PERPETUAL keyword grant (Mutable Pupa). The counters-class
+/// `attach_repeat_process_keywords` analogue: walk `defs` back to the most
+/// recent conditional perpetual keyword-grant (`ApplyPerpetual { GrantKeywords }`
+/// gated by a zone-change keyword `condition`) and append one cloned sibling per
+/// listed keyword — swapping both the granted keyword and the gating condition's
+/// keyword. Each clone is an independent sequential sibling
+/// (`SiblingCondition::ReplicatedOrBranch`) so the engine grants every keyword
+/// the entering object actually has during the trigger's one resolution, rather
+/// than collapsing to K0's gate. Digital-only Alchemy (no CR entry for
+/// "perpetually").
+fn attach_perpetual_keyword_grants(
+    defs: &mut Vec<AbilityDefinition>,
+    template_index: usize,
+    keywords: &[Keyword],
+) {
+    let template = defs[template_index].clone();
+    for keyword in keywords {
+        let mut new_def = template.clone();
+        if let Effect::ApplyPerpetual {
+            modification: PerpetualModification::GrantKeywords { keywords: kws },
+            ..
+        } = &mut *new_def.effect
+        {
+            *kws = vec![keyword.clone()];
+        }
+        if let Some(condition) = &mut new_def.condition {
+            rewrite_ability_condition_keyword(condition, keyword);
+        }
+        // Each replicated perpetual grant is its own sequential instruction.
+        new_def.sub_link = SubAbilityLink::SequentialSibling;
+        // CR 702.1c + CR 608.2c: independent OR-branch — resolves regardless of any other
+        // sibling's keyword gate (see `SiblingCondition::ReplicatedOrBranch`).
+        new_def.sibling_condition = SiblingCondition::ReplicatedOrBranch;
+        new_def.sub_ability = None;
+        defs.push(new_def);
+    }
 }
 
 /// Swap the gating keyword inside an `AbilityCondition` to `new_keyword`. Used
@@ -22081,6 +22309,13 @@ fn rewrite_ability_condition_keyword(condition: &mut AbilityCondition, new_keywo
         AbilityCondition::TargetHasKeywordInstead { keyword }
         | AbilityCondition::SourceLacksKeyword { keyword } => {
             *keyword = new_keyword.clone();
+        }
+        // CR 702.1c + CR 608.2c: Mutable Pupa's per-keyword gate — "if that creature has
+        // <keyword>" — carries the keyword inside a `ZoneChangeObjectMatchesFilter`
+        // typed filter (`FilterProp::WithKeyword`), swapped via the shared
+        // `rewrite_filter_keyword` walker.
+        AbilityCondition::ZoneChangeObjectMatchesFilter { filter, .. } => {
+            rewrite_filter_keyword(filter, new_keyword);
         }
         AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
             for inner in conditions {
@@ -24033,6 +24268,8 @@ fn rewrite_parent_targets_to_tracked_set(effect: &mut Effect) {
         | Effect::Pump { target, .. }
         | Effect::Counter { target, .. }
         | Effect::Transform { target, .. }
+        // CR 710.4: same single-target-slot shape as `Transform`.
+        | Effect::FlipPermanent { target, .. }
         | Effect::Connive { target, .. }
         | Effect::PhaseOut { target }
         // CR 702.26c: PhaseIn mirrors PhaseOut; expose its target to tracked-set
@@ -24292,6 +24529,8 @@ pub(crate) fn each_target_filter_mut(effect: &mut Effect, f: &mut impl FnMut(&mu
         | Effect::UnattachAll { target, .. }
         | Effect::Counter { target, .. }
         | Effect::Transform { target, .. }
+        // CR 710.4: same single-target-slot shape as `Transform`.
+        | Effect::FlipPermanent { target, .. }
         | Effect::Connive { target, .. }
         | Effect::PhaseOut { target }
         // CR 702.26c: PhaseIn is the symmetric partner of PhaseOut above; expose
@@ -27315,15 +27554,40 @@ pub(crate) fn parse_effect_chain_ir(
         // keyword. Requires a prior clause to attach to.
         if !builder.is_empty() {
             if let Some(keywords) = try_parse_same_is_true_continuation(normalized_text) {
+                // CR 702.1c ("the same is true") + CR 608.2c (written order):
+                // select the replication template shape from the antecedent clause's
+                // parsed effect. A PERPETUAL keyword grant
+                // (Mutable Pupa, `ApplyPerpetual { GrantKeywords }`) replicates via
+                // `attach_perpetual_keyword_grants`; every other "same is true for"
+                // antecedent (Odric's `GenericEffect` static grant) keeps the
+                // default `StaticGrant`. Mirrors `def_is_perpetual_keyword_grant`,
+                // applied to the clause's `.effect` (both expose `Effect`).
+                let kind = if builder
+                    .clauses()
+                    .iter()
+                    .rev()
+                    .find(|clause| {
+                        !matches!(clause.disposition, ClauseDisposition::Continue { .. })
+                    })
+                    .is_some_and(|clause| {
+                        matches!(
+                            &clause.parsed.effect,
+                            Effect::ApplyPerpetual {
+                                modification: PerpetualModification::GrantKeywords { .. },
+                                ..
+                            }
+                        )
+                    }) {
+                    ReplicateKind::PerpetualKeywordGrant
+                } else {
+                    ReplicateKind::StaticGrant
+                };
                 builder
                     .clause(
                         normalized_text,
                         placeholder_parsed_clause("same_is_true_for_placeholder"),
                         chunk.boundary_after,
-                        ClauseDisposition::ReplicatePerKeyword {
-                            keywords,
-                            kind: ReplicateKind::StaticGrant,
-                        },
+                        ClauseDisposition::ReplicatePerKeyword { keywords, kind },
                     )
                     .push();
                 continue;
