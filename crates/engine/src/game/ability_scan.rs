@@ -2898,7 +2898,7 @@ fn scan_target_filter(x: &TargetFilter, ctx: FilterReadContext, mode: ScanMode) 
         TargetFilter::ScopedPlayer => Axes::NONE,
         TargetFilter::AttachedTo => Axes::NONE,
         TargetFilter::LastCreated => Axes::NONE,
-        TargetFilter::LastRevealed => Axes::NONE,
+        TargetFilter::LastRevealed | TargetFilter::LastZoneChanged => Axes::NONE,
         TargetFilter::CostPaidObject => Axes {
             event: true,
             sibling: false,

@@ -4795,6 +4795,11 @@ pub enum TargetFilter {
     /// (Amareth, the Lustrous) and by `AbilityCondition::ObjectsShareQuality`
     /// subject slots.
     LastRevealed,
+    /// CR 608.2c: Resolves to the card(s) most recently moved to a public zone
+    /// by the resolving spell or ability (`state.last_zone_changed_ids`). Used
+    /// by anaphoric "milled this way" / "exiled this way" quantity gates
+    /// (Grindstone) and `ObjectCountBySharedQuality` population filters.
+    LastZoneChanged,
     /// CR 400.7j + CR 608.2k: Resolves to the object paid as a cost for the
     /// resolving spell or ability. Used by effects such as "the exiled card"
     /// after an exile-as-cost clause.

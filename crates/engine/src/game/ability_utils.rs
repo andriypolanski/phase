@@ -3172,7 +3172,7 @@ fn attach_host_filter_needs_target_slot(filter: &TargetFilter) -> bool {
     !filter.is_context_ref()
         && !matches!(
             filter,
-            TargetFilter::LastCreated | TargetFilter::LastRevealed
+            TargetFilter::LastCreated | TargetFilter::LastRevealed | TargetFilter::LastZoneChanged
         )
 }
 

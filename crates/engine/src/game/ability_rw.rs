@@ -1357,6 +1357,7 @@ fn scope_of(target: &TargetFilter, chain_root: Option<WriteScope>) -> WriteScope
         | TargetFilter::ScopedPlayer
         | TargetFilter::AttachedTo
         | TargetFilter::LastRevealed
+        | TargetFilter::LastZoneChanged
         | TargetFilter::CostPaidObject
         | TargetFilter::ChosenCard
         | TargetFilter::TrackedSet { .. }
@@ -2262,6 +2263,7 @@ fn legacy_target_filter(f: &TargetFilter) -> bool {
         | TargetFilter::AttachedTo
         | TargetFilter::LastCreated
         | TargetFilter::LastRevealed
+        | TargetFilter::LastZoneChanged
         | TargetFilter::ChosenCard
         | TargetFilter::TrackedSet { .. }
         | TargetFilter::ExiledBySource
@@ -2504,6 +2506,7 @@ fn member_bound_target_filter(f: &TargetFilter) -> bool {
         | TargetFilter::ScopedPlayer
         | TargetFilter::LastCreated
         | TargetFilter::LastRevealed
+        | TargetFilter::LastZoneChanged
         | TargetFilter::None
         | TargetFilter::Any
         | TargetFilter::Player
@@ -3600,9 +3603,10 @@ fn read_object_scope(scope: &ObjectScope, kind: StateKind) -> RwProfile {
 /// board `ObjectPt` characteristic read.
 fn share_quality_operand_read(f: &TargetFilter) -> RwProfile {
     match f {
-        TargetFilter::LastRevealed | TargetFilter::SelfRef | TargetFilter::SourceOrPaired => {
-            RwProfile::empty()
-        }
+        TargetFilter::LastRevealed
+        | TargetFilter::LastZoneChanged
+        | TargetFilter::SelfRef
+        | TargetFilter::SourceOrPaired => RwProfile::empty(),
         // Fail-closed: any other reference is a live board characteristic read.
         _ => reads_board_of(StateKind::ObjectPt),
     }
@@ -6327,6 +6331,7 @@ fn rw_target_filter(x: &TargetFilter) -> RwProfile {
         | TargetFilter::AttachedTo
         | TargetFilter::LastCreated
         | TargetFilter::LastRevealed
+        | TargetFilter::LastZoneChanged
         | TargetFilter::ChosenCard
         | TargetFilter::TrackedSet { .. }
         | TargetFilter::ExiledBySource

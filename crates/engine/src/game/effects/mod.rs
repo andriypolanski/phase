@@ -2702,9 +2702,73 @@ fn condition_depends_on_effect_performed(condition: &AbilityCondition) -> bool {
 /// alongside the `WhenYouDo` reflexive, then re-evaluated once the choice
 /// resolves and `last_zone_changed_ids` reflects the moved objects. Predicate
 /// helper, not rule-implementing code.
+fn filter_contains_last_zone_changed(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::LastZoneChanged => true,
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            filters.iter().any(filter_contains_last_zone_changed)
+        }
+        TargetFilter::Not { filter } => filter_contains_last_zone_changed(filter),
+        _ => false,
+    }
+}
+
+fn quantity_expr_depends_on_zone_change_this_way(expr: &QuantityExpr) -> bool {
+    match expr {
+        QuantityExpr::Ref { qty } => quantity_ref_depends_on_zone_change_this_way(qty),
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Offset { inner, .. } => {
+            quantity_expr_depends_on_zone_change_this_way(inner)
+        }
+        QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => exprs
+            .iter()
+            .any(quantity_expr_depends_on_zone_change_this_way),
+        QuantityExpr::UpTo { max } => quantity_expr_depends_on_zone_change_this_way(max),
+        QuantityExpr::Power { exponent, .. } => {
+            quantity_expr_depends_on_zone_change_this_way(exponent)
+        }
+        QuantityExpr::Difference { left, right } => {
+            quantity_expr_depends_on_zone_change_this_way(left)
+                || quantity_expr_depends_on_zone_change_this_way(right)
+        }
+        QuantityExpr::Fixed { .. } => false,
+    }
+}
+
+fn quantity_ref_depends_on_zone_change_this_way(qty: &QuantityRef) -> bool {
+    match qty {
+        QuantityRef::ObjectCount { filter }
+        | QuantityRef::ObjectCountDistinct { filter, .. }
+        | QuantityRef::ObjectCountBySharedQuality { filter, .. }
+        | QuantityRef::CountersOnObjects { filter, .. }
+        | QuantityRef::Aggregate { filter, .. }
+        | QuantityRef::ControlledByEachPlayer { filter, .. }
+        | QuantityRef::DistinctColorsAmongPermanents { filter }
+        | QuantityRef::DistinctCounterKindsAmong { filter }
+        | QuantityRef::EnteredThisTurn { filter }
+        | QuantityRef::BattlefieldEntriesThisTurn { filter, .. } => {
+            filter_contains_last_zone_changed(filter)
+        }
+        QuantityRef::DistinctCardTypes {
+            source: crate::types::ability::CardTypeSetSource::Objects { filter },
+        }
+        | QuantityRef::DistinctSubtypes {
+            source: crate::types::ability::CardTypeSetSource::Objects { filter },
+            ..
+        } => filter_contains_last_zone_changed(filter),
+        _ => false,
+    }
+}
+
 fn condition_depends_on_zone_change_this_way(condition: &AbilityCondition) -> bool {
     match condition {
         AbilityCondition::ZoneChangedThisWay { .. } => true,
+        AbilityCondition::QuantityCheck { lhs, rhs, .. } => {
+            quantity_expr_depends_on_zone_change_this_way(lhs)
+                || quantity_expr_depends_on_zone_change_this_way(rhs)
+        }
         AbilityCondition::Not { condition } => condition_depends_on_zone_change_this_way(condition),
         AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => conditions
             .iter()

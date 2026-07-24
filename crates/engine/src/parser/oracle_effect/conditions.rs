@@ -1536,6 +1536,46 @@ pub(super) fn strip_coin_flip_conditional(text: &str) -> (Option<AbilityConditio
     }
 }
 
+/// CR 608.2c + CR 701.17a: Strip "if [N] cards that share a [quality] were
+/// milled this way," ahead of a "repeat this process" directive →
+/// `QuantityCheck` over `ObjectCountBySharedQuality { LastZoneChanged, Max }`.
+pub(super) fn strip_milled_shared_quality_conditional(
+    text: &str,
+) -> (Option<AbilityCondition>, String) {
+    use crate::types::ability::AggregateFunction;
+
+    let lower = text.to_lowercase();
+    match nom_on_lower(text, &lower, |i| {
+        let (i, _) = tag::<_, _, OracleError<'_>>("if ").parse(i)?;
+        let (i, n) = alt((
+            value(2i32, tag("two")),
+            map(nom_primitives::parse_number, |n| n as i32),
+        ))
+        .parse(i)?;
+        let (i, _) = tag(" cards that share a ").parse(i)?;
+        let (i, quality) = crate::parser::oracle_target::parse_shared_quality(i)?;
+        let (i, _) = tag(" were milled this way").parse(i)?;
+        let (i, _) = opt(alt((tag(","), tag(", ")))).parse(i)?;
+        Ok((i, (n, quality)))
+    }) {
+        Some(((n, quality), remainder)) => {
+            let condition = AbilityCondition::QuantityCheck {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectCountBySharedQuality {
+                        filter: TargetFilter::LastZoneChanged,
+                        quality,
+                        aggregate: AggregateFunction::Max,
+                    },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: n },
+            };
+            (Some(condition), remainder.trim_start().to_string())
+        }
+        None => (None, text.to_string()),
+    }
+}
+
 pub(super) fn strip_card_type_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     if let Some((condition, remainder)) = parse_if_revealed_card_type_conditional(text) {
         return (Some(condition), remainder);
@@ -7107,8 +7147,36 @@ mod tests {
     use super::*;
     use crate::parser::oracle_nom::condition::parse_inner_condition;
     use crate::parser::parse_oracle_text;
-    use crate::types::ability::PlayerFilter;
+    use crate::types::ability::{AggregateFunction, PlayerFilter, SharedQuality};
     use crate::types::counter::{CounterMatch, CounterType};
+
+    #[test]
+    fn strip_milled_shared_quality_conditional_maps_grindstone_gate() {
+        let (cond, rest) = strip_milled_shared_quality_conditional(
+            "if two cards that share a color were milled this way, repeat this process",
+        );
+        assert_eq!(rest, "repeat this process");
+        assert!(
+            matches!(
+                cond,
+                Some(AbilityCondition::QuantityCheck {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCountBySharedQuality {
+                            filter: TargetFilter::LastZoneChanged,
+                            quality: SharedQuality::Color,
+                            aggregate: AggregateFunction::Max,
+                            ..
+                        },
+                        ..
+                    },
+                    comparator: Comparator::GE,
+                    rhs: QuantityExpr::Fixed { value: 2 },
+                    ..
+                })
+            ),
+            "got {cond:?}"
+        );
+    }
 
     /// CR 400.7 + CR 608.2c: S07 Batch 1 — the leading-"if" active-voice
     /// this-way gates must resolve to their typed conditions (previously they

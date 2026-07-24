@@ -1902,6 +1902,9 @@ pub(crate) fn object_count_matching_ids(
     filter_ctx: &FilterContext<'_>,
     source_id: ObjectId,
 ) -> Vec<ObjectId> {
+    if matches!(filter, TargetFilter::LastZoneChanged) {
+        return state.last_zone_changed_ids.clone();
+    }
     let zones = filter.extract_zones();
     let zones = if zones.is_empty() {
         vec![crate::types::zones::Zone::Battlefield]
@@ -7657,6 +7660,78 @@ mod tests {
                 ObjectId(0),
             ),
             0
+        );
+    }
+
+    #[test]
+    fn resolve_object_count_by_shared_quality_last_zone_changed_color_max() {
+        use crate::types::mana::ManaColor;
+
+        let mut state = GameState::new_two_player(44);
+        let red_a = create_object(
+            &mut state,
+            CardId(401),
+            PlayerId(1),
+            "Red A".to_string(),
+            Zone::Graveyard,
+        );
+        let red_b = create_object(
+            &mut state,
+            CardId(402),
+            PlayerId(1),
+            "Red B".to_string(),
+            Zone::Graveyard,
+        );
+        for id in [red_a, red_b] {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.color = vec![ManaColor::Red];
+        }
+        state.last_zone_changed_ids = vec![red_a, red_b];
+
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCountBySharedQuality {
+                filter: TargetFilter::LastZoneChanged,
+                quality: SharedQuality::Color,
+                aggregate: AggregateFunction::Max,
+            },
+        };
+        assert_eq!(
+            resolve_quantity(&state, &expr, PlayerId(0), ObjectId(0)),
+            2,
+            "two red cards milled this way must share red (Max bucket size 2)"
+        );
+    }
+
+    #[test]
+    fn resolve_object_count_by_shared_quality_last_zone_changed_colorless_max_zero() {
+        let mut state = GameState::new_two_player(45);
+        let colorless_a = create_object(
+            &mut state,
+            CardId(403),
+            PlayerId(1),
+            "Colorless A".to_string(),
+            Zone::Graveyard,
+        );
+        let colorless_b = create_object(
+            &mut state,
+            CardId(404),
+            PlayerId(1),
+            "Colorless B".to_string(),
+            Zone::Graveyard,
+        );
+        state.last_zone_changed_ids = vec![colorless_a, colorless_b];
+
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCountBySharedQuality {
+                filter: TargetFilter::LastZoneChanged,
+                quality: SharedQuality::Color,
+                aggregate: AggregateFunction::Max,
+            },
+        };
+        assert_eq!(
+            resolve_quantity(&state, &expr, PlayerId(0), ObjectId(0)),
+            0,
+            "colorless milled pairs produce no shared-color bucket (Max 0)"
         );
     }
 
