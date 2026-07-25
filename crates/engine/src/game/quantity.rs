@@ -1925,14 +1925,20 @@ fn object_count_candidate_universe(state: &GameState, filter: &TargetFilter) -> 
             }
             out
         }
-        TargetFilter::Not { filter: inner }
-            if matches!(inner.as_ref(), TargetFilter::LastZoneChanged) =>
-        {
-            let ledger: HashSet<ObjectId> = state.last_zone_changed_ids.iter().copied().collect();
-            object_count_zone_object_ids(state, filter)
-                .into_iter()
-                .filter(|&id| !ledger.contains(&id))
-                .collect()
+        TargetFilter::Not { filter: inner } => {
+            let mut seen = HashSet::new();
+            let mut out = Vec::new();
+            for id in object_count_zone_object_ids(state, filter) {
+                if seen.insert(id) {
+                    out.push(id);
+                }
+            }
+            for id in object_count_candidate_universe(state, inner) {
+                if seen.insert(id) {
+                    out.push(id);
+                }
+            }
+            out
         }
         TargetFilter::LastZoneChanged => state.last_zone_changed_ids.clone(),
         TargetFilter::TrackedSetFiltered { filter, .. } => {
@@ -7927,6 +7933,67 @@ mod tests {
             vec![red_on_battlefield],
             "Not(LastZoneChanged) must count battlefield objects outside the ledger"
         );
+    }
+
+    #[test]
+    fn object_count_matching_ids_not_and_last_zone_changed_includes_nonmatching_ledger() {
+        let mut state = GameState::new_two_player(46);
+        let red_a = create_object(
+            &mut state,
+            CardId(405),
+            PlayerId(1),
+            "Red A".to_string(),
+            Zone::Graveyard,
+        );
+        let red_b = create_object(
+            &mut state,
+            CardId(406),
+            PlayerId(1),
+            "Red B".to_string(),
+            Zone::Graveyard,
+        );
+        let green = create_object(
+            &mut state,
+            CardId(407),
+            PlayerId(1),
+            "Green C".to_string(),
+            Zone::Graveyard,
+        );
+        let red_on_battlefield = create_object(
+            &mut state,
+            CardId(408),
+            PlayerId(0),
+            "Red D".to_string(),
+            Zone::Battlefield,
+        );
+        for (id, color) in [
+            (red_a, ManaColor::Red),
+            (red_b, ManaColor::Red),
+            (green, ManaColor::Green),
+            (red_on_battlefield, ManaColor::Red),
+        ] {
+            state.objects.get_mut(&id).unwrap().color = vec![color];
+        }
+        state.last_zone_changed_ids = vec![red_a, red_b, green];
+
+        let filter = TargetFilter::Not {
+            filter: Box::new(TargetFilter::And {
+                filters: vec![
+                    TargetFilter::LastZoneChanged,
+                    TargetFilter::Typed(TypedFilter::card().properties(vec![
+                        FilterProp::HasColor {
+                            color: ManaColor::Red,
+                        },
+                    ])),
+                ],
+            }),
+        };
+        let ctx = FilterContext::from_source(&state, ObjectId(0));
+        let ids = object_count_matching_ids(&state, &filter, &ctx, ObjectId(0));
+        assert!(ids.contains(&green));
+        assert!(ids.contains(&red_on_battlefield));
+        assert!(!ids.contains(&red_a));
+        assert!(!ids.contains(&red_b));
     }
 
     #[test]
