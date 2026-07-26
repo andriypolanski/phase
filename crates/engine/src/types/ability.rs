@@ -22893,6 +22893,41 @@ impl ResolvedAbility {
             else_branch.set_source_transformation_count_recursive(count);
         }
     }
+    /// CR 400.7: True when the triggered source matches the object in its captured
+    /// `expected_zone` at the captured incarnation.
+    fn source_is_current_via_zone_match(
+        &self,
+        state: &crate::types::game_state::GameState,
+        source: &TriggerSourceContext,
+    ) -> bool {
+        let captured = source.identity.reference.incarnation;
+        let current = state.objects.get(&self.source_id).and_then(|object| {
+            (object.zone == source.identity.expected_zone).then_some(object.incarnation)
+        });
+        current == Some(captured)
+    }
+
+    /// CR 400.7j (+ CR 400.7g/h cast hop): a source that moved (possibly twice)
+    /// as part of THIS resolution relatches to its current incarnation. Bind to
+    /// `original_stamp` so only the ability that captured the pre-move identity
+    /// relatches — a stale-stamped delayed trigger for the same object cannot
+    /// ride the record.
+    fn source_is_current_via_relatch(
+        &self,
+        state: &crate::types::game_state::GameState,
+        source: &TriggerSourceContext,
+    ) -> bool {
+        let captured = source.identity.reference.incarnation;
+        let current_incarnation = state
+            .objects
+            .get(&self.source_id)
+            .map(|object| object.incarnation);
+        matches!(state.resolution_source_relatch, Some(r)
+            if r.object_id == self.source_id
+                && r.original_stamp == captured
+                && Some(r.current_incarnation) == current_incarnation)
+    }
+
     /// CR 400.7: True if the ability's source is still the same object instance it
     /// was when the ability was created. Full triggered-source provenance takes
     /// precedence; activated and delayed self-transform abilities fall back to
@@ -22913,42 +22948,21 @@ impl ResolvedAbility {
                 })
             }
             Some(source) => {
-                let captured = source.identity.reference.incarnation;
-                let current_incarnation = state
-                    .objects
-                    .get(&self.source_id)
-                    .map(|object| object.incarnation);
-                let current = state.objects.get(&self.source_id).and_then(|object| {
-                    (object.zone == source.identity.expected_zone).then_some(object.incarnation)
-                });
-                current == Some(captured)
-                    // CR 400.7j (+ CR 400.7g/h cast hop): a source that moved (possibly
-                    // twice) as part of THIS resolution carries its identity-dependent
-                    // continuations with it. Bind to `original_stamp` so only the ability
-                    // that captured the pre-move identity relatches — a stale-stamped
-                    // delayed trigger for the same object cannot ride the record.
-                    || matches!(state.resolution_source_relatch, Some(r)
-                        if r.object_id == self.source_id
-                            && r.original_stamp == captured
-                            && Some(r.current_incarnation) == current_incarnation)
+                self.source_is_current_via_zone_match(state, source)
+                    || self.source_is_current_via_relatch(state, source)
             }
         }
     }
 
-    /// Returns whether a self-reference can resolve to the source's current
-    /// object. A normal triggered source must still be its exact captured
-    /// incarnation. The one exception is the immediate successor of the
-    /// source's own recorded zone-change event: a dies trigger's "it" refers
-    /// to the card now in the graveyard, while its source facts remain LKI.
-    ///
-    /// The per-turn record check is load-bearing. If the object has moved again
-    /// after the triggering event, it is no longer that immediate successor and
-    /// a same-id return must not be rebound as the old source.
-    pub fn self_ref_is_current(&self, state: &crate::types::game_state::GameState) -> bool {
-        if self.source_is_current(state) {
-            return true;
-        }
-
+    /// CR 400.7e: True when `SelfRef` may bind to the immediate successor of the
+    /// source's own recorded zone-change event (a dies trigger's "it" in the
+    /// graveyard). The per-turn record check is load-bearing: if the object has
+    /// moved again after the triggering event, it is no longer that immediate
+    /// successor and a same-id return must not be rebound as the old source.
+    fn self_ref_own_departure_successor(
+        &self,
+        state: &crate::types::game_state::GameState,
+    ) -> bool {
         let Some(source) = self.trigger_source.as_ref() else {
             return true;
         };
@@ -22989,6 +23003,36 @@ impl ResolvedAbility {
                 .iter()
                 .skip(record.turn_zone_change_index + 1)
                 .all(|later| later.object_id != self.source_id)
+    }
+
+    /// Returns whether a self-reference can resolve to the source's current
+    /// object. A normal triggered source must still be its exact captured
+    /// incarnation. The one exception is the immediate successor of the
+    /// source's own recorded zone-change event: a dies trigger's "it" refers
+    /// to the card now in the graveyard, while its source facts remain LKI.
+    ///
+    /// Off-battlefield zone-match currency alone (co-departure mis-latch) does
+    /// not suffice — CR 400.7e own-departure successor proof is required.
+    pub fn self_ref_is_current(&self, state: &crate::types::game_state::GameState) -> bool {
+        if self.source_is_current(state) {
+            // CR 400.7 + CR 608.2b: triggered SelfRef whose currency is only an
+            // off-battlefield zone-match (co-departure mis-latch) must prove
+            // CR 400.7e own-departure successor — not early-true.
+            // Relatch (CR 400.7j) and battlefield expected_zone stay early-true.
+            if self.trigger_source.is_some()
+                && self.trigger_source.as_ref().unwrap().identity.expected_zone != Zone::Battlefield
+                && self
+                    .source_is_current_via_zone_match(state, self.trigger_source.as_ref().unwrap())
+                && !self.source_is_current_via_relatch(state, self.trigger_source.as_ref().unwrap())
+            {
+                return self.self_ref_own_departure_successor(state);
+            }
+            return true;
+        }
+        let Some(_source) = self.trigger_source.as_ref() else {
+            return true;
+        };
+        self.self_ref_own_departure_successor(state)
     }
 
     /// CR 608.2c: Bind a tracked-set sentinel (`TrackedSetId(0)`) to a CONCRETE
@@ -25828,6 +25872,258 @@ mod tests {
             assert_eq!(
                 def.cost_categories(),
                 vec![CostCategory::SacrificesPermanent]
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // self_ref_is_current co-departure mis-latch gate (issue #6427)
+    // -----------------------------------------------------------------------
+
+    mod self_ref_is_current_tests {
+        use super::*;
+        use crate::game::game_object::GameObject;
+        use crate::game::scenario::GameScenario;
+        use crate::game::zones::move_to_zone;
+        use crate::types::events::GameEvent;
+        use crate::types::game_state::{ResolutionSourceRelatch, ZoneChangeRecord};
+        use crate::types::player::PlayerId;
+
+        const P0: PlayerId = PlayerId(0);
+
+        fn ability_with_mislatch(
+            source_id: ObjectId,
+            expected_zone: Zone,
+            incarnation: u64,
+        ) -> ResolvedAbility {
+            let mut ability = ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+                vec![],
+                source_id,
+                P0,
+            );
+            ability.set_test_trigger_source_recursive(incarnation, CardId(1));
+            ability
+                .trigger_source
+                .as_mut()
+                .unwrap()
+                .identity
+                .expected_zone = expected_zone;
+            ability
+        }
+
+        fn snapshot_source_context(object: &GameObject, from: Zone) -> TriggerSourceContext {
+            object
+                .snapshot_for_zone_change(object.id, Some(from), object.zone)
+                .trigger_source_context
+                .expect("snapshot always carries trigger context")
+        }
+
+        fn zone_changed_event(
+            object_id: ObjectId,
+            from: Zone,
+            to: Zone,
+            source_context: Option<TriggerSourceContext>,
+            turn_index: usize,
+        ) -> GameEvent {
+            let mut record = ZoneChangeRecord::test_minimal(object_id, Some(from), to);
+            record.trigger_source_context = source_context;
+            record.turn_zone_change_index = turn_index;
+            GameEvent::ZoneChanged {
+                object_id,
+                from: Some(from),
+                to,
+                record: Box::new(record),
+            }
+        }
+
+        /// CR 400.7e: own-departure successor succeeds even when expected_zone was
+        /// mis-latched to the graveyard during co-departure collection.
+        #[test]
+        fn self_ref_succeeds_own_departure_through_mislatch_gate() {
+            let mut scenario = GameScenario::new();
+            let source = scenario.add_vanilla(P0, 2, 2);
+            let mut runner = scenario.build();
+            let mut events = Vec::new();
+
+            move_to_zone(runner.state_mut(), source, Zone::Graveyard, &mut events);
+            let incarnation = runner.state().objects[&source].incarnation;
+            let source_context = snapshot_source_context(
+                runner.state().objects.get(&source).unwrap(),
+                Zone::Battlefield,
+            );
+
+            let mut ability = ability_with_mislatch(source, Zone::Graveyard, incarnation);
+            ability.trigger_source = Some(source_context.clone());
+
+            let record = {
+                let mut record = ZoneChangeRecord::test_minimal(
+                    source,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                );
+                record.trigger_source_context = Some(source_context);
+                record.turn_zone_change_index = 0;
+                record
+            };
+            runner.state_mut().zone_changes_this_turn = vec![record].into();
+            runner.state_mut().current_trigger_event = Some(zone_changed_event(
+                source,
+                Zone::Battlefield,
+                Zone::Graveyard,
+                runner.state().zone_changes_this_turn[0]
+                    .trigger_source_context
+                    .clone(),
+                0,
+            ));
+
+            assert!(
+                ability.self_ref_is_current(runner.state()),
+                "own-departure successor must bind SelfRef through the mis-latch gate"
+            );
+        }
+
+        /// Co-departure mis-latch: source in GY but the trigger event is another
+        /// object's departure — SelfRef must fail closed.
+        #[test]
+        fn self_ref_fails_co_departed_mislatch_graveyard() {
+            let mut scenario = GameScenario::new();
+            let source = scenario.add_vanilla(P0, 2, 2);
+            let other = scenario.add_vanilla(P0, 1, 1);
+            let mut runner = scenario.build();
+            let mut events = Vec::new();
+
+            move_to_zone(runner.state_mut(), source, Zone::Graveyard, &mut events);
+            move_to_zone(runner.state_mut(), other, Zone::Graveyard, &mut events);
+            let incarnation = runner.state().objects[&source].incarnation;
+            let source_context = snapshot_source_context(
+                runner.state().objects.get(&source).unwrap(),
+                Zone::Battlefield,
+            );
+            let other_context = snapshot_source_context(
+                runner.state().objects.get(&other).unwrap(),
+                Zone::Battlefield,
+            );
+
+            let ability = ability_with_mislatch(source, Zone::Graveyard, incarnation);
+
+            let source_record = {
+                let mut record = ZoneChangeRecord::test_minimal(
+                    source,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                );
+                record.trigger_source_context = Some(source_context);
+                record.turn_zone_change_index = 0;
+                record
+            };
+            let other_record = {
+                let mut record =
+                    ZoneChangeRecord::test_minimal(other, Some(Zone::Battlefield), Zone::Graveyard);
+                record.trigger_source_context = Some(other_context.clone());
+                record.turn_zone_change_index = 1;
+                record
+            };
+            runner.state_mut().zone_changes_this_turn = vec![source_record, other_record].into();
+            runner.state_mut().current_trigger_event = Some(zone_changed_event(
+                other,
+                Zone::Battlefield,
+                Zone::Graveyard,
+                Some(other_context),
+                1,
+            ));
+
+            assert!(
+                ability.source_is_current(runner.state()),
+                "reach guard: mis-latch fixture must still satisfy zone-match source_is_current"
+            );
+            assert!(
+                !ability.self_ref_is_current(runner.state()),
+                "co-departed mis-latch must not let SelfRef bind to the source in GY"
+            );
+        }
+
+        /// Exile mis-latch sibling: same gate applies off the battlefield.
+        #[test]
+        fn self_ref_fails_co_departed_mislatch_exile() {
+            let mut scenario = GameScenario::new();
+            let source = scenario.add_vanilla(P0, 2, 2);
+            let other = scenario.add_vanilla(P0, 1, 1);
+            let mut runner = scenario.build();
+            let mut events = Vec::new();
+
+            move_to_zone(runner.state_mut(), source, Zone::Exile, &mut events);
+            move_to_zone(runner.state_mut(), other, Zone::Exile, &mut events);
+            let incarnation = runner.state().objects[&source].incarnation;
+            let source_context = snapshot_source_context(
+                runner.state().objects.get(&source).unwrap(),
+                Zone::Battlefield,
+            );
+            let other_context = snapshot_source_context(
+                runner.state().objects.get(&other).unwrap(),
+                Zone::Battlefield,
+            );
+
+            let ability = ability_with_mislatch(source, Zone::Exile, incarnation);
+
+            let source_record = {
+                let mut record =
+                    ZoneChangeRecord::test_minimal(source, Some(Zone::Battlefield), Zone::Exile);
+                record.trigger_source_context = Some(source_context);
+                record.turn_zone_change_index = 0;
+                record
+            };
+            let other_record = {
+                let mut record =
+                    ZoneChangeRecord::test_minimal(other, Some(Zone::Battlefield), Zone::Exile);
+                record.trigger_source_context = Some(other_context.clone());
+                record.turn_zone_change_index = 1;
+                record
+            };
+            runner.state_mut().zone_changes_this_turn = vec![source_record, other_record].into();
+            runner.state_mut().current_trigger_event = Some(zone_changed_event(
+                other,
+                Zone::Battlefield,
+                Zone::Exile,
+                Some(other_context),
+                1,
+            ));
+
+            assert!(
+                ability.source_is_current(runner.state()),
+                "reach guard: exile mis-latch fixture must still satisfy zone-match source_is_current"
+            );
+            assert!(
+                !ability.self_ref_is_current(runner.state()),
+                "exile mis-latch must fail when the trigger event is another object's departure"
+            );
+        }
+
+        /// CR 400.7j relatch bypasses the off-battlefield mis-latch gate.
+        #[test]
+        fn self_ref_relatch_bypasses_off_battlefield_mislatch_gate() {
+            let mut scenario = GameScenario::new();
+            let source = scenario.add_vanilla(P0, 2, 2);
+            let mut runner = scenario.build();
+            let mut events = Vec::new();
+
+            let captured = runner.state().objects[&source].incarnation;
+            move_to_zone(runner.state_mut(), source, Zone::Exile, &mut events);
+            let current = runner.state().objects[&source].incarnation;
+
+            let ability = ability_with_mislatch(source, Zone::Exile, captured);
+            runner.state_mut().resolution_source_relatch = Some(ResolutionSourceRelatch {
+                object_id: source,
+                original_stamp: captured,
+                current_incarnation: current,
+            });
+
+            assert!(
+                ability.self_ref_is_current(runner.state()),
+                "relatch must early-true without requiring own-departure successor proof"
             );
         }
     }
