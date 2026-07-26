@@ -23005,6 +23005,30 @@ impl ResolvedAbility {
                 .all(|later| later.object_id != self.source_id)
     }
 
+    /// CR 400.7 + CR 608.2b: True when an off-battlefield zone-match would
+    /// mis-latch SelfRef because the source co-departed during another object's
+    /// zone-change trigger event (issue #6427).
+    fn is_co_departure_mislatch_zone_match(
+        &self,
+        state: &crate::types::game_state::GameState,
+        source: &TriggerSourceContext,
+    ) -> bool {
+        if source.identity.expected_zone == Zone::Battlefield {
+            return false;
+        }
+        if !self.source_is_current_via_zone_match(state, source) {
+            return false;
+        }
+        if self.source_is_current_via_relatch(state, source) {
+            return false;
+        }
+        matches!(
+            state.current_trigger_event.as_ref(),
+            Some(crate::types::GameEvent::ZoneChanged { object_id, .. })
+                if *object_id != self.source_id
+        )
+    }
+
     /// Returns whether a self-reference can resolve to the source's current
     /// object. A normal triggered source must still be its exact captured
     /// incarnation. The one exception is the immediate successor of the
@@ -23015,17 +23039,12 @@ impl ResolvedAbility {
     /// not suffice — CR 400.7e own-departure successor proof is required.
     pub fn self_ref_is_current(&self, state: &crate::types::game_state::GameState) -> bool {
         if self.source_is_current(state) {
-            // CR 400.7 + CR 608.2b: triggered SelfRef whose currency is only an
-            // off-battlefield zone-match (co-departure mis-latch) must prove
-            // CR 400.7e own-departure successor — not early-true.
-            // Relatch (CR 400.7j) and battlefield expected_zone stay early-true.
-            if self.trigger_source.is_some()
-                && self.trigger_source.as_ref().unwrap().identity.expected_zone != Zone::Battlefield
-                && self
-                    .source_is_current_via_zone_match(state, self.trigger_source.as_ref().unwrap())
-                && !self.source_is_current_via_relatch(state, self.trigger_source.as_ref().unwrap())
-            {
-                return self.self_ref_own_departure_successor(state);
+            // CR 400.7 + CR 608.2b: co-departure mis-latch only — another object's
+            // zone-change event while the source also landed off-battlefield.
+            if let Some(source) = self.trigger_source.as_ref() {
+                if self.is_co_departure_mislatch_zone_match(state, source) {
+                    return self.self_ref_own_departure_successor(state);
+                }
             }
             return true;
         }
@@ -25983,6 +26002,31 @@ mod tests {
             assert!(
                 ability.self_ref_is_current(runner.state()),
                 "own-departure successor must bind SelfRef through the mis-latch gate"
+            );
+        }
+
+        /// Draw (non-zone-change) trigger from graveyard: zone-match SelfRef must
+        /// stay valid without own-departure successor proof.
+        #[test]
+        fn self_ref_succeeds_graveyard_trigger_on_non_zone_change_event() {
+            let mut scenario = GameScenario::new();
+            let source = scenario.add_vanilla(P0, 2, 2);
+            let mut runner = scenario.build();
+            let mut events = Vec::new();
+
+            move_to_zone(runner.state_mut(), source, Zone::Graveyard, &mut events);
+            let incarnation = runner.state().objects[&source].incarnation;
+
+            let ability = ability_with_mislatch(source, Zone::Graveyard, incarnation);
+
+            runner.state_mut().current_trigger_event = Some(GameEvent::CardsDrawn {
+                player_id: P0,
+                count: 1,
+            });
+
+            assert!(
+                ability.self_ref_is_current(runner.state()),
+                "graveyard trigger on a draw event must not require own-departure successor"
             );
         }
 
