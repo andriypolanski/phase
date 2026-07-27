@@ -23005,11 +23005,10 @@ impl ResolvedAbility {
                 .all(|later| later.object_id != self.source_id)
     }
 
-    /// CR 400.7 + CR 608.2b: True when an off-battlefield zone-match would
-    /// mis-latch SelfRef because the source co-departed into the expected zone
-    /// during this trigger event (issue #6427). Temporal coincidence with
-    /// another object's zone change is insufficient — provenance requires
-    /// `ZoneChangeRecord.co_departed`.
+    /// CR 400.7e: True when an off-battlefield zone-match would mis-latch SelfRef
+    /// because the source co-departed into the expected public zone during this
+    /// trigger event (issue #6427). Provenance requires `ZoneChangeRecord.co_departed`,
+    /// not temporal coincidence with another object's zone change.
     fn is_co_departure_mislatch_zone_match(
         &self,
         state: &crate::types::game_state::GameState,
@@ -23044,8 +23043,9 @@ impl ResolvedAbility {
     /// not suffice — CR 400.7e own-departure successor proof is required.
     pub fn self_ref_is_current(&self, state: &crate::types::game_state::GameState) -> bool {
         if self.source_is_current(state) {
-            // CR 400.7 + CR 608.2b: co-departure mis-latch only — another object's
-            // zone-change event while the source also landed off-battlefield.
+            // CR 400.7e: co-departure mis-latch — zone-match currency alone cannot
+            // bind SelfRef when co_departed proves the source arrived with another
+            // object's departure; require own-departure successor proof instead.
             if let Some(source) = self.trigger_source.as_ref() {
                 if self.is_co_departure_mislatch_zone_match(state, source) {
                     return self.self_ref_own_departure_successor(state);

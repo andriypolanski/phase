@@ -10,9 +10,9 @@
 //! stays in the graveyard, untransformed. The co-departure mis-latch of
 //! `expected_zone` to Graveyard must not let `SelfRef` early-bind.
 //!
-//! CR 400.7 + CR 608.2b: off-battlefield zone-match currency alone does not
-//! suffice for SelfRef when the trigger event is another object's departure.
-//! CR 704.5g + CR 704.7: simultaneous SBA/mass destruction batches co-departure.
+//! CR 400.7e: co-departure must not let SelfRef bind Ajani in the graveyard when
+//! the trigger event is the Cat's departure — only his own departure successor may bind.
+//! CR 603.10a: Ajani's trigger source retains battlefield last-known information.
 //!
 //! Harness note: use `cast(...).commit()` (not `.resolve()`) so the cast driver
 //! does not auto-answer `OptionalEffectChoice` before the test can observe it.
