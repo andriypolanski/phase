@@ -2992,10 +2992,16 @@ pub(super) fn fold_token_it_has_grants_into_token_statics(def: &mut AbilityDefin
         def.sub_ability = Some(Box::new(grant));
         return;
     }
+    // CR 116.2c: `end_cost: None` is a REQUIREMENT of the fold, not a wildcard.
+    // Folding a grant's statics into the token clause would discard the grant's
+    // own effect node — and with it any pay-to-end permission riding on it. A
+    // grant that carries one falls to the non-folding branch below, keeping the
+    // permission attached to the effect that installs it.
     let Effect::GenericEffect {
         static_abilities,
         duration,
         target,
+        end_cost: None,
     } = grant.effect.as_ref()
     else {
         def.sub_ability = Some(Box::new(grant));
@@ -3126,6 +3132,7 @@ pub(crate) fn rewrite_token_created_this_way_unimplemented(
         static_abilities: vec![static_def],
         duration: duration.or(clause_duration).or(Some(Duration::Permanent)),
         target: Some(TargetFilter::LastCreated),
+        end_cost: None,
     })
 }
 
@@ -8527,6 +8534,14 @@ pub(crate) fn parse_where_x_quantity_expression(where_x_expression: &str) -> Opt
     if let Some(expr) = parse_cda_quantity(where_x_expression) {
         return Some(expr);
     }
+    // CR 107.3i: Keep the compositional nom quantity grammar available to
+    // where-X bindings after the more-specific CDA interpreter has declined
+    // them. This supplies a single X value for past-tense event-subject forms
+    // such as "the number of counters it had" without a card-name-specific
+    // token parser.
+    if let Ok((_, qty)) = nom_quantity::parse_quantity_ref_complete(expression_lower.as_str()) {
+        return Some(QuantityExpr::Ref { qty });
+    }
     // CR 107.3i + CR 115.1: Some where-X definitions spell the count as
     // "the number of <for-each clause>" where the clause itself may need a
     // target player ("Islands target opponent controls"). Keep that grammar in
@@ -12020,6 +12035,7 @@ mod where_x_tests {
             ])],
             duration: Some(Duration::UntilEndOfTurn),
             target: None,
+            end_cost: None,
         };
 
         super::apply_where_x_effect_expression(&mut effect, Some("its power"));
@@ -12227,6 +12243,7 @@ mod token_anaphor_rewrite_tests {
                 }])],
             duration: None,
             target: Some(TargetFilter::ParentTarget),
+            end_cost: None,
         };
 
         rewrite_parent_target_to_last_created(&mut effect, false);
@@ -12236,6 +12253,7 @@ mod token_anaphor_rewrite_tests {
                 static_abilities,
                 duration,
                 target,
+                end_cost: _,
             } => {
                 assert_eq!(target, Some(TargetFilter::LastCreated));
                 assert_eq!(duration, Some(Duration::Permanent));
