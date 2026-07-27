@@ -11505,7 +11505,13 @@ pub struct GameState {
     /// CR 500.7: Extra turns granted by effects, stored as a LIFO stack.
     /// Most recently created extra turn is taken first (pop from end).
     #[serde(default)]
-    pub extra_turns: Vec<PlayerId>,
+    pub extra_turns: Vec<ExtraTurn>,
+
+    /// CR 500.7: While an extra-turn sequence is in progress, records the
+    /// "specified turn" after which those extras were inserted. Cleared once
+    /// play resumes with the player after that anchor turn.
+    #[serde(default)]
+    pub extra_turn_sequence_anchor: Option<PlayerId>,
 
     /// CR 614.10: Per-player count of turns to skip. When a player would begin their
     /// turn with a non-zero counter, the turn is skipped and the counter is decremented.
@@ -13770,6 +13776,49 @@ pub struct ScheduledTurnControl {
 pub struct ActivePlayerControl {
     pub controller: PlayerId,
     pub timestamp: u64,
+}
+
+/// CR 500.7: An extra turn queued after a specified turn.
+///
+/// Oracle text "Take an extra turn after this one" inserts the extra turn
+/// directly after the *specified* turn (the turn that was active when the
+/// effect resolved), not after the beneficiary's next natural turn. The
+/// `anchor` field is that specified turn's active-player representative.
+///
+/// LIFO ordering ("the most recently created turn will be taken first") is
+/// preserved by pushing to the end of `GameState.extra_turns` and popping from
+/// the end in `start_next_turn`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "ExtraTurnCompat")]
+pub struct ExtraTurn {
+    /// Player who takes the extra turn (team-normalized in 2HG / CR 805.8).
+    pub player: PlayerId,
+    /// The specified turn (CR 500.7) after which this extra turn is inserted.
+    /// When the extra-turn queue drains, natural order resumes at
+    /// `next_turn_representative(anchor)`.
+    pub anchor: PlayerId,
+}
+
+/// Private serde shim: new saves emit `{ player, anchor }`; legacy saves stored
+/// a bare `PlayerId`. Mid-game saves that lost the OOS anchor recover as
+/// `anchor == player` (in-sequence behavior).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ExtraTurnCompat {
+    Full { player: PlayerId, anchor: PlayerId },
+    Legacy(PlayerId),
+}
+
+impl From<ExtraTurnCompat> for ExtraTurn {
+    fn from(c: ExtraTurnCompat) -> Self {
+        match c {
+            ExtraTurnCompat::Full { player, anchor } => Self { player, anchor },
+            ExtraTurnCompat::Legacy(player) => Self {
+                player,
+                anchor: player,
+            },
+        }
+    }
 }
 
 /// CR 500.8: An extra phase added to a turn by an effect, anchored to the
@@ -16192,6 +16241,7 @@ impl GameState {
             commander_cast_count: HashMap::new(),
             commander_cast_owners: HashMap::new(),
             extra_turns: Vec::new(),
+            extra_turn_sequence_anchor: None,
             turns_to_skip: vec![0; player_count as usize],
             steps_to_skip: vec![HashMap::new(); player_count as usize],
             combat_phase_skip_next_turn: vec![
@@ -17532,6 +17582,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         commander_declined_zone_return: _,
         objects_that_dealt_damage: _,
         extra_turns: _,
+        extra_turn_sequence_anchor: _,
         turns_to_skip: _,
         steps_to_skip: _,
         combat_phase_skip_next_turn: _,
@@ -17829,6 +17880,7 @@ impl PartialEq for GameState {
             && self.commander_declined_zone_return == other.commander_declined_zone_return
             && self.objects_that_dealt_damage == other.objects_that_dealt_damage
             && self.extra_turns == other.extra_turns
+            && self.extra_turn_sequence_anchor == other.extra_turn_sequence_anchor
             && self.turns_to_skip == other.turns_to_skip
             && self.steps_to_skip == other.steps_to_skip
             && self.combat_phase_skip_next_turn == other.combat_phase_skip_next_turn
