@@ -172,8 +172,10 @@ mod tests {
 
     #[test]
     fn extra_turn_stores_active_player_as_anchor() {
-        let mut state = GameState::default();
-        state.active_player = PlayerId(2);
+        let mut state = GameState {
+            active_player: PlayerId(2),
+            ..Default::default()
+        };
         let mut events = Vec::new();
         let ability = make_ability(TargetFilter::Controller, PlayerId(0));
 
