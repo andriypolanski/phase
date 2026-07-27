@@ -23006,8 +23006,10 @@ impl ResolvedAbility {
     }
 
     /// CR 400.7 + CR 608.2b: True when an off-battlefield zone-match would
-    /// mis-latch SelfRef because the source co-departed during another object's
-    /// zone-change trigger event (issue #6427).
+    /// mis-latch SelfRef because the source co-departed into the expected zone
+    /// during this trigger event (issue #6427). Temporal coincidence with
+    /// another object's zone change is insufficient — provenance requires
+    /// `ZoneChangeRecord.co_departed`.
     fn is_co_departure_mislatch_zone_match(
         &self,
         state: &crate::types::game_state::GameState,
@@ -23022,10 +23024,13 @@ impl ResolvedAbility {
         if self.source_is_current_via_relatch(state, source) {
             return false;
         }
-        matches!(
-            state.current_trigger_event.as_ref(),
-            Some(crate::types::GameEvent::ZoneChanged { object_id, .. })
-                if *object_id != self.source_id
+        let Some(event) = state.current_trigger_event.as_ref() else {
+            return false;
+        };
+        !crate::types::events::source_was_not_co_departed_into_zone(
+            event,
+            self.source_id,
+            source.identity.expected_zone,
         )
     }
 
@@ -26069,16 +26074,23 @@ mod tests {
                     ZoneChangeRecord::test_minimal(other, Some(Zone::Battlefield), Zone::Graveyard);
                 record.trigger_source_context = Some(other_context.clone());
                 record.turn_zone_change_index = 1;
+                record.co_departed = vec![source];
                 record
             };
             runner.state_mut().zone_changes_this_turn = vec![source_record, other_record].into();
-            runner.state_mut().current_trigger_event = Some(zone_changed_event(
-                other,
-                Zone::Battlefield,
-                Zone::Graveyard,
-                Some(other_context),
-                1,
-            ));
+            runner.state_mut().current_trigger_event = Some({
+                let mut event = zone_changed_event(
+                    other,
+                    Zone::Battlefield,
+                    Zone::Graveyard,
+                    Some(other_context),
+                    1,
+                );
+                if let GameEvent::ZoneChanged { record, .. } = &mut event {
+                    record.co_departed = vec![source];
+                }
+                event
+            });
 
             assert!(
                 ability.source_is_current(runner.state()),
@@ -26086,7 +26098,7 @@ mod tests {
             );
             assert!(
                 !ability.self_ref_is_current(runner.state()),
-                "co-departed mis-latch must not let SelfRef bind to the source in GY"
+                "co-departed mis-latch must not let SelfRef bind when co_departed proves provenance"
             );
         }
 
@@ -26125,16 +26137,23 @@ mod tests {
                     ZoneChangeRecord::test_minimal(other, Some(Zone::Battlefield), Zone::Exile);
                 record.trigger_source_context = Some(other_context.clone());
                 record.turn_zone_change_index = 1;
+                record.co_departed = vec![source];
                 record
             };
             runner.state_mut().zone_changes_this_turn = vec![source_record, other_record].into();
-            runner.state_mut().current_trigger_event = Some(zone_changed_event(
-                other,
-                Zone::Battlefield,
-                Zone::Exile,
-                Some(other_context),
-                1,
-            ));
+            runner.state_mut().current_trigger_event = Some({
+                let mut event = zone_changed_event(
+                    other,
+                    Zone::Battlefield,
+                    Zone::Exile,
+                    Some(other_context),
+                    1,
+                );
+                if let GameEvent::ZoneChanged { record, .. } = &mut event {
+                    record.co_departed = vec![source];
+                }
+                event
+            });
 
             assert!(
                 ability.source_is_current(runner.state()),
@@ -26142,7 +26161,72 @@ mod tests {
             );
             assert!(
                 !ability.self_ref_is_current(runner.state()),
-                "exile mis-latch must fail when the trigger event is another object's departure"
+                "exile mis-latch must fail when the trigger event co-departed the source"
+            );
+        }
+
+        /// CR 400.7e: source already in graveyard when another object changes
+        /// zones must not be rejected — co-departure provenance is absent.
+        #[test]
+        fn self_ref_succeeds_unchanged_graveyard_on_other_zone_change() {
+            let mut scenario = GameScenario::new();
+            let source = scenario.add_vanilla(P0, 2, 2);
+            let other = scenario.add_vanilla(P0, 1, 1);
+            let mut runner = scenario.build();
+            let mut events = Vec::new();
+
+            move_to_zone(runner.state_mut(), source, Zone::Graveyard, &mut events);
+            let incarnation = runner.state().objects[&source].incarnation;
+            let other_context = snapshot_source_context(
+                runner.state().objects.get(&other).unwrap(),
+                Zone::Battlefield,
+            );
+
+            let ability = ability_with_mislatch(source, Zone::Graveyard, incarnation);
+
+            runner.state_mut().current_trigger_event = Some(zone_changed_event(
+                other,
+                Zone::Battlefield,
+                Zone::Graveyard,
+                Some(other_context),
+                0,
+            ));
+
+            assert!(
+                ability.self_ref_is_current(runner.state()),
+                "unchanged graveyard source must bind SelfRef on another object's zone change"
+            );
+        }
+
+        /// Exile sibling: unchanged exile source survives another object's departure.
+        #[test]
+        fn self_ref_succeeds_unchanged_exile_on_other_zone_change() {
+            let mut scenario = GameScenario::new();
+            let source = scenario.add_vanilla(P0, 2, 2);
+            let other = scenario.add_vanilla(P0, 1, 1);
+            let mut runner = scenario.build();
+            let mut events = Vec::new();
+
+            move_to_zone(runner.state_mut(), source, Zone::Exile, &mut events);
+            let incarnation = runner.state().objects[&source].incarnation;
+            let other_context = snapshot_source_context(
+                runner.state().objects.get(&other).unwrap(),
+                Zone::Battlefield,
+            );
+
+            let ability = ability_with_mislatch(source, Zone::Exile, incarnation);
+
+            runner.state_mut().current_trigger_event = Some(zone_changed_event(
+                other,
+                Zone::Battlefield,
+                Zone::Exile,
+                Some(other_context),
+                0,
+            ));
+
+            assert!(
+                ability.self_ref_is_current(runner.state()),
+                "unchanged exile source must bind SelfRef on another object's zone change"
             );
         }
 
