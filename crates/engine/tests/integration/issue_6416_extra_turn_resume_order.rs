@@ -158,3 +158,85 @@ fn extra_turn_on_own_turn_resumes_natural_next() {
         "reach guard: A must have begun the granted extra turn (turns_taken increased)"
     );
 }
+
+/// CR 500.7: nested extras through the production ExtraTurn resolver.
+/// During C, A casts Nexus; during A's extra, B casts Nexus. Order must be
+/// C → Extra A → Extra B → D (outer C anchor latched, not overwritten by A).
+#[test]
+fn extra_turn_nested_via_resolver_preserves_outer_anchor() {
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let nexus_a = scenario
+        .add_spell_to_hand_from_oracle(P0, "Nexus of Fate", true, NEXUS_OF_FATE)
+        .id();
+    let nexus_b = scenario
+        .add_spell_to_hand_from_oracle(P1, "Nexus of Fate", true, NEXUS_OF_FATE)
+        .id();
+    scenario.with_mana_pool(P0, floating_mana(7, ManaType::Blue));
+    scenario.with_mana_pool(P1, floating_mana(7, ManaType::Blue));
+
+    let mut runner = scenario.build();
+    runner.state_mut().active_player = P2;
+    grant_priority(&mut runner, P0);
+
+    runner.cast(nexus_a).resolve();
+    assert!(
+        runner
+            .state()
+            .extra_turns
+            .iter()
+            .any(|et| et.player == P0 && et.anchor == P2),
+        "A's Nexus during C must enqueue ExtraTurn {{ player: A, anchor: C }}, got {:?}",
+        runner.state().extra_turns
+    );
+
+    assert!(
+        pass_until_active_changes(&mut runner, P2),
+        "must leave C's turn"
+    );
+    assert_eq!(runner.state().active_player, P0, "Extra A after C");
+    assert_eq!(
+        runner.state().extra_turn_sequence_anchor,
+        Some(P2),
+        "first extra must latch specified turn C"
+    );
+
+    // During A's extra: B casts Nexus via the production ExtraTurn resolver.
+    // Resolver anchors to active_player (A); latch must keep outer C.
+    grant_priority(&mut runner, P1);
+    runner.cast(nexus_b).resolve();
+    assert!(
+        runner
+            .state()
+            .extra_turns
+            .iter()
+            .any(|et| et.player == P1 && et.anchor == P0),
+        "B's Nexus during A must enqueue ExtraTurn {{ player: B, anchor: A }}, got {:?}",
+        runner.state().extra_turns
+    );
+
+    assert!(
+        pass_until_active_changes(&mut runner, P0),
+        "must leave A's extra turn"
+    );
+    assert_eq!(runner.state().active_player, P1, "Extra B after A");
+    assert_eq!(
+        runner.state().extra_turn_sequence_anchor,
+        Some(P2),
+        "nested grant must not overwrite outer C latch"
+    );
+
+    assert!(
+        pass_until_active_changes(&mut runner, P1),
+        "must leave B's extra turn"
+    );
+    assert_eq!(
+        runner.state().active_player,
+        P3,
+        "after nested extras drain, resume after original specified turn C → D"
+    );
+    assert!(
+        runner.state().extra_turn_sequence_anchor.is_none(),
+        "resume latch must clear after natural order resumes"
+    );
+}
