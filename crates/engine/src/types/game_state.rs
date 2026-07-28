@@ -22555,6 +22555,46 @@ mod tests {
     }
 
     #[test]
+    fn persisted_extra_turns_deserialize_legacy_bare_player_id() {
+        let mut raw = serde_json::to_value(GameState::new(
+            crate::types::format::FormatConfig::free_for_all(),
+            4,
+            42,
+        ))
+        .expect("serialize baseline");
+        raw["extra_turns"] = serde_json::json!([0]);
+
+        let mut restored = serde_json::from_value::<PersistedGameState>(raw)
+            .expect("legacy bare PlayerId extra turn must deserialize")
+            .into_game_state();
+        assert_eq!(
+            restored.extra_turns,
+            vec![ExtraTurn {
+                player: PlayerId(0),
+                anchor: PlayerId(0),
+            }],
+            "legacy saves recover in-sequence behavior via anchor == player"
+        );
+
+        restored.active_player = PlayerId(0);
+        let mut events = Vec::new();
+        crate::game::turns::start_next_turn(&mut restored, &mut events);
+        assert_eq!(
+            restored.active_player,
+            PlayerId(0),
+            "legacy extra must consume on the beneficiary's next turn boundary"
+        );
+
+        let mut events = Vec::new();
+        crate::game::turns::start_next_turn(&mut restored, &mut events);
+        assert_eq!(
+            restored.active_player,
+            PlayerId(1),
+            "after legacy in-sequence extra, resume natural next player"
+        );
+    }
+
+    #[test]
     fn game_state_deserialize_materializes_proven_legacy_printed_trigger_payload() {
         let object_id = ObjectId(991);
         let trigger = crate::types::ability::TriggerDefinition::new(

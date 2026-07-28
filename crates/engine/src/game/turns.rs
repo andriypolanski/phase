@@ -7743,6 +7743,46 @@ mod tests {
         assert!(state.extra_turn_sequence_anchor.is_none());
     }
 
+    /// CR 500.7: an extra granted during A's extra turn must retain the outer C
+    /// anchor when the queue drains.
+    #[test]
+    fn extra_turn_nested_extra_preserves_outer_anchor() {
+        let mut state = GameState::new(crate::types::format::FormatConfig::free_for_all(), 4, 42);
+        state.active_player = PlayerId(2); // C
+        enqueue_extra_turn(&mut state, PlayerId(0), PlayerId(2));
+
+        let mut events = Vec::new();
+        start_next_turn(&mut state, &mut events);
+        assert_eq!(state.active_player, PlayerId(0), "C ends → A's extra");
+        assert_eq!(
+            state.extra_turn_sequence_anchor,
+            Some(PlayerId(2)),
+            "first pop must latch specified turn C"
+        );
+
+        enqueue_extra_turn(&mut state, PlayerId(1), PlayerId(0));
+
+        start_next_turn(&mut state, &mut events);
+        assert_eq!(
+            state.active_player,
+            PlayerId(1),
+            "during A: grant B → B's extra"
+        );
+        assert_eq!(
+            state.extra_turn_sequence_anchor,
+            Some(PlayerId(2)),
+            "nested extra must not overwrite outer anchor"
+        );
+
+        start_next_turn(&mut state, &mut events);
+        assert_eq!(
+            state.active_player,
+            PlayerId(3),
+            "after nested extras drain, resume after original specified turn C → D"
+        );
+        assert!(state.extra_turn_sequence_anchor.is_none());
+    }
+
     #[test]
     fn normal_turn_advance_when_no_extra_turns() {
         let mut state = setup();
