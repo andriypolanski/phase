@@ -58,8 +58,9 @@ use super::oracle_cost::{parse_oracle_cost, parse_single_cost, try_parse_cost_re
 use super::oracle_dispatch::dispatch_line_nom;
 use super::oracle_effect::sequence::try_parse_same_is_true_continuation;
 use super::oracle_effect::{
-    lower_effect_chain_ir, parse_additional_cost_instead_condition_fragment, parse_effect_chain,
-    parse_effect_chain_ir, parse_effect_chain_with_context, rewrite_condition_keyword,
+    lower_ability_ir, lower_effect_chain_ir, parse_ability_ir_with_context,
+    parse_additional_cost_instead_condition_fragment, parse_effect_chain,
+    parse_effect_chain_with_context, rewrite_condition_keyword,
     try_parse_temporal_delayed_trigger_ability,
 };
 use super::oracle_ir::context::ParseContext;
@@ -68,6 +69,7 @@ use super::oracle_ir::doc::{
     OracleDocBuilder, OracleDocIr, OracleItemId, OracleItemIr, OracleNodeIr, OracleSourceSpan,
     OracleUnitSource, PrintedAbilityIndex, PrintedTriggerIndex,
 };
+use super::oracle_ir::effect_chain::{AbilityIr, ShellStage};
 use super::oracle_ir::feature::ItemIdTracks;
 use super::oracle_ir::relation::{DocumentRelationIr, LinkedChoiceKind, LinkedReturnOutcome};
 use super::oracle_ir::replacement::ReplacementIr;
@@ -3597,6 +3599,46 @@ impl<'a> DocEmitter<'a> {
         // `spells_emitted` stack (see `last_ability_node`).
         self.emit_at(line, OracleNodeIr::PreLoweredSpell(def));
     }
+
+    /// The IR seam for spell/activated bodies — Plan 05b Unit 3b, **phase A**.
+    ///
+    /// Phase A lowers **eagerly and still emits the pre-lowered node**, which is
+    /// what lets every producer convert one tranche at a time with the node
+    /// payload, `finish()`, `item_ability`, `mutate_last_spell`, `reemit_spell`
+    /// and the cross-line instead-fold all untouched — and therefore with zero
+    /// snapshot churn and a diff a reviewer can actually read. Phase B (T9)
+    /// changes this body to `self.emit_at(line, OracleNodeIr::Spell(ir))` and
+    /// every producer is already correct.
+    ///
+    /// Written as delegation to `ability_at` rather than as a second emission of
+    /// its own for two reasons. It states the phase-A identity
+    /// `ability_ir_at(l, ir) == ability_at(l, lower_ability_ir(&ir))` literally
+    /// instead of restating it as a separately-maintained copy. And it keeps the
+    /// Plan 05b burn-down ratchet (`scripts/check-prelowered-ratchet.sh`)
+    /// monotone: that gate counts a bare token textually, `oracle.rs` sits
+    /// exactly at its ceiling, and one more occurrence of that token here — in
+    /// code OR in prose — would raise the count and fail a gate whose ceiling may
+    /// only ever decrease.
+    ///
+    /// # CR 707.9a is NOT gapped by this seam
+    ///
+    /// Printed-slot stamping happens only in `OracleDocBuilder::finish`, which
+    /// runs *before* lowering, so a copy-except clause inside an IR-native
+    /// `OracleNodeIr::Spell` body can never be stamped — there is no definition
+    /// to stamp until lowering builds one (`doc.rs`, the `Spell(_)` arm advances
+    /// `ability_slot` without stamping, on purpose). That gap cannot open in
+    /// phase A: this method emits the pre-lowered spell variant, so every
+    /// phase-A-converted producer lands in the corresponding `finish()` arm and
+    /// is stamped by `stamp_retained_printed_slot`, which recurses the whole
+    /// definition (effect, `sub_ability`, `else_ability`, `mode_abilities`). The
+    /// gap becomes reachable exactly when this body switches to
+    /// `OracleNodeIr::Spell(ir)`, so moving the stamp into `lower_oracle_ir`
+    /// belongs to T9 — where it is also the only place it can be done without a
+    /// byte delta on the one pre-existing `Spell` producer, which is deliberately
+    /// not stamped today.
+    fn ability_ir_at(&mut self, line: usize, ir: AbilityIr) {
+        self.ability_at(line, lower_ability_ir(&ir));
+    }
     fn trigger_at(&mut self, line: usize, def: TriggerDefinition) {
         self.last_trigger = Some(def.clone());
         self.emit_at(line, OracleNodeIr::PreLoweredTrigger(def));
@@ -3924,29 +3966,79 @@ pub(crate) fn parse_oracle_ir(
 
             ctx.subject = None;
             ctx.actor = None;
-            let mut def =
-                parse_effect_chain_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
-            if has_unimplemented(&def) {
+            // The self-ref-normalized retry, and the one place in this tranche
+            // where the *decision* is made on a LOWERED definition while the
+            // *retained artifact* must stay an IR.
+            //
+            // It cannot be expressed by lowering, mutating and re-wrapping:
+            // `AbilityIr` has no `from_definition` and an `AbilityDefinition`
+            // cannot be un-lowered into an `EffectChainIr`. So both candidates
+            // are parsed as IR and each is lowered purely to *ask* the question,
+            // while whichever IR won is what gets emitted.
+            //
+            // Three properties make this the same computation as the original:
+            //
+            // 1. `parse_effect_chain_with_context(t,k,cx)` IS
+            //    `lower_ability_ir(&parse_ability_ir_with_context(t,k,cx))`, so
+            //    each `has_unimplemented` argument is bit-for-bit the definition
+            //    the original tested.
+            // 2. The `ctx` sequencing is preserved exactly. The retry's parse
+            //    receives the SAME, already-mutated `ctx` as the first parse —
+            //    not a fresh one — and interposing the lowering between the two
+            //    parses cannot perturb that, because `lower_ability_ir` takes no
+            //    `ParseContext` and nothing under `oracle_effect/` carries
+            //    interior mutability.
+            // 3. The predicate is invariant under the envelope:
+            //    `has_unimplemented` reads only `effect` and `sub_ability`, both
+            //    CR 608.2 resolution-tree fields, and the shell stamps neither.
+            //
+            // Cost: one extra lowering per LEVEL-block activated line (two or
+            // three rather than one or two). It is intrinsic, not laziness — the
+            // predicate's lowered value is *pre*-shell and the emitted one is
+            // *post*-shell, so they are different values and neither can be
+            // reused as the other. The path runs only on LEVEL blocks.
+            let mut ir =
+                parse_ability_ir_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
+            if has_unimplemented(&lower_ability_ir(&ir)) {
                 let normalized_effect = normalize_self_refs_for_static(&effect_text, card_name);
                 if normalized_effect != effect_text {
-                    let alt = parse_effect_chain_with_context(
+                    let alt = parse_ability_ir_with_context(
                         &normalized_effect,
                         AbilityKind::Activated,
                         &mut ctx,
                     );
-                    if !has_unimplemented(&alt) {
-                        def = alt;
+                    if !has_unimplemented(&lower_ability_ir(&alt)) {
+                        ir = alt;
                     }
                 }
             }
-            def.cost = Some(cost);
-            def.description = Some(ability_text.to_string());
-            let mut restrictions = constraints.restrictions;
-            restrictions.push(ActivationRestriction::LevelCounterRange { minimum, maximum });
-            def.activation_restrictions = restrictions;
-            extract_cost_reduction_from_chain(&mut def);
-            extract_mana_spend_trigger_from_chain(&mut def);
-            emitter.ability_at(*level_line, def);
+            // CR 602.1a: the activation cost, everything before the colon. The
+            // self-ref normalization it is parsed from happens before the colon
+            // split and stays there.
+            ir.shell.cost = Some(cost);
+            // The full printed ability line, not the post-colon effect text.
+            ir.shell.description = Some(ability_text.to_string());
+            // CR 602.1b: the activation instructions, composed in this site's own
+            // order — the parsed constraints LEAD and the implicit level gate
+            // trails. The original wrote `=` rather than `extend`, and the two
+            // agree here: `rg activation_restrictions
+            // crates/engine/src/parser/oracle_effect/` hits only
+            // `apply_ability_shell_envelope` itself, so nothing reachable from
+            // `lower_ability_ir` writes the root's restrictions and the field is
+            // empty when the shell runs.
+            let mut activation_restrictions = constraints.restrictions;
+            // CR 711.2a + CR 711.2b: the abilities printed in a level striation
+            // function only while the creature's level counters are in that
+            // striation's range.
+            activation_restrictions
+                .push(ActivationRestriction::LevelCounterRange { minimum, maximum });
+            ir.shell.activation_restrictions = activation_restrictions;
+            // CR 601.2f then CR 106.6 + CR 603.3, in this order — see `ShellStage`.
+            ir.shell.stages = vec![
+                ShellStage::ExtractCostReduction,
+                ShellStage::ExtractManaSpendTrigger,
+            ];
+            emitter.ability_ir_at(*level_line, ir);
             continue;
         }
 
@@ -4432,22 +4524,31 @@ pub(crate) fn parse_oracle_ir(
                 let (effect_text, constraints) = strip_activated_constraints(effect_text);
                 let cost = parse_oracle_cost(cost_text);
 
+                // The `ParseContext` reset is a parser side effect, not part of
+                // the CR 602.1 envelope: it must keep firing here, before the
+                // parse, and so stays at the call site rather than moving into
+                // the shell.
                 ctx.subject = None;
                 ctx.actor = None;
-                let mut def =
-                    parse_effect_chain_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
-                def.cost = Some(cost);
-                def.description = Some(line.to_string());
+                let mut ir =
+                    parse_ability_ir_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
+                // CR 602.1a: the activation cost, everything before the colon.
+                ir.shell.cost = Some(cost);
+                ir.shell.description = Some(line.to_string());
+                // CR 602.1b: the activation instructions, composed in the order
+                // this recognizer applies them — the implicit restriction LEADS
+                // and the parsed ones follow. The shell applies the vec verbatim,
+                // so this order is preserved rather than normalized against the
+                // Power-up recognizer below, which is deliberately the reverse.
+                //
                 // CR 719.3c: Solved abilities only activate while Case is solved.
-                def.activation_restrictions
-                    .push(ActivationRestriction::IsSolved);
+                let mut activation_restrictions = vec![ActivationRestriction::IsSolved];
                 // CR 602.5d: `constraints.restrictions` already contains
                 // `AsSorcery` when the source text said "Activate only as a
-                // sorcery"; extend preserves it so the legality gate fires.
-                if !constraints.restrictions.is_empty() {
-                    def.activation_restrictions.extend(constraints.restrictions);
-                }
-                emitter.ability_at(item_line, def);
+                // sorcery"; extending preserves it so the legality gate fires.
+                activation_restrictions.extend(constraints.restrictions);
+                ir.shell.activation_restrictions = activation_restrictions;
+                emitter.ability_ir_at(item_line, ir);
                 i += 1;
                 continue;
             }
@@ -4464,20 +4565,35 @@ pub(crate) fn parse_oracle_ir(
                 let cost = parse_oracle_cost(cost_text);
                 ctx.subject = None;
                 ctx.actor = None;
-                let mut def =
-                    parse_effect_chain_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
-                def.cost = Some(cost);
+                let mut ir =
+                    parse_ability_ir_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
+                // CR 602.1a: the activation cost, everything before the colon.
+                ir.shell.cost = Some(cost);
                 // CR 207.2c: Channel is an ability word; the underlying ability activates from hand.
-                def.activation_zone = Some(Zone::Hand);
-                def.description = Some(line.to_string());
-                if !constraints.restrictions.is_empty() {
-                    def.activation_restrictions = constraints.restrictions;
-                }
-                // CR 601.2f: Extract self-referential cost reduction from the terminal
-                // sub_ability in the chain (it may be several levels deep).
-                extract_cost_reduction_from_chain(&mut def);
-                extract_mana_spend_trigger_from_chain(&mut def);
-                emitter.ability_at(item_line, def);
+                ir.shell.activation_zone = Some(Zone::Hand);
+                ir.shell.description = Some(line.to_string());
+                // CR 602.1b: the activation instructions. This site is the one in
+                // the family whose original wrote `=` (guarded by an is-empty
+                // check) rather than `extend`, and the two are equivalent here:
+                // nothing reachable from `lower_ability_ir` writes the root's
+                // `activation_restrictions` (`rg activation_restrictions
+                // crates/engine/src/parser/oracle_effect/` hits only the shell
+                // applier itself), so the field is empty when the shell runs and
+                // `extend` onto empty reproduces the assignment exactly. The
+                // guard was therefore already redundant: assigning an empty vec
+                // and skipping the assignment are the same state.
+                ir.shell.activation_restrictions = constraints.restrictions;
+                // CR 601.2f: fold a self-referential cost reduction out of the
+                // terminal `sub_ability` in the chain (it may be several levels
+                // deep), then CR 106.6 + CR 603.3 fold a trailing "when you spend
+                // this mana" sub-ability into the mana effect. Both are chain
+                // *structure* folds that run after the field stamps, in this
+                // order — see `ShellStage`.
+                ir.shell.stages = vec![
+                    ShellStage::ExtractCostReduction,
+                    ShellStage::ExtractManaSpendTrigger,
+                ];
+                emitter.ability_ir_at(item_line, ir);
                 i += 1;
                 continue;
             }
@@ -4497,25 +4613,35 @@ pub(crate) fn parse_oracle_ir(
                 let cost = parse_oracle_cost(cost_text);
                 ctx.subject = None;
                 ctx.actor = None;
-                let mut def =
-                    parse_effect_chain_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
-                def.cost = Some(cost);
-                def.description = Some(line.to_string());
-                def.activation_restrictions.extend(constraints.restrictions);
+                let mut ir =
+                    parse_ability_ir_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
+                // CR 602.1a: the activation cost, everything before the colon.
+                ir.shell.cost = Some(cost);
+                ir.shell.description = Some(line.to_string());
+                // CR 602.1b: the activation instructions, composed in this
+                // recognizer's own order — the parsed constraints LEAD and the
+                // two implicit restrictions trail. The relative order of the two
+                // implicit ones is preserved as printed here as well; it is the
+                // reverse of the order CR 702.142a states them in, which is a
+                // pre-existing property of this site and not something the
+                // conversion may quietly normalize.
+                let mut activation_restrictions = constraints.restrictions;
                 // CR 702.142a: "Activate only if this creature attacked this turn
                 // and only once each turn."
-                def.activation_restrictions
-                    .push(ActivationRestriction::OnlyOnceEachTurn);
-                def.activation_restrictions
-                    .push(ActivationRestriction::RequiresCondition {
-                        condition: Some(ParsedCondition::SourceAttackedThisTurn),
-                    });
+                activation_restrictions.push(ActivationRestriction::OnlyOnceEachTurn);
+                activation_restrictions.push(ActivationRestriction::RequiresCondition {
+                    condition: Some(ParsedCondition::SourceAttackedThisTurn),
+                });
+                ir.shell.activation_restrictions = activation_restrictions;
                 // CR 702.142b: Tag this ability as originating from Boast so
                 // effects can reference "boast abilities" as a class.
-                def.ability_tag = Some(AbilityTag::Boast);
-                extract_cost_reduction_from_chain(&mut def);
-                extract_mana_spend_trigger_from_chain(&mut def);
-                emitter.ability_at(item_line, def);
+                ir.shell.ability_tag = Some(AbilityTag::Boast);
+                // CR 601.2f then CR 106.6 + CR 603.3, in this order — see `ShellStage`.
+                ir.shell.stages = vec![
+                    ShellStage::ExtractCostReduction,
+                    ShellStage::ExtractManaSpendTrigger,
+                ];
+                emitter.ability_ir_at(item_line, ir);
                 i += 1;
                 continue;
             }
@@ -4534,17 +4660,23 @@ pub(crate) fn parse_oracle_ir(
                 let cost = parse_oracle_cost(cost_text);
                 ctx.subject = None;
                 ctx.actor = None;
-                let mut def =
-                    parse_effect_chain_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
-                def.cost = Some(cost);
-                def.description = Some(line.to_string());
-                def.activation_restrictions.extend(constraints.restrictions);
-                def.activation_restrictions
-                    .push(ActivationRestriction::OnlyOnce);
-                def.ability_tag = Some(AbilityTag::Exhaust);
-                extract_cost_reduction_from_chain(&mut def);
-                extract_mana_spend_trigger_from_chain(&mut def);
-                emitter.ability_at(item_line, def);
+                let mut ir =
+                    parse_ability_ir_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
+                // CR 602.1a: the activation cost, everything before the colon.
+                ir.shell.cost = Some(cost);
+                ir.shell.description = Some(line.to_string());
+                // CR 602.1b: parsed constraints LEAD, the implicit restriction trails.
+                let mut activation_restrictions = constraints.restrictions;
+                // CR 702.177a: "Activate only once."
+                activation_restrictions.push(ActivationRestriction::OnlyOnce);
+                ir.shell.activation_restrictions = activation_restrictions;
+                ir.shell.ability_tag = Some(AbilityTag::Exhaust);
+                // CR 601.2f then CR 106.6 + CR 603.3, in this order — see `ShellStage`.
+                ir.shell.stages = vec![
+                    ShellStage::ExtractCostReduction,
+                    ShellStage::ExtractManaSpendTrigger,
+                ];
+                emitter.ability_ir_at(item_line, ir);
                 i += 1;
                 continue;
             }
@@ -4566,18 +4698,31 @@ pub(crate) fn parse_oracle_ir(
                 let cost = parse_oracle_cost(cost_text);
                 ctx.subject = None;
                 ctx.actor = None;
-                let mut def =
-                    parse_effect_chain_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
-                def.cost = Some(cost);
-                def.description = Some(line.to_string());
-                def.activation_restrictions.extend(constraints.restrictions);
+                let mut ir =
+                    parse_ability_ir_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
+                // CR 602.1a: the activation cost, everything before the colon.
+                ir.shell.cost = Some(cost);
+                ir.shell.description = Some(line.to_string());
+                // CR 602.1b: the activation instructions, composed in this
+                // recognizer's own order — the parsed constraints LEAD and the
+                // implicit restriction trails, the reverse of the Solved
+                // recognizer above. The shell applies the vec verbatim, so the
+                // two orders are preserved rather than unified.
+                //
                 // CR 702.193a: power-up may be activated only once.
-                def.activation_restrictions
-                    .push(ActivationRestriction::OnlyOnce);
-                def.ability_tag = Some(AbilityTag::PowerUp);
+                let mut activation_restrictions = constraints.restrictions;
+                activation_restrictions.push(ActivationRestriction::OnlyOnce);
+                ir.shell.activation_restrictions = activation_restrictions;
+                ir.shell.ability_tag = Some(AbilityTag::PowerUp);
                 // CR 702.193b + CR 602.2b + CR 601.2f + CR 302.6: the activation cost's
                 // generic mana is reduced by the source's mana value if it entered this turn.
-                def.cost_reduction = Some(CostReduction {
+                //
+                // Stamped explicitly from the keyword definition, which is why
+                // `shell.stages` stays EMPTY here: this is the one site in the
+                // family that does not derive the reduction from the chain, and
+                // `ShellStage::ExtractCostReduction` would both overwrite this
+                // value and strip a node out of the `sub_ability` chain.
+                ir.shell.cost_reduction = Some(CostReduction {
                     mode: crate::types::statics::CostModifyMode::Reduce,
                     amount_per: 1,
                     count: QuantityExpr::Ref {
@@ -4585,7 +4730,7 @@ pub(crate) fn parse_oracle_ir(
                     },
                     condition: Some(ParsedCondition::SourceEnteredThisTurn),
                 });
-                emitter.ability_at(item_line, def);
+                emitter.ability_ir_at(item_line, ir);
                 i += 1;
                 continue;
             }
@@ -4609,21 +4754,26 @@ pub(crate) fn parse_oracle_ir(
                 let cost = parse_oracle_cost(cost_text);
                 ctx.subject = None;
                 ctx.actor = None;
-                let mut def =
-                    parse_effect_chain_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
-                def.cost = Some(cost);
-                def.description = Some(line.to_string());
+                let mut ir =
+                    parse_ability_ir_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
+                // CR 602.1a: the activation cost, everything before the colon.
+                ir.shell.cost = Some(cost);
+                ir.shell.description = Some(line.to_string());
                 // CR 702.57a: a forecast ability is activated only from hand.
-                def.activation_zone = Some(Zone::Hand);
-                def.activation_restrictions.extend(constraints.restrictions);
+                ir.shell.activation_zone = Some(Zone::Hand);
+                // CR 602.1b: parsed constraints LEAD, the two implicit
+                // restrictions trail in the order CR 702.57b states them.
+                let mut activation_restrictions = constraints.restrictions;
                 // CR 702.57b: only during the owner's upkeep, only once each turn.
-                def.activation_restrictions
-                    .push(ActivationRestriction::DuringYourUpkeep);
-                def.activation_restrictions
-                    .push(ActivationRestriction::OnlyOnceEachTurn);
-                extract_cost_reduction_from_chain(&mut def);
-                extract_mana_spend_trigger_from_chain(&mut def);
-                emitter.ability_at(item_line, def);
+                activation_restrictions.push(ActivationRestriction::DuringYourUpkeep);
+                activation_restrictions.push(ActivationRestriction::OnlyOnceEachTurn);
+                ir.shell.activation_restrictions = activation_restrictions;
+                // CR 601.2f then CR 106.6 + CR 603.3, in this order — see `ShellStage`.
+                ir.shell.stages = vec![
+                    ShellStage::ExtractCostReduction,
+                    ShellStage::ExtractManaSpendTrigger,
+                ];
+                emitter.ability_ir_at(item_line, ir);
                 i += 1;
                 continue;
             }
@@ -5406,9 +5556,26 @@ pub(crate) fn parse_oracle_ir(
         {
             ctx.subject = None;
             ctx.actor = None;
-            let effect_ir = parse_effect_chain_ir(&line, AbilityKind::Spell, &mut ctx);
-            if !has_unimplemented(&lower_effect_chain_ir(&effect_ir)) {
-                emitter.emit_at(item_line, OracleNodeIr::Spell(effect_ir));
+            // Routed through `parse_ability_ir_with_context` + `ability_ir_at`,
+            // i.e. `lower_ability_ir`, which is what `parse_effect_chain_with_context`
+            // has always been. #6123 converted this site to the raw pair
+            // `parse_effect_chain_ir` + `lower_effect_chain_ir` while hoisting the
+            // Class-H replacement producers, which silently dropped three things the
+            // entry point had been supplying: `finalize_effect_chain`, the
+            // owner-library reveal anchor, and the `WithContext` whole-body
+            // recognizer set. That made this the only spell path in the parser
+            // lowering a whole ability body without them. Restored here.
+            //
+            // The guard runs on `lower_ability_ir(&ir)` for the same reason the
+            // effect fallback below does: whether to emit at all is control flow,
+            // and `has_unimplemented` reads a lowered root, so the predicate must
+            // see the definition this site will actually emit. `lower_ability_ir`
+            // is a pure `&AbilityIr -> AbilityDefinition`, so lowering here and
+            // again in `ability_ir_at` repeats one computation rather than
+            // performing two different ones.
+            let ir = parse_ability_ir_with_context(&line, AbilityKind::Spell, &mut ctx);
+            if !has_unimplemented(&lower_ability_ir(&ir)) {
+                emitter.ability_ir_at(item_line, ir);
                 i += 1;
                 continue;
             }
@@ -6188,9 +6355,22 @@ pub(crate) fn parse_oracle_ir(
             // Try as effect
             ctx.subject = None;
             ctx.actor = None;
-            let def = parse_effect_chain_with_context(&effect_text, AbilityKind::Spell, &mut ctx);
-            if !has_unimplemented(&def) {
-                emitter.ability_at(item_line, def);
+            // The one site in the family whose shell stays `default()`: it stamps
+            // no root field at all, not even `description`, so the conversion is
+            // the bare entry-point swap with nothing to carry.
+            let ir = parse_ability_ir_with_context(&effect_text, AbilityKind::Spell, &mut ctx);
+            // Whether to emit *at all* is control flow, not a property of the
+            // definition, so the guard stays here rather than becoming a shell
+            // field. `has_unimplemented` reads a lowered root, and an
+            // `AbilityDefinition` cannot be un-lowered into an `AbilityIr`, so the
+            // predicate runs on `lower_ability_ir(&ir)` while the *retained*
+            // artifact stays the IR — same shape the prevention-text site above
+            // already uses. `lower_ability_ir` is a pure `&AbilityIr ->
+            // AbilityDefinition` (no `ctx`, no interior mutability anywhere under
+            // `oracle_effect/`), so lowering here and again in `ability_ir_at` is
+            // a repeat of the same computation, never a different one.
+            if !has_unimplemented(&lower_ability_ir(&ir)) {
+                emitter.ability_ir_at(item_line, ir);
                 i += 1;
                 continue;
             }
@@ -6885,7 +7065,7 @@ fn strip_cost_reduction_node(
 /// as a `ManaSpellGrant::TriggerOnSpend` (Lapis Orb of Dragonkind, Scaled
 /// Nurturer, Gilanra). Only applies to mana abilities; otherwise the clause
 /// drops to an `Effect:when` gap.
-fn extract_mana_spend_trigger_from_chain(def: &mut AbilityDefinition) {
+pub(crate) fn extract_mana_spend_trigger_from_chain(def: &mut AbilityDefinition) {
     if !matches!(&*def.effect, Effect::Mana { .. }) {
         return;
     }

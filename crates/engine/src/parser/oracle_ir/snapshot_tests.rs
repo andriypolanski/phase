@@ -138,6 +138,61 @@ fn questing_beast() {
 }
 
 // ---------------------------------------------------------------------------
+// CR 615.1a prevention spells — the instant/sorcery prevention recognizer
+// ---------------------------------------------------------------------------
+//
+// CR 615.1a: "Effects that use the word 'prevent' are prevention effects."
+// That sentence *is* this recognizer's admission test: it claims an
+// instant/sorcery line containing both "prevent" and "damage" (excluding the
+// CR 614.15 ability-word self-replacement printings) and lowers the whole line
+// as a resolving spell chain rather than a standing replacement definition.
+//
+// **Why these two fixtures exist.** 153 cards in the pool reach that site and,
+// before Plan 05b T9a, NOT ONE of them was snapshotted — the only spell path
+// that lowered a whole ability body without `finalize_effect_chain`, the
+// owner-library reveal anchor, and the `WithContext` whole-body recognizer set
+// was also the one with no two-layer guard. T9a routed it through
+// `lower_ability_ir` (via `ability_ir_at`) and measured a zero full-pool delta;
+// these pin that result so T9b's payload swap — which lands on this exact
+// recognizer — cannot move it silently.
+//
+// Both texts are verbatim MTGJSON, not paraphrases: a paraphrase can take a
+// different parser branch and go green while the real card stays broken.
+
+/// The canonical single-clause prevention spell — the whole card is the
+/// prevention sentence, so the chain has exactly one clause and no `sub_ability`.
+#[test]
+fn fog_prevention_spell() {
+    let (ir, lowered) = parse_two_layer(
+        "Prevent all combat damage that would be dealt this turn.",
+        "Fog",
+        &["Instant"],
+        &[],
+    );
+    insta::assert_json_snapshot!("fog_ir", &ir);
+    insta::assert_json_snapshot!("fog_lowered", &lowered);
+}
+
+/// The multi-clause case the recognizer was written for. The site's own comment
+/// cites this shape verbatim — "preserve any preceding clauses ('You gain 1 life
+/// for each ...')" — because the prevention marker sits in the SECOND sentence,
+/// so a replacement classifier reaching the line first would drop the life gain.
+/// This is the fixture that exercises chain assembly and `lower_ability_ir`'s
+/// pinned chain → finalize → anchor → `sub_link` order, rather than a
+/// degenerate one-clause body that would take the same path either way.
+#[test]
+fn blunt_the_assault_prevention_spell_preserves_preceding_clause() {
+    let (ir, lowered) = parse_two_layer(
+        "You gain 1 life for each creature on the battlefield. Prevent all combat damage that would be dealt this turn.",
+        "Blunt the Assault",
+        &["Instant"],
+        &[],
+    );
+    insta::assert_json_snapshot!("blunt_the_assault_ir", &ir);
+    insta::assert_json_snapshot!("blunt_the_assault_lowered", &lowered);
+}
+
+// ---------------------------------------------------------------------------
 // Casting restrictions / permissions
 // ---------------------------------------------------------------------------
 
@@ -460,6 +515,70 @@ fn entropic_battlecruiser() {
     );
     insta::assert_json_snapshot!("entropic_battlecruiser_ir", &ir);
     insta::assert_json_snapshot!("entropic_battlecruiser_lowered", &lowered);
+}
+
+// ---------------------------------------------------------------------------
+// Plan 05b T8-A3 (§5.3 remediation): U0-12 had no fixture that witnessed the
+// envelope it stamps.
+// ---------------------------------------------------------------------------
+
+/// U0-12 — the CR 711.2a/711.2b LEVEL-block activated line (T8-A3 witness).
+///
+/// **What was unwitnessed.** The only pre-existing test over this site
+/// (`oracle_tests::leveler_activated_abilities_get_level_counter_range`) asserts
+/// `LevelCounterRange` presence with `.contains(…)`, which is order-insensitive,
+/// and asserts nothing about the `cost` or `description` the site also stamps.
+/// Dropping `LevelCounterRange` was witnessed; every other axis was not.
+///
+/// Guul Draz Assassin is the richest fixture in the nine-card leveler
+/// population: two striations, a two-component `{B}, {T}` cost (so the CR 602.1a
+/// stamp is pinned to something more than a bare `{T}`), a targeted effect, and
+/// two *different* level ranges — a bounded `2-3` and an unbounded `4+` — so a
+/// range that collapsed to a constant would show.
+///
+/// Fixture is pool-verified, not synthetic: Oracle text, `Creature` type and
+/// `Vampire`/`Assassin` subtypes are verbatim from `data/card-data.json`.
+#[test]
+fn guul_draz_assassin_level_activated() {
+    let (ir, lowered) = parse_two_layer_with_keywords(
+        "Level up {1}{B} ({1}{B}: Put a level counter on this. Level up only as a sorcery.)\nLEVEL 2-3\n2/2\n{B}, {T}: Target creature gets -2/-2 until end of turn.\nLEVEL 4+\n4/4\n{B}, {T}: Target creature gets -4/-4 until end of turn.",
+        "Guul Draz Assassin",
+        &["level up"],
+        &["Creature"],
+        &["Vampire", "Assassin"],
+    );
+    insta::assert_json_snapshot!("guul_draz_assassin_ir", &ir);
+    insta::assert_json_snapshot!("guul_draz_assassin_lowered", &lowered);
+}
+
+/// U0-12 — the first site in phase A where `ExtractManaSpendTrigger`'s guard is
+/// LIVE (T8-A3 witness).
+///
+/// A2 established that its four keyword sites can never run that fold: no pool
+/// card with those keywords lowers to a root `Effect::Mana`, so the stage
+/// early-returns every time. **U0-12 is different.** Joraga Treespeaker's
+/// `LEVEL 1-4` body is `{T}: Add {G}{G}.`, which lowers to a root `Effect::Mana`,
+/// so the guard passes here for the first time in the tranche.
+///
+/// The fold's *body* still does nothing — it additionally needs a trailing "when
+/// you spend this mana …" sub-ability, and no leveler card prints one — so
+/// dropping the stage is still extensionally inert. Pinning the mana root is
+/// what makes that distinction visible: this fixture is the one that would start
+/// discriminating the moment a level striation prints a spend trigger.
+///
+/// Fixture is pool-verified, not synthetic: Oracle text, `Creature` type and
+/// `Elf`/`Druid` subtypes are verbatim from `data/card-data.json`.
+#[test]
+fn joraga_treespeaker_level_mana_ability() {
+    let (ir, lowered) = parse_two_layer_with_keywords(
+        "Level up {1}{G} ({1}{G}: Put a level counter on this. Level up only as a sorcery.)\nLEVEL 1-4\n1/2\n{T}: Add {G}{G}.\nLEVEL 5+\n1/4\nElves you control have \"{T}: Add {G}{G}.\"",
+        "Joraga Treespeaker",
+        &["level up"],
+        &["Creature"],
+        &["Elf", "Druid"],
+    );
+    insta::assert_json_snapshot!("joraga_treespeaker_ir", &ir);
+    insta::assert_json_snapshot!("joraga_treespeaker_lowered", &lowered);
 }
 
 // ---------------------------------------------------------------------------
@@ -1352,6 +1471,158 @@ fn case_of_the_crimson_pulse() {
     );
     insta::assert_json_snapshot!("case_of_the_crimson_pulse_ir", &ir);
     insta::assert_json_snapshot!("case_of_the_crimson_pulse_lowered", &lowered);
+}
+
+/// CR 719.3c: the **activated** `"Solved — {cost}: {effect}"` shape, which the
+/// sibling `case_of_the_crimson_pulse` fixture above does NOT reach — its Solved
+/// clause is a triggered ability, so it never passes `find_activated_colon`.
+///
+/// Landed with T8-A1 because the §5.3 non-vacuity probe measured the gap rather
+/// than assuming it: with a `panic!` at the recognizer, **zero** of the 17844
+/// `--lib` tests fired, and the only two tests that reach it at all
+/// (`case_solve_condition`) assert on `is_solved` and use `"Solved — {T}: Add
+/// {R}."` — a fixture with **empty** parsed constraints, so it cannot observe the
+/// activation-restriction vector at all. Dropping the implicit
+/// `ActivationRestriction::IsSolved` stayed green across every one of them.
+///
+/// Case of the Stashed Skeleton is chosen because its trailing "Activate only as
+/// a sorcery." makes `strip_activated_constraints` yield a **non-empty**
+/// `constraints.restrictions`. The snapshot therefore pins both halves of the
+/// vector *and their order* — implicit `IsSolved` first (CR 719.3c), parsed
+/// `AsSorcery` second (CR 602.5d) — which is the one property of this recognizer
+/// that T8's shell conversion could silently normalize away, since the Power-up
+/// recognizer composes the same vector in the opposite order.
+#[test]
+fn case_of_the_stashed_skeleton() {
+    let (ir, lowered) = parse_two_layer(
+        "When this Case enters, create a 2/1 black Skeleton creature token and suspect it. (It has menace and can't block.)\nTo solve — You control no suspected Skeletons. (If unsolved, solve at the beginning of your end step.)\nSolved — {1}{B}, Sacrifice this Case: Search your library for a card, put it into your hand, then shuffle. Activate only as a sorcery.",
+        "Case of the Stashed Skeleton",
+        &["Enchantment"],
+        &["Case"],
+    );
+    insta::assert_json_snapshot!("case_of_the_stashed_skeleton_ir", &ir);
+    insta::assert_json_snapshot!("case_of_the_stashed_skeleton_lowered", &lowered);
+}
+
+// ---------------------------------------------------------------------------
+// T8-A2 §5.3 remediation: the activation-restriction ORDER at the four
+// keyword-labelled activated recognizers (Channel, Boast, Exhaust, Forecast).
+//
+// The non-vacuity probe measured these sites as REACHED but their restriction
+// *order* as UNWITNESSED. With the conversion in place, swapping the parsed
+// constraints against the implicit ones — and swapping the two implicit ones
+// against each other — left all 34 reaching tests green, because every existing
+// fixture is degenerate on this axis: the reminder text that states the
+// restrictions is stripped before `strip_activated_constraints` runs, so
+// `constraints.restrictions` is empty and the existing assertions use
+// order-insensitive `.contains(..)`.
+//
+// The four fixtures below are real pool cards (verbatim Oracle text from
+// `data/card-data.json`) chosen so each pins an order the conversion could
+// otherwise normalize away. Each was watched go RED under the corresponding
+// perturbation before being committed.
+// ---------------------------------------------------------------------------
+
+/// CR 207.2c Channel, with a NON-degenerate parsed constraint.
+///
+/// Channel is the one site of the four whose restriction vector is the parsed
+/// constraints *alone* — it pushes no implicit restriction — and whose original
+/// wrote `=` under an is-empty guard rather than `extend`. The existing Channel
+/// fixtures (`boseiju_who_endures` and the two `channel_*` parser tests) all
+/// have an EMPTY `constraints.restrictions`, so none of them can observe that
+/// vector reaching the lowered definition at all.
+///
+/// Ghost-Lit Stalker's trailing "Activate only as a sorcery." (CR 602.5d) makes
+/// it non-empty on BOTH its lines, so the snapshot pins the parsed constraint
+/// surviving the shell's `extend`. Watched red by deleting the
+/// `ir.shell.activation_restrictions` assignment: `AsSorcery` disappears from
+/// the Channel ability.
+#[test]
+fn ghost_lit_stalker() {
+    let (ir, lowered) = parse_two_layer(
+        "{4}{B}, {T}: Target player discards two cards. Activate only as a sorcery.\nChannel — {5}{B}{B}, Discard this card: Target player discards four cards. Activate only as a sorcery.",
+        "Ghost-Lit Stalker",
+        &["Creature"],
+        &["Spirit"],
+    );
+    insta::assert_json_snapshot!("ghost_lit_stalker_ir", &ir);
+    insta::assert_json_snapshot!("ghost_lit_stalker_lowered", &lowered);
+}
+
+/// CR 702.177a Exhaust, with a NON-degenerate parsed constraint.
+///
+/// The only Exhaust card in the pool whose "Activate only as a sorcery."
+/// (CR 602.5d) sits OUTSIDE the reminder parentheses, so it is the only one that
+/// makes `constraints.restrictions` non-empty. That is what lets this snapshot
+/// pin the site's parsed-then-implicit order: parsed `AsSorcery` first, implicit
+/// `OnlyOnce` (CR 702.177a) second.
+///
+/// Watched red by composing the vector implicit-first instead: `OnlyOnce`
+/// relocates ahead of `AsSorcery`. `exhaust_mana_cost_parses_as_activated_with_once_per_game_restriction`
+/// and the `exhaust_keyword_once_per_permanent` integration tests all stay green
+/// under that swap, which is why this fixture is needed.
+#[test]
+fn liliana_the_repentant() {
+    let (ir, lowered) = parse_two_layer(
+        "Whenever another creature or planeswalker you control enters, mill two cards.\nExhaust — {5}{B}: Return target creature or planeswalker card from your graveyard to the battlefield. Put a +1/+1 counter on Liliana. Activate only as a sorcery. (Activate each exhaust ability only once.)",
+        "Liliana the Repentant",
+        &["Creature"],
+        &["Human", "Warlock"],
+    );
+    insta::assert_json_snapshot!("liliana_the_repentant_ir", &ir);
+    insta::assert_json_snapshot!("liliana_the_repentant_lowered", &lowered);
+}
+
+/// CR 702.142a Boast: pins the order of the two IMPLICIT restrictions.
+///
+/// No Boast card in the pool states its activation instruction outside reminder
+/// text, so the parsed-vs-implicit axis is unwitnessable here by any real card
+/// (reported as a finding rather than papered over with an invented card). What
+/// IS witnessable, and was previously unwitnessed, is the order of the two
+/// implicit restrictions relative to each other: this site pushes
+/// `OnlyOnceEachTurn` before `RequiresCondition{SourceAttackedThisTurn}`, which
+/// is the REVERSE of the order CR 702.142a states them in ("Activate only if
+/// this creature attacked this turn and only once each turn"). That inversion is
+/// pre-existing, is preserved by the conversion, and is now pinned so a later
+/// tranche cannot silently "tidy" it.
+///
+/// Watched red by swapping the two pushes.
+#[test]
+fn arni_brokenbrow() {
+    let (ir, lowered) = parse_two_layer(
+        "Haste\nBoast — {1}: You may change Arni's base power to 1 plus the greatest power among other creatures you control until end of turn. (Activate only if this creature attacked this turn and only once each turn.)",
+        "Arni Brokenbrow",
+        &["Creature"],
+        &["Human", "Berserker"],
+    );
+    insta::assert_json_snapshot!("arni_brokenbrow_ir", &ir);
+    insta::assert_json_snapshot!("arni_brokenbrow_lowered", &lowered);
+}
+
+/// CR 702.57a-b Forecast: pins the order of the two IMPLICIT restrictions.
+///
+/// As with Boast, no Forecast card states its activation instruction outside
+/// reminder text, so only the implicit-vs-implicit axis is witnessable. This
+/// site pushes `DuringYourUpkeep` before `OnlyOnceEachTurn`, matching the order
+/// CR 702.57b states them in. Before this fixture the two `forecast_*` parser
+/// tests asserted both restrictions with order-insensitive `.contains(..)`, so a
+/// swap was silent.
+///
+/// Also the only two-layer snapshot coverage Forecast has had; its two parser
+/// tests were the entire reaching set, and neither reaches the integration
+/// binary.
+///
+/// Watched red by swapping the two pushes.
+#[test]
+fn govern_the_guildless() {
+    let (ir, lowered) = parse_two_layer(
+        "Gain control of target monocolored creature.\nForecast — {1}{U}, Reveal this card from your hand: Target creature becomes the color or colors of your choice until end of turn. (Activate only during your upkeep and only once each turn.)",
+        "Govern the Guildless",
+        &["Sorcery"],
+        &[],
+    );
+    insta::assert_json_snapshot!("govern_the_guildless_ir", &ir);
+    insta::assert_json_snapshot!("govern_the_guildless_lowered", &lowered);
 }
 
 #[test]
