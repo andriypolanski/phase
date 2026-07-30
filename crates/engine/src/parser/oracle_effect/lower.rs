@@ -18,8 +18,8 @@ use super::super::oracle_quantity::{
     parse_player_attribute_attr_clause, parse_quantity_ref,
 };
 use super::super::oracle_target::{
-    parse_anaphoric_target_ref, parse_target, parse_target_with_ctx, parse_that_clause_suffix,
-    parse_type_phrase, parse_type_phrase_with_ctx,
+    parse_target, parse_target_with_ctx, parse_that_clause_suffix, parse_type_phrase,
+    parse_type_phrase_with_ctx,
 };
 use super::super::oracle_util::{parse_comparator_prefix, parse_count_expr, strip_after, TextPair};
 use crate::parser::oracle_ir::ast::*;
@@ -1631,6 +1631,50 @@ pub(super) fn change_zone_selects_battlefield_permanent(
     matches!(target, TargetFilter::Typed(_))
 }
 
+/// CR 115.10a + CR 608.2d: shared ChangeZone stack-vs-resolution classifier.
+/// `fragment_lower` must be the moved-object clause / predicate only — never a
+/// subject prefix like "Target player …", which would false-positive the
+/// `"target "` scan and force Stack.
+///
+/// Used by `target_choice_timing_for_clause` (`ChangeZone` only — mass
+/// `ChangeZoneAll` keeps the historical Stack default there) and by the
+/// `"target player" + ChangeZone/ChangeZoneAll` TargetOnly wrap (Strategic
+/// Betrayal #6505, Relic of Progenitus #6446).
+pub(super) fn change_zone_target_choice_timing(
+    origin: Option<Zone>,
+    target: &TargetFilter,
+    has_multi_target: bool,
+    fragment_lower: &str,
+) -> TargetChoiceTiming {
+    let off_battlefield_origin = origin.is_some_and(|zone| zone != Zone::Battlefield)
+        || has_multi_target
+            && target
+                .extract_zones()
+                .iter()
+                .any(|zone| *zone != Zone::Battlefield);
+    if off_battlefield_origin {
+        // Off-BF non-"target " legs (Relic: "exiles a card from their graveyard")
+        // are resolution picks; explicit "target cards …" (Memory's Journey) stay Stack.
+        if nom_primitives::scan_contains(fragment_lower, "target ") {
+            TargetChoiceTiming::Stack
+        } else {
+            TargetChoiceTiming::Resolution
+        }
+    } else if nom_primitives::scan_contains(fragment_lower, "target ") {
+        TargetChoiceTiming::Stack
+    } else if change_zone_selects_battlefield_permanent(origin, target) {
+        // CR 115.1: battlefield non-targeted picks (Sothera / Strategic Betrayal
+        // edict class) resolve via EffectZoneChoice after player_scope rebinding,
+        // not stack targeting.
+        // Graveyard/hand/library seeds without "target" (Deadly Cover-Up) keep
+        // stack-time selection — their filters carry explicit InZone constraints
+        // and origin is None (not off_battlefield_origin above).
+        TargetChoiceTiming::Resolution
+    } else {
+        TargetChoiceTiming::Stack
+    }
+}
+
 pub(super) fn target_choice_timing_for_clause(clause_ir: &ClauseIr) -> TargetChoiceTiming {
     if let Effect::ChooseCounterKind { target } = &clause_ir.parsed.effect {
         let lower = clause_ir
@@ -1700,37 +1744,21 @@ pub(super) fn target_choice_timing_for_clause(clause_ir: &ClauseIr) -> TargetCho
         }
     }
 
+    // Mass `ChangeZoneAll` stays Stack here (pre-#6446). The TargetOnly wrap
+    // may still stamp Resolution on ChangeZoneAll resolution-picks via the
+    // shared helper; clause-IR timing must not silently reclassify every
+    // off-BF mass move (Bomat Courier / Jace −12 snapshot regressions).
     let Effect::ChangeZone { origin, target, .. } = &clause_ir.parsed.effect else {
         return TargetChoiceTiming::Stack;
     };
-    let off_battlefield_origin = origin.is_some_and(|zone| zone != Zone::Battlefield)
-        || (clause_ir.multi_target.is_some() || clause_ir.parsed.multi_target.is_some())
-            && target
-                .extract_zones()
-                .iter()
-                .any(|zone| *zone != Zone::Battlefield);
     let lower = clause_ir
         .source
         .fragment()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if off_battlefield_origin {
-        if nom_primitives::scan_contains(&lower, "target ") {
-            TargetChoiceTiming::Stack
-        } else {
-            TargetChoiceTiming::Resolution
-        }
-    } else if nom_primitives::scan_contains(&lower, "target ") {
-        TargetChoiceTiming::Stack
-    } else if change_zone_selects_battlefield_permanent(*origin, target) {
-        // CR 115.1: battlefield non-targeted picks (Sothera edict class) resolve
-        // via EffectZoneChoice after player_scope rebinding, not stack targeting.
-        // Graveyard/hand/library seeds without "target" (Deadly Cover-Up) keep
-        // stack-time selection — their filters carry explicit InZone constraints.
-        TargetChoiceTiming::Resolution
-    } else {
-        TargetChoiceTiming::Stack
-    }
+    let has_multi_target =
+        clause_ir.multi_target.is_some() || clause_ir.parsed.multi_target.is_some();
+    change_zone_target_choice_timing(*origin, target, has_multi_target, &lower)
 }
 
 /// CR 303.4f: Aura entering by non-spell means — controller chooses the enchanted object.
@@ -7094,14 +7122,17 @@ pub(super) fn try_parse_bidirectional_prevent(
     let prevention_duration =
         nom_primitives::scan_preceded(rest, parse_duration).map(|(_, d, _)| d);
 
-    // CR 608.2c: isolate the anaphor phrase following the bidirectional marker
-    // and bind it to the parent's chosen target. `parse_anaphoric_target_ref`
-    // returns `None` when `parent_target_available` is false — the load-bearing
-    // gate (a standalone "dealt to and dealt by that creature" with no prior
-    // target-selecting clause must NOT split into ParentTarget shields).
+    // CR 608.2c + CR 615: isolate the anaphor phrase following the
+    // bidirectional marker and resolve it via the same recipient resolution
+    // `parse_prevent_effect` uses (chosen target anaphor / any other
+    // recognized filter — Energy Arc's "those creatures" resolves via
+    // `parse_target`'s `TrackedSet` dispatch). `None` when no tier
+    // recognizes it — a standalone "dealt to and dealt by that creature"
+    // with no prior target-selecting clause must NOT split into ParentTarget
+    // shields.
     let anaphor_tp = TextPair::new(text, &lower).strip_after("dealt to and dealt by ")?;
-    let (anaphor_filter, _) =
-        parse_anaphoric_target_ref(anaphor_tp.original, parent_target_available)?;
+    let anaphor_filter =
+        super::imperative::resolve_prevent_recipient(anaphor_tp, parent_target_available)?;
 
     // CR 615: the recipient ("to") shield — scoped to the chosen creature as
     // the damage RECIPIENT (target: ParentTarget, no source restriction).

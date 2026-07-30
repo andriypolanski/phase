@@ -190,7 +190,7 @@ fn pay_end_continuous_effect_cost(
 /// widened `sba::check_illegal_attachment_unattach`. Do NOT call the pipeline
 /// explicitly here: this function runs INSIDE `apply_action`, so an explicit
 /// call would run it twice.
-fn commit_end_continuous_effect(
+pub(crate) fn finish_paid_end_continuous_effect(
     state: &mut GameState,
     player: PlayerId,
     group: EndEffectGroupId,
@@ -232,9 +232,9 @@ pub fn handle_end_continuous_effect(
     }
 
     match pay_end_continuous_effect_cost(state, player, group, &candidate.cost, events)? {
-        SpecialActionManaPayment::Paid => {
-            Ok(commit_end_continuous_effect(state, player, group, events))
-        }
+        SpecialActionManaPayment::Paid => Ok(finish_paid_end_continuous_effect(
+            state, player, group, events,
+        )),
         SpecialActionManaPayment::Paused => Ok(state.waiting_for.clone()),
     }
 }
@@ -253,9 +253,9 @@ pub(crate) fn resume_end_continuous_effect_payment(
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     match pay_end_continuous_effect_cost(state, player, group, &cost, events)? {
-        SpecialActionManaPayment::Paid => {
-            Ok(commit_end_continuous_effect(state, player, group, events))
-        }
+        SpecialActionManaPayment::Paid => Ok(finish_paid_end_continuous_effect(
+            state, player, group, events,
+        )),
         SpecialActionManaPayment::Paused => Ok(state.waiting_for.clone()),
     }
 }

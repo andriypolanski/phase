@@ -117,6 +117,33 @@ impl EffectChainIr {
     }
 }
 
+impl AbilityIr {
+    /// CR 706.3b: Whether the raw body contains an unassigned die roll that can
+    /// own an immediately following results table. This collection gate scans
+    /// source-ordered direct clauses and their pre-lowered sequential
+    /// sub-ability chains. The P4/P9 roll producers emit ordinary clauses;
+    /// duplicating full `ClauseDisposition` assembly here would create a second
+    /// reachability authority. Post-assembly attachment remains authoritative.
+    pub(crate) fn has_result_table_roll_die(&self) -> bool {
+        self.body.clauses.iter().any(|clause| {
+            matches!(&clause.parsed.effect, crate::types::ability::Effect::RollDie { results, .. } if results.is_empty())
+                || clause
+                    .parsed
+                    .sub_ability
+                    .as_deref()
+                    .is_some_and(ability_definition_has_result_table_roll_die)
+        })
+    }
+}
+
+fn ability_definition_has_result_table_roll_die(def: &AbilityDefinition) -> bool {
+    matches!(def.effect.as_ref(), crate::types::ability::Effect::RollDie { results, .. } if results.is_empty())
+        || def
+            .sub_ability
+            .as_deref()
+            .is_some_and(ability_definition_has_result_table_roll_die)
+}
+
 /// Root-level `AbilityDefinition` metadata that no `ClauseIr` can express.
 ///
 /// The shell is the typed replacement for the `AbilityDefinition` escape hatch:
@@ -142,8 +169,13 @@ impl EffectChainIr {
 /// widening satisfies the categorical-boundary rule rather than straddling rule
 /// sections.
 ///
-/// **This is 10 of `AbilityDefinition`'s 38 root fields, deliberately not a
-/// mirror of the root.** Fields excluded on purpose — `effect`, `sub_ability`,
+/// **This is 12 of `AbilityDefinition`'s 38 root fields, deliberately not a
+/// mirror of the root.** (Counted from the source: this struct has thirteen
+/// fields, twelve of which mirror a root field; `stages` is a transform list,
+/// not a root field. A0's "10" counted the fields that tranche *added* and
+/// omitted the pre-existing `sub_link`, so it read one low even before
+/// `optional` arrived.) Fields
+/// excluded on purpose — `effect`, `sub_ability`,
 /// `else_ability`, `condition` — are all CR 608.2 resolution tree and are
 /// already expressible as `ClauseIr`/`ClauseDisposition`. A shell that mirrored
 /// the root would re-open the escape hatch this type exists to close.
@@ -224,7 +256,7 @@ pub(crate) struct AbilityShellIr {
     /// this field by *reading the lowered def*
     /// (`activation_zone_from_self_cost` / `activation_zone_from_self_effect`),
     /// which a shell stamped before lowering cannot express. That is one of the
-    /// reasons `parse_activated_ability_definition` is scoped to its own unit
+    /// reasons `parse_activated_ability_ir` is scoped to its own unit
     /// rather than to T8 — this field is here for the recognizers that know
     /// their zone from the printed keyword (Channel, Forecast), not for that one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -264,6 +296,55 @@ pub(crate) struct AbilityShellIr {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
 
+    /// CR 608.2d: the controller chooses whether to perform the effect
+    /// ("You may …"). Applied as a monotone OR, never an assignment.
+    ///
+    /// # This is the one field that is NOT the CR 602.1 activation envelope
+    ///
+    /// Everything else on this shell partitions along the seam CR 602.1 (:2514)
+    /// draws — cost before the colon, activation instructions after it. `optional`
+    /// does not: CR 608.2d (`MagicCompRules.txt:2795`) places the choice
+    /// *"while applying the effect"*, which is CR 608.2 resolution, the half this
+    /// type deliberately leaves to [`EffectChainIr`]. So its presence here is an
+    /// explicit, named exception rather than an extension of the partition, and
+    /// this doc block is where the exception is justified.
+    ///
+    /// # Why the exception is nonetheless correct
+    ///
+    /// The mechanical requirement is that `optional` be stamped
+    /// **unconditionally, after lowering** — which is exactly what the
+    /// game-start recognizers (`AbilityKind::Mulligan`, `BeginGame`) do by hand
+    /// today: they call the chain parser, then set `def.optional = true` on the
+    /// result. The alternative — expressing the flag on the first clause and
+    /// letting assembly carry it to the root — is **not** equivalent:
+    /// `assemble_effect_chain` maps a clause's optionality to the root
+    /// conditionally, through four suppressions plus a `SearchOutsideGame` arm
+    /// that forces `optional = false`. A recognizer whose printed text says
+    /// "you may" would silently lose the flag on any input that took one of
+    /// those arms. Named, so the claim is checkable: the `clause_ir.parsed
+    /// .optional` propagation in `assemble_effect_chain` is suppressed for
+    /// `Effect::GrantCastingPermission`, for `is_lingering_cast_from_zone`, for
+    /// `is_join_forces_pay_any_amount_mana_cost` and for
+    /// `is_pay_to_end_effect_termination`, and a following arm sets
+    /// `def.optional = false` outright for `Effect::SearchOutsideGame`. It also
+    /// assumes clause 0 becomes the emitted root, which `ClauseDisposition` does
+    /// not guarantee. The shell is the only place the stamp can be unconditional
+    /// *and* survive the IR conversion, so the field lives here and the
+    /// categorical impurity is paid knowingly.
+    ///
+    /// # Why a monotone OR
+    ///
+    /// `def.optional |= shell.optional`, mirroring `cant_be_copied`. The `false`
+    /// default can then never clear a flag lowering established, so
+    /// `AbilityShellIr::default()` stays a no-op and the widening is
+    /// byte-identical by construction — A0's defer-on-default property, which is
+    /// the whole reason a shell field can be added without touching any existing
+    /// producer. An assignment would break it: every unconverted site building a
+    /// `default()` shell would begin clearing an `optional` that
+    /// `lower_effect_chain_ir` had legitimately set from the printed "you may".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) optional: bool,
+
     /// Chain-**structure** folds to run after the field stamps, in list order.
     ///
     /// Ordered `Vec`, not a set of flags: see [`ShellStage`].
@@ -283,7 +364,7 @@ fn is_zero(v: &u32) -> bool {
 ///
 /// # Why an ordered `Vec` and not a set of booleans
 ///
-/// Both stages are folds that rewrite the `sub_ability` chain *and* write a root
+/// These stages are folds that rewrite the `sub_ability` chain *and* write a root
 /// field, so their position relative to the field stamps is behavior-load-bearing
 /// — a plain field bag cannot express "run these two, in this order, after the
 /// stamps":
@@ -299,10 +380,14 @@ fn is_zero(v: &u32) -> bool {
 ///
 /// Variants are named for the transform, not for a call site, so the list stays
 /// a description of *what runs* rather than of *who asked*.
-// Both variants are constructed by the T8-A2 recognizers (Channel, Boast,
-// Exhaust, Forecast), each of which lists them in this order.
+// The extraction variants are constructed by the T8-A2 recognizers (Channel,
+// Boast, Exhaust, Forecast), each of which lists them in this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum ShellStage {
+    /// CR 106.6: normalize an activated mana ability's `instead` alternative
+    /// into the additional-mana delta used by the existing mana authority.
+    /// Runs `oracle::normalize_activated_mana_instead_delta`.
+    NormalizeActivatedManaInstead,
     /// CR 601.2f: fold a trailing self-referential "this ability costs {X} less
     /// to activate" node out of the `sub_ability` chain into `cost_reduction`.
     /// Runs `oracle::extract_cost_reduction_from_chain`.
@@ -312,6 +397,15 @@ pub(crate) enum ShellStage {
     /// `oracle::extract_mana_spend_trigger_from_chain`, which is a no-op unless
     /// the lowered root effect is already `Effect::Mana`.
     ExtractManaSpendTrigger,
+}
+
+/// CR 706.3a: one row of a die-roll results table — a possible-result range and
+/// the effect associated with it ("N1–N2" or "N+").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct DieResultBranchIr {
+    pub(crate) min: u8,
+    pub(crate) max: u8,
+    pub(crate) effect: Box<AbilityIr>,
 }
 
 /// An effect chain plus the root-level metadata applied around it.
@@ -336,6 +430,50 @@ pub(crate) struct AbilityIr {
     pub(crate) source_text: String,
     pub(crate) body: EffectChainIr,
     pub(crate) shell: AbilityShellIr,
+    /// Result-table rows supplied by a whole-body die-roll recognizer.
+    ///
+    /// Empty is the default for every ordinary ability IR and is a lowering no-op.
+    pub(crate) die_results: Vec<DieResultBranchIr>,
+    /// Ordered root transforms applied after whole-ability lowering.
+    ///
+    /// This is intentionally separate from [`AbilityShellIr`]. The shell carries
+    /// the activation envelope; these transforms compose post-chain resolution
+    /// metadata whose order depends on the root that chain assembly selected.
+    /// An empty list is a lowering no-op.
+    pub(crate) root_transforms: Vec<AbilityRootTransform>,
+}
+
+/// A root-level transform applied only after an [`AbilityIr`] has been fully
+/// lowered.
+///
+/// CR 608.2c: chain assembly may change which parsed clause becomes the root,
+/// so a whole-ability condition cannot be assigned to the first clause. These
+/// transforms operate on the finalized root in their stored order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) enum AbilityRootTransform {
+    /// CR 601.2b: stamp the announced-X floor from this printed ability.
+    SetMinXValue(u32),
+    /// Preserve the complete printed source text for this multi-line ability.
+    SetDescription(String),
+    /// CR 614.6 + CR 614.15: replace an unbindable self-replacement's final
+    /// lowered root with the explicit honest-failure floor.
+    InsteadOverrideResidual {
+        fragment: String,
+        condition_policy: ResidualConditionPolicy,
+    },
+    /// CR 608.2c: prepend a condition (ability word) before the chain-derived
+    /// root condition.
+    PrependCondition(AbilityCondition),
+    /// CR 608.2c: append a condition extracted from a line-level `instead`.
+    AppendCondition(AbilityCondition),
+}
+
+/// Whether an honest unbindable override floor retains the condition the legacy
+/// parser had already lowered, or clears it for a partial replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum ResidualConditionPolicy {
+    Preserve,
+    Clear,
 }
 
 /// CR 608.2c + CR 601.2c: Subject of a "does the same / does so" effect-replication
@@ -541,8 +679,10 @@ pub(crate) enum ReplaceMeaningKind {
     /// CR 608.2c: pop the prior def; wrap this alternative def with the prior as its
     /// `else_ability` (dig-instead alternative).
     DigAlt(Box<AbilityDefinition>),
-    /// CR 614.1a + CR 608.2c: multi-clause base + "instead" override via Cow-swap;
-    /// tail clauses stashed in the override's `else_ability`.
+    /// CR 614.1a + CR 608.2c: within one effect chain, a clause replaces a prior
+    /// clause's definition via Cow-swap; tail clauses are stashed in the
+    /// override's `else_ability`. This remains distinct from the cross-document-
+    /// item `DocumentRelationIr::SelfReplacementOverride` relation.
     Instead(Box<AbilityDefinition>),
     /// CR 608.2c: build this clause's def from `parsed` + condition, attach as the
     /// prior def's `sub_ability` (keyword-instead override).

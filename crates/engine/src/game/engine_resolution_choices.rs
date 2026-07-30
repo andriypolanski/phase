@@ -12,7 +12,6 @@ use crate::types::game_state::{
     PendingPlayerScopeSacrificeCompletion, PersistentAxisMaterialization, WaitingFor,
 };
 use crate::types::identifiers::{ObjectId, TrackedSetId};
-use crate::types::mana::ManaCost;
 use crate::types::resolved_commands::{
     ResolvedInformationAudience, ResolvedInformationEdit, ResolvedInformationLifetime,
 };
@@ -2456,16 +2455,21 @@ pub(super) fn handle_resolution_choice(
                         });
                     }
                 }
-                PayableResource::ManaGeneric { per_x } => {
-                    let cost = ManaCost::Cost {
-                        shards: vec![],
-                        generic: amount.saturating_mul(per_x),
-                    };
+                PayableResource::ManaGeneric { base_cost } => {
+                    // CR 107.3f + CR 118.1 + CR 118.12: concretize the chosen
+                    // X into the ORIGINAL cost — any colored/generic pips
+                    // alongside the X shard (e.g. Elenda and Azor's
+                    // `{X}{W}{U}{B}`) survive concretization and are paid
+                    // here too. Paying a synthetic all-generic `{N}` cost
+                    // instead would silently drop the colored requirements
+                    // (#6410).
+                    let mut cost = base_cost.clone();
+                    cost.concretize_x(amount);
                     if !casting::can_pay_effect_mana_cost_after_auto_tap(
                         state, player, source_id, &cost,
                     ) {
                         return Err(EngineError::InvalidAction(format!(
-                            "Player {:?} cannot pay {} generic mana",
+                            "Player {:?} cannot pay {}",
                             player,
                             cost.mana_value()
                         )));
@@ -2489,9 +2493,28 @@ pub(super) fn handle_resolution_choice(
                     // CR 119.4: pay N life via the life-loss-as-cost authority
                     // (replacement pipeline + CantLoseLife) — NOT inline life
                     // subtraction.
+                    let resume_at_resolution_depth = state.resolution_stack.len();
                     match crate::game::life_costs::pay_life_as_cost(state, player, amount, events) {
                         crate::game::life_costs::PayLifeCostResult::Paid { .. } => {}
-                        _ => {
+                        crate::game::life_costs::PayLifeCostResult::PaidWithDeferredSubstitution {
+                            ..
+                        }
+                        | crate::game::life_costs::PayLifeCostResult::DeferredReplacementChoice {
+                            ..
+                        } => {
+                            state.pending_deferred_life_cost_resume = Some(
+                                crate::types::game_state::DeferredLifeCostResume::PayAmount {
+                                    player,
+                                    total: accumulated.saturating_add(amount),
+                                    resume_at_resolution_depth,
+                                },
+                            );
+                            return Ok(ResolutionChoiceOutcome::WaitingFor(
+                                state.waiting_for.clone(),
+                            ));
+                        }
+                        crate::game::life_costs::PayLifeCostResult::InsufficientLife
+                        | crate::game::life_costs::PayLifeCostResult::Prohibited => {
                             return Err(EngineError::InvalidAction(format!(
                                 "Player {player:?} cannot pay {amount} life"
                             )))
@@ -2503,24 +2526,7 @@ pub(super) fn handle_resolution_choice(
             // read `QuantityRef::EventContextAmount` (e.g. "deals that much
             // damage"). `last_effect_count` is the documented fallback slot.
             let total = accumulated.saturating_add(amount);
-            state.last_effect_count = Some(total as i32);
-            let pending_starts_with_pay_amount = state
-                .active_ability_continuation()
-                .is_some_and(|cont| starts_with_pay_amount_prompt(&cont.chain));
-            if !pending_starts_with_pay_amount {
-                if let Some(frame) = state.active_ability_continuation_frame_mut() {
-                    frame.pending.chain.set_chosen_x_recursive(total);
-                }
-            }
-            let mut waiting_for = finish_with_continuation(state, player, events);
-            if let WaitingFor::PayAmountChoice {
-                accumulated: next_accumulated,
-                ..
-            } = &mut waiting_for
-            {
-                *next_accumulated = total;
-                state.waiting_for = waiting_for.clone();
-            }
+            let waiting_for = finish_pay_amount_choice(state, player, total, events);
             ResolutionChoiceOutcome::WaitingFor(waiting_for)
         }
         (
@@ -5631,7 +5637,7 @@ pub(super) fn handle_resolution_choice(
             // single GameState slot cleared after every drain.
             if matches!(
                 choice_type,
-                ChoiceType::Player | ChoiceType::Opponent { .. }
+                ChoiceType::Player { .. } | ChoiceType::Opponent { .. }
             ) {
                 if let Ok(pid) = choice.parse::<u8>() {
                     if let Some(frame) = state.active_ability_continuation_frame_mut() {
@@ -6938,6 +6944,36 @@ fn finish_with_continuation(
     super::engine::resume_pending_continuation_if_priority(state, events)
         .expect("a settled resolution choice must resume its continuation");
     state.waiting_for.clone()
+}
+
+/// CR 118.12 + CR 119.4 + CR 616.1: Complete the outer pay-amount action only
+/// after any interactive post-replacement child of the life payment has
+/// settled. Shared by the direct submit path and the deferred-life resumer.
+pub(crate) fn finish_pay_amount_choice(
+    state: &mut GameState,
+    player: crate::types::player::PlayerId,
+    total: u32,
+    events: &mut Vec<GameEvent>,
+) -> WaitingFor {
+    state.last_effect_count = Some(total as i32);
+    let pending_starts_with_pay_amount = state
+        .active_ability_continuation()
+        .is_some_and(|cont| starts_with_pay_amount_prompt(&cont.chain));
+    if !pending_starts_with_pay_amount {
+        if let Some(frame) = state.active_ability_continuation_frame_mut() {
+            frame.pending.chain.set_chosen_x_recursive(total);
+        }
+    }
+    let mut waiting_for = finish_with_continuation(state, player, events);
+    if let WaitingFor::PayAmountChoice {
+        accumulated: next_accumulated,
+        ..
+    } = &mut waiting_for
+    {
+        *next_accumulated = total;
+        state.waiting_for = waiting_for.clone();
+    }
+    waiting_for
 }
 
 /// CR 701.25a / CR 616.1: Run the post-loop cleanup a rest-pile batch deferred

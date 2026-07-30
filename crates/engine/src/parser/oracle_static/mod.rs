@@ -160,7 +160,9 @@ pub(crate) use keyword_grant::{
     parse_graveyard_granted_keyword_kind, parse_quoted_ability_modifications, split_keyword_list,
     try_parse_graveyard_keyword_grant_clause, try_parse_graveyard_keyword_grant_static,
 };
-pub(crate) use mana_transform::try_parse_retain_unspent_mana_static;
+pub(crate) use mana_transform::{
+    is_unspent_mana_loss_causes_life_loss_static, try_parse_retain_unspent_mana_static,
+};
 pub(crate) use restriction::parse_cant_be_activated_exemption_in_text;
 pub(crate) use restriction::parse_passive_cant_be_cast_spell_filter;
 pub(crate) use restriction::try_parse_top_of_library_cast_permission;

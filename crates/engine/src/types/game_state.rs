@@ -5425,6 +5425,12 @@ pub struct PendingCast {
     pub card_id: CardId,
     pub ability: Box<ResolvedAbility>,
     pub cost: ManaCost,
+    /// CR 601.2h + CR 616.1: Mana already committed before a life-payment
+    /// replacement's post-effect paused. The resumed cast uses `NoCost` and
+    /// carries this amount into final cast bookkeeping instead of spending or
+    /// measuring the same mana twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepaid_actual_mana_spent: Option<u32>,
     /// CR 601.2f: The tax-inclusive base mana cost captured at announcement,
     /// BEFORE any cost reductions/increases or {X} concretization. Lets the
     /// full concrete cost be recomputed from scratch for any chosen X with
@@ -5577,6 +5583,11 @@ pub struct PendingCast {
     /// through a cost-payment continuation without conflating it with cost legs.
     #[serde(default, skip_serializing_if = "ActivationTargetSelection::is_pending")]
     pub activation_target_selection: ActivationTargetSelection,
+    /// CR 601.2h + CR 602.2b: An activation cannot be cancelled once any
+    /// component of its cost has been paid, because that payment is not a
+    /// rollback-able announcement choice.
+    #[serde(default)]
+    pub activation_cost_committed: bool,
     /// CR 118.9 + CR 601.2b: When this cast is offered a once-per-turn
     /// `CastWithAlternativeCost` grant (As Foretold), the granting permanent's id.
     /// Carried across the `OptionalCostChoice` round-trip so the accept handler can
@@ -5584,10 +5595,84 @@ pub struct PendingCast {
     /// `Unlimited` grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_cost_grant_source: Option<ObjectId>,
+    /// CR 602.2a-b + CR 603.2: Trigger consequences from a target-bearing
+    /// activation are collected while its targets and costs are announced, but
+    /// become globally visible only when the ability reaches the stack.
+    ///
+    /// The carrier is durable across interactive cost prompts and is redacted
+    /// from every per-viewer state projection; its journal is engine-private
+    /// implementation state, not public pending-cast information.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) activation_trigger_collection:
+        Option<Box<crate::game::triggers::PendingActivationTriggerCollection>>,
 }
 
 fn default_origin_zone() -> Zone {
     Zone::Hand
+}
+
+/// CR 118.3b + CR 119.4 + CR 616.1: Exact outer cost action suspended after a
+/// life payment committed but its replacement's interactive post-effect did
+/// not finish. The replacement continuation remains the immediate child; this
+/// owner resumes only after that child drains.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DeferredLifeCostResume {
+    /// Continue a spell cast or activated-ability payment without replaying the
+    /// life payment. Mana-payment callers set `cost` to `NoCost` and preserve
+    /// the amount already spent in `prepaid_actual_mana_spent`.
+    Cast {
+        player: PlayerId,
+        /// The announcing caller attaches its complete cast/activation root
+        /// before state returns to a player. `None` exists only during that
+        /// synchronous handoff from the shared payment authority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pending: Option<Box<PendingCast>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remaining_life_payments: Vec<u32>,
+        /// Resolution-stack depth that existed before the life-loss event.
+        /// Replacement-produced child frames must retire back to this boundary
+        /// before the cast resumes.
+        resume_at_resolution_depth: usize,
+    },
+    /// Finish a resolution-time "pay any amount of life" choice after its
+    /// replacement post-effect settles, then expose the paid amount to the
+    /// remaining ability chain.
+    PayAmount {
+        player: PlayerId,
+        total: u32,
+        /// Resolution-stack depth containing the outer pay-amount chain.
+        /// The replacement's child work drains above it first.
+        resume_at_resolution_depth: usize,
+    },
+    /// Resume a resolution/special-action mana-payment root after all selected
+    /// Phyrexian life components and their replacement children settle.
+    ManaRoot {
+        player: PlayerId,
+        resume: Box<ManaAbilityResume>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remaining_life_payments: Vec<u32>,
+        resume_at_resolution_depth: usize,
+    },
+}
+
+impl DeferredLifeCostResume {
+    pub fn resume_at_resolution_depth(&self) -> usize {
+        match self {
+            DeferredLifeCostResume::Cast {
+                resume_at_resolution_depth,
+                ..
+            }
+            | DeferredLifeCostResume::PayAmount {
+                resume_at_resolution_depth,
+                ..
+            }
+            | DeferredLifeCostResume::ManaRoot {
+                resume_at_resolution_depth,
+                ..
+            } => *resume_at_resolution_depth,
+        }
+    }
 }
 
 /// CR 601.2h + CR 616.1: Tail behavior for a sequential cost move that paused
@@ -5657,6 +5742,11 @@ pub struct ManaAbilityCostParent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManaAbilityCostCursor {
     pub remaining: Vec<AbilityCost>,
+    /// CR 118.3b + CR 119.4 + CR 616.1: Selected Phyrexian life components
+    /// that follow an already-paid component whose replacement post-effect
+    /// paused. They complete before the cursor advances to mana production.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remaining_life_payments: Vec<u32>,
     /// Direct auto-tap resolution has already chosen its production path and
     /// therefore must not surface an output-color prompt after a paused cost
     /// move resumes. Interactive activation retains the prompt.
@@ -5839,6 +5929,14 @@ pub enum PendingCostMoveResume {
         pending: Box<PendingManaAbility>,
         cursor: ManaAbilityCostCursor,
     },
+    /// CR 602.2b + CR 701.17a + CR 616.1: An activation's deterministic mill
+    /// cost paused while a replacement choice settles. Resume the serialized
+    /// activation suffix only after the mill event has reached a terminal
+    /// replacement outcome.
+    ActivationMillPayment {
+        player: PlayerId,
+        pending: Box<PendingCast>,
+    },
     /// CR 606.4 + CR 614.1a + CR 616.1: A loyalty activation paused on a
     /// counter-cost replacement-ordering choice (e.g. Doubling Season vs an
     /// opponent's Vorinclex halving the loyalty counters). The counter is
@@ -5877,6 +5975,7 @@ impl PendingCast {
             card_id,
             ability: Box::new(ability),
             cost,
+            prepaid_actual_mana_spent: None,
             base_cost: None,
             declared_mana_additions: Vec::new(),
             activation_cost: None,
@@ -5907,13 +6006,82 @@ impl PendingCast {
             assist_state: AssistState::NotOffered,
             activation_residual: ActivationResidual::None,
             activation_target_selection: ActivationTargetSelection::Pending,
+            activation_cost_committed: false,
             alt_cost_grant_source: None,
+            activation_trigger_collection: None,
         }
     }
 
     pub fn with_payment_mode(mut self, payment_mode: CastPaymentMode) -> Self {
         self.payment_mode = payment_mode;
         self
+    }
+
+    /// Starts the trigger transaction for an announced, target-bearing
+    /// activated ability.
+    ///
+    /// CR 602.2a-b + CR 603.2: Target declaration can make triggers fire
+    /// before costs are paid, while the activated ability does not exist on
+    /// the physical stack until the announcement completes.
+    pub(crate) fn begin_activation_trigger_collection(&mut self) {
+        if self.activation_trigger_collection.is_none() {
+            let ability_index = self
+                .activation_ability_index
+                .expect("target-bearing activation session requires an ability index");
+            self.activation_trigger_collection = Some(Box::new(
+                crate::game::triggers::PendingActivationTriggerCollection::for_prepared_activated_ability(
+                    self.object_id,
+                    self.ability.controller,
+                    ability_index,
+                    &self.ability,
+                ),
+            ));
+        }
+    }
+
+    /// CR 601.2h + CR 602.2b: Marks an announced activation as having paid an
+    /// irreversible cost component, so it can no longer be cancelled.
+    pub(crate) fn mark_activation_cost_committed(&mut self) {
+        if self.activation_ability_index.is_some() {
+            self.activation_cost_committed = true;
+        }
+    }
+}
+
+impl GameState {
+    /// Temporarily removes the activation-local trigger transaction from the
+    /// pending cast that currently owns it.
+    ///
+    /// `ManaPayment` stores its `PendingCast` in `GameState::pending_cast`;
+    /// every other interactive casting prompt embeds it in `WaitingFor`.
+    /// Keeping that routing distinction here prevents individual cost handlers
+    /// from choosing the wrong continuation carrier.
+    pub(crate) fn take_pending_activation_trigger_collection(
+        &mut self,
+    ) -> Option<Box<crate::game::triggers::PendingActivationTriggerCollection>> {
+        if let Some(pending) = self.pending_cast.as_mut() {
+            return pending.activation_trigger_collection.take();
+        }
+        self.waiting_for
+            .pending_cast_mut()?
+            .activation_trigger_collection
+            .take()
+    }
+
+    /// Restores the transaction removed by
+    /// [`Self::take_pending_activation_trigger_collection`] to the same active
+    /// casting continuation.
+    pub(crate) fn restore_pending_activation_trigger_collection(
+        &mut self,
+        collection: Box<crate::game::triggers::PendingActivationTriggerCollection>,
+    ) {
+        if let Some(pending) = self.pending_cast.as_mut() {
+            pending.activation_trigger_collection = Some(collection);
+            return;
+        }
+        if let Some(pending) = self.waiting_for.pending_cast_mut() {
+            pending.activation_trigger_collection = Some(collection);
+        }
     }
 }
 
@@ -5975,11 +6143,11 @@ pub enum ManaAbilityResume {
         /// from the controller of a helper mana source activated while paying.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         outer_player: Option<PlayerId>,
-        /// CR 118.12: Carried-through cost from `WaitingFor::UnlessPayment`.
-        /// See the matching `WaitingFor::UnlessPayment.cost` doc-comment for
-        /// the legacy-shape deserialization contract. Boxed so the
-        /// enclosing `ManaAbilityResume` enum stays compact (other variants
-        /// are zero-sized or carry only an `Option`).
+        /// CR 118.12 + CR 605.3b: Exact concrete outer payment root. A
+        /// mana-source cost pause retries it in full; a deferred Phyrexian
+        /// life replacement removes its already-paid leading mana component
+        /// before resuming any suffix. Boxed so the enclosing enum stays
+        /// compact.
         #[serde(deserialize_with = "crate::types::ability::deserialize_ability_cost_compat_boxed")]
         cost: Box<AbilityCost>,
         pending_effect: Box<ResolvedAbility>,
@@ -6381,14 +6549,16 @@ impl PublicStateDirty {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum TargetSelectionConstraint {
+    /// CR 601.2c + CR 115.3: every chosen player target must be a different
+    /// player. Attached by the modal path ("each mode must target a different
+    /// player"), where distinctness spans the ability's modes rather than one
+    /// instance of the word "target".
     DifferentTargetPlayers,
     /// CR 115.1 + CR 601.2c: Object targets must be controlled by different players.
     DifferentObjectControllers,
     /// CR 115.1 + CR 601.2c + CR 400.1: Object targets must come from the same
     /// player-owned zone of the given kind, e.g. "from a single graveyard".
-    SameZoneOwner {
-        zone: Zone,
-    },
+    SameZoneOwner { zone: Zone },
     /// CR 202.3 + CR 601.2c: the chosen target set's combined mana value must
     /// satisfy `comparator` against `value`. `value` is a `QuantityExpr` (not
     /// `i32` like `SearchSelectionConstraint::TotalManaValue`) because the bound
@@ -9522,16 +9692,26 @@ pub enum DistributionUnit {
 /// resource (energy, life, generic mana, counters); `LoopCollapse` is the one
 /// non-payment member — its N is the finite count an accepted CR 732.2a
 /// object-growth loop collapses into, deducting nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum PayableResource {
     /// CR 107.14: Pay any amount of `{E}` — removes N energy counters from the player.
     Energy,
-    /// CR 107.3 + CR 118.1: Pay a chosen X as generic mana while resolving an effect.
-    ManaGeneric {
-        #[serde(default = "default_one")]
-        per_x: u32,
-    },
+    /// CR 107.3f + CR 118.1 + CR 118.12: Pay a chosen X as part of a
+    /// resolution-time mana cost. `base_cost` is the UNCONCRETIZED cost
+    /// (still carrying `ManaCostShard::X` plus any colored/generic pips
+    /// alongside it, e.g. `{X}{W}{U}{B}`); the submit handler concretizes X
+    /// into it (`ManaCost::concretize_x`) and pays the resulting cost through
+    /// the standard mana-payment authority, so colored requirements are
+    /// enforced exactly like any other mana cost — never dropped in favor of
+    /// a generic-only payment (Elenda and Azor, #6410).
+    ///
+    /// `base_cost` intentionally carries NO `#[serde(default)]`: a serialized
+    /// prompt missing this field must fail deserialization rather than
+    /// silently resolve to `ManaCost::zero()`, which would concretize to a
+    /// free payment (drops the fixed pips AND the X basis) instead of
+    /// visibly rejecting the incompatible/corrupt save.
+    ManaGeneric { base_cost: ManaCost },
     /// CR 107.1c + CR 122.1: Choose how many counters to remove.
     Counters,
     /// CR 119.4: Pay any amount of life — N is deducted as life loss via
@@ -9631,10 +9811,6 @@ impl LoopCollapseAxis {
             | ResourceAxis::Poison(_) => None,
         }
     }
-}
-
-fn default_one() -> u32 {
-    1
 }
 
 /// CR 115.7: Scope of retargeting — single target, all targets, or forced.
@@ -11664,7 +11840,13 @@ pub struct GameState {
     /// CR 500.7: Extra turns granted by effects, stored as a LIFO stack.
     /// Most recently created extra turn is taken first (pop from end).
     #[serde(default)]
-    pub extra_turns: Vec<PlayerId>,
+    pub extra_turns: Vec<ExtraTurn>,
+
+    /// CR 500.7: While an extra-turn sequence is in progress, records the
+    /// "specified turn" after which those extras were inserted. Cleared once
+    /// play resumes with the player after that anchor turn.
+    #[serde(default)]
+    pub extra_turn_sequence_anchor: Option<PlayerId>,
 
     /// CR 614.10: Per-player count of turns to skip. When a player would begin their
     /// turn with a non-zero counter, the turn is skipped and the counter is decremented.
@@ -12674,10 +12856,10 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_effect_count: Option<i32>,
 
-    /// CR 608.2c + CR 701.9a: Per-player counts produced by the preceding
-    /// effect in the current ability chain. Used by carried-subject
-    /// continuations like "Each player discards ..., then draws that many ..."
-    /// after all players have completed the discard pass.
+    /// CR 608.2c: Per-player counts from the terminal event window of the
+    /// preceding count-producing effect in the current ability chain. Used by
+    /// carried-subject continuations like "Each player discards ..., then draws
+    /// that many ..." after all players have completed the discard pass.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub last_effect_counts_by_player: HashMap<PlayerId, i32>,
 
@@ -12999,6 +13181,13 @@ pub struct GameState {
     /// resume the same cost-payment action after the player answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_cost_move_resume: Option<PendingCostMoveResume>,
+
+    /// CR 118.3b + CR 119.4 + CR 616.1: Typed owner for a surrounding cost
+    /// action whose life payment committed before an interactive replacement
+    /// post-effect paused. Serialized with the prompt so restore resumes the
+    /// exact cast or resolution payment without charging it twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_deferred_life_cost_resume: Option<DeferredLifeCostResume>,
 
     /// CR 601.2h + CR 616.1: Resume a sequential discard cost after a
     /// replacement choice. Cost moves use `pending_cost_move_resume` above.
@@ -13892,12 +14081,51 @@ pub struct StepEndManaScanEntry {
 /// `drain_pending_phase_transition_progress` (commit 2). When all players are
 /// processed (queue empties), the drain calls `finish_enter_phase` to complete
 /// the phase entry (priority reset, LKI clear, `PhaseChanged` emission).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PhaseTransitionDrainState {
+    #[default]
+    Ready,
+    /// CR 614.6: The current player's empty-mana event has already been
+    /// delivered, and its Yurlok-class life-loss event was replaced by an
+    /// interactive substitute. The APNAP cursor resumes only after that
+    /// post-replacement continuation terminally drains.
+    AwaitingPostReplacementContinuation,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhaseTransitionProgress {
     pub remaining_players: VecDeque<PlayerId>,
     pub next_phase: Phase,
     pub in_combat: bool,
     pub entering_cleanup: bool,
+    #[serde(default)]
+    pub drain_state: PhaseTransitionDrainState,
+}
+
+#[cfg(test)]
+mod phase_transition_progress_serde_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_progress_without_drain_state_defaults_to_ready() {
+        let progress = PhaseTransitionProgress {
+            remaining_players: VecDeque::from([PlayerId(1)]),
+            next_phase: Phase::Upkeep,
+            in_combat: false,
+            entering_cleanup: false,
+            drain_state: PhaseTransitionDrainState::AwaitingPostReplacementContinuation,
+        };
+        let mut legacy = serde_json::to_value(progress).expect("phase progress serializes");
+        legacy
+            .as_object_mut()
+            .expect("phase progress is a JSON object")
+            .remove("drain_state");
+
+        let restored: PhaseTransitionProgress =
+            serde_json::from_value(legacy).expect("legacy phase progress still loads");
+
+        assert_eq!(restored.drain_state, PhaseTransitionDrainState::Ready);
+    }
 }
 
 /// Context stored when a permanent spell's ETB replacement needs a player choice
@@ -13966,6 +14194,49 @@ pub struct ScheduledTurnControl {
 pub struct ActivePlayerControl {
     pub controller: PlayerId,
     pub timestamp: u64,
+}
+
+/// CR 500.7: An extra turn queued after a specified turn.
+///
+/// Oracle text "Take an extra turn after this one" inserts the extra turn
+/// directly after the *specified* turn (the turn that was active when the
+/// effect resolved), not after the beneficiary's next natural turn. The
+/// `anchor` field is that specified turn's active-player representative.
+///
+/// LIFO ordering ("the most recently created turn will be taken first") is
+/// preserved by pushing to the end of `GameState.extra_turns` and popping from
+/// the end in `start_next_turn`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "ExtraTurnCompat")]
+pub struct ExtraTurn {
+    /// Player who takes the extra turn (team-normalized in 2HG / CR 805.8).
+    pub player: PlayerId,
+    /// The specified turn (CR 500.7) after which this extra turn is inserted.
+    /// When the extra-turn queue drains, natural order resumes at
+    /// `next_turn_representative(anchor)`.
+    pub anchor: PlayerId,
+}
+
+/// Private serde shim: new saves emit `{ player, anchor }`; legacy saves stored
+/// a bare `PlayerId`. Mid-game saves that lost the OOS anchor recover as
+/// `anchor == player` (in-sequence behavior).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ExtraTurnCompat {
+    Full { player: PlayerId, anchor: PlayerId },
+    Legacy(PlayerId),
+}
+
+impl From<ExtraTurnCompat> for ExtraTurn {
+    fn from(c: ExtraTurnCompat) -> Self {
+        match c {
+            ExtraTurnCompat::Full { player, anchor } => Self { player, anchor },
+            ExtraTurnCompat::Legacy(player) => Self {
+                player,
+                anchor: player,
+            },
+        }
+    }
 }
 
 /// CR 500.8: An extra phase added to a turn by an effect, anchored to the
@@ -16390,6 +16661,7 @@ impl GameState {
             commander_cast_count: HashMap::new(),
             commander_cast_owners: HashMap::new(),
             extra_turns: Vec::new(),
+            extra_turn_sequence_anchor: None,
             turns_to_skip: vec![0; player_count as usize],
             steps_to_skip: vec![HashMap::new(); player_count as usize],
             combat_phase_skip_next_turn: vec![
@@ -16553,6 +16825,7 @@ impl GameState {
             pending_taps_for_mana_overrides: std::collections::HashMap::new(),
             current_triggered_mana_override: None,
             pending_cost_move_resume: None,
+            pending_deferred_life_cost_resume: None,
             pending_discard_for_cost: None,
             pending_cast: None,
             ring_level: HashMap::new(),
@@ -17837,6 +18110,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         commander_declined_zone_return: _,
         objects_that_dealt_damage: _,
         extra_turns: _,
+        extra_turn_sequence_anchor: _,
         turns_to_skip: _,
         steps_to_skip: _,
         combat_phase_skip_next_turn: _,
@@ -18003,6 +18277,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         pending_taps_for_mana_overrides: _,
         current_triggered_mana_override: _,
         pending_cost_move_resume: _,
+        pending_deferred_life_cost_resume: _,
         pending_discard_for_cost: _,
         pending_cast: _,
         ring_level: _,
@@ -18134,6 +18409,7 @@ impl PartialEq for GameState {
             && self.commander_declined_zone_return == other.commander_declined_zone_return
             && self.objects_that_dealt_damage == other.objects_that_dealt_damage
             && self.extra_turns == other.extra_turns
+            && self.extra_turn_sequence_anchor == other.extra_turn_sequence_anchor
             && self.turns_to_skip == other.turns_to_skip
             && self.steps_to_skip == other.steps_to_skip
             && self.combat_phase_skip_next_turn == other.combat_phase_skip_next_turn
@@ -21029,6 +21305,7 @@ mod tests {
                     PlayerId(0),
                 )),
                 cost: ManaCost::NoCost,
+                prepaid_actual_mana_spent: None,
                 base_cost: None,
                 declared_mana_additions: Vec::new(),
                 activation_cost: None,
@@ -21059,7 +21336,9 @@ mod tests {
                 assist_state: AssistState::NotOffered,
                 activation_residual: ActivationResidual::None,
                 activation_target_selection: ActivationTargetSelection::Pending,
+                activation_cost_committed: false,
                 alt_cost_grant_source: None,
+                activation_trigger_collection: None,
             })
         }
 
@@ -21437,6 +21716,7 @@ mod tests {
                 PlayerId(0),
             )),
             cost: ManaCost::NoCost,
+            prepaid_actual_mana_spent: None,
             base_cost: None,
             declared_mana_additions: Vec::new(),
             activation_cost: None,
@@ -21467,7 +21747,9 @@ mod tests {
             assist_state: AssistState::NotOffered,
             activation_residual: ActivationResidual::None,
             activation_target_selection: ActivationTargetSelection::Pending,
+            activation_cost_committed: false,
             alt_cost_grant_source: None,
+            activation_trigger_collection: None,
         });
         let choose_x = WaitingFor::ChooseXValue {
             player: PlayerId(0),
@@ -21706,6 +21988,31 @@ mod tests {
                     source: CompanionChoiceSource::Sideboard { index: 2 },
                 }],
             }
+        );
+    }
+
+    /// #6410 review follow-up: `PayableResource::ManaGeneric::base_cost`
+    /// deliberately carries NO `#[serde(default)]`. A prior revision of this
+    /// fix defaulted the missing field to `ManaCost::zero()`, which would
+    /// have concretized a legacy/incomplete serialized prompt into a FREE
+    /// payment (drops both the fixed colored pips and the X basis) instead
+    /// of failing closed. A serialized prompt missing `base_cost` — whether
+    /// from the pre-fix `per_x`-only wire shape or any other truncation —
+    /// must be REJECTED at the deserialization boundary, never silently
+    /// downgraded to a zero-cost payment.
+    #[test]
+    fn pay_amount_choice_mana_generic_missing_base_cost_is_rejected() {
+        let empty_data = r#"{"type":"ManaGeneric","data":{}}"#;
+        assert!(
+            serde_json::from_str::<PayableResource>(empty_data).is_err(),
+            "a ManaGeneric prompt with no base_cost must fail to deserialize, \
+             not silently default to a zero-cost payment"
+        );
+
+        let legacy_per_x_shape = r#"{"type":"ManaGeneric","data":{"per_x":1}}"#;
+        assert!(
+            serde_json::from_str::<PayableResource>(legacy_per_x_shape).is_err(),
+            "the pre-fix per_x-only wire shape has no base_cost and must be rejected too"
         );
     }
 
@@ -22592,6 +22899,46 @@ mod tests {
         );
         assert!(trusted_state.get("resolution_frames").is_some());
         assert!(trusted_state.get("pending_multi_draw").is_none());
+    }
+
+    #[test]
+    fn persisted_extra_turns_deserialize_legacy_bare_player_id() {
+        let mut raw = serde_json::to_value(GameState::new(
+            crate::types::format::FormatConfig::free_for_all(),
+            4,
+            42,
+        ))
+        .expect("serialize baseline");
+        raw["extra_turns"] = serde_json::json!([0]);
+
+        let mut restored = serde_json::from_value::<PersistedGameState>(raw)
+            .expect("legacy bare PlayerId extra turn must deserialize")
+            .into_game_state();
+        assert_eq!(
+            restored.extra_turns,
+            vec![ExtraTurn {
+                player: PlayerId(0),
+                anchor: PlayerId(0),
+            }],
+            "legacy saves recover in-sequence behavior via anchor == player"
+        );
+
+        restored.active_player = PlayerId(0);
+        let mut events = Vec::new();
+        crate::game::turns::start_next_turn(&mut restored, &mut events);
+        assert_eq!(
+            restored.active_player,
+            PlayerId(0),
+            "legacy extra must consume on the beneficiary's next turn boundary"
+        );
+
+        let mut events = Vec::new();
+        crate::game::turns::start_next_turn(&mut restored, &mut events);
+        assert_eq!(
+            restored.active_player,
+            PlayerId(1),
+            "after legacy in-sequence extra, resume natural next player"
+        );
     }
 
     #[test]

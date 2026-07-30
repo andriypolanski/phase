@@ -7,7 +7,7 @@
 use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until, take_while1};
-use nom::combinator::{all_consuming, map, map_res, opt, value};
+use nom::combinator::{all_consuming, eof, map, map_res, opt, peek, value};
 use nom::multi::separated_list1;
 use nom::sequence::{pair, preceded, terminated};
 use nom::Parser;
@@ -548,10 +548,10 @@ fn parse_pre_controller_chosen_filter_suffix(input: &str) -> OracleResult<'_, Fi
     .parse(input)
 }
 
-/// CR 121.1 + CR 604.3: "card(s) [you('ve) / your opponents have] drawn this
-/// turn". Reuses the runtime `CardsDrawnThisTurn` quantity ref already wired for
-/// condition checks (Duelist of the Mind CDA) and now for the opponents'-draw
-/// cost reduction (Heliod, the Warped Eclipse).
+/// CR 121.1 + CR 109.5: "card(s) [you('ve) / your opponents have /
+/// that player has] drawn this turn". Reuses the runtime `CardsDrawnThisTurn`
+/// quantity ref already wired for condition checks (Duelist of the Mind CDA)
+/// and now for the opponents'-draw cost reduction (Heliod, the Warped Eclipse).
 ///
 /// The leading "card" word is optionally plural so this combinator serves both
 /// surface forms uniformly: the "the number of *cards* …" count phrase (plural)
@@ -576,6 +576,12 @@ fn parse_number_of_cards_drawn_this_turn(input: &str) -> OracleResult<'_, Quanti
         // CR 121.1: the caster's own draws this turn.
         value(PlayerScope::Controller, tag("you've drawn this turn")),
         value(PlayerScope::Controller, tag("you have drawn this turn")),
+        // CR 109.5 + CR 121.1: "that player" is the live per-recipient scope
+        // of effects such as `DamageEachPlayer`, rather than the caster.
+        value(
+            PlayerScope::ScopedPlayer,
+            tag("that player has drawn this turn"),
+        ),
     ))
     .parse(rest)?;
     Ok((rest, QuantityRef::CardsDrawnThisTurn { player }))
@@ -934,7 +940,7 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         // extremum. Distinctive "the player with the " prefix; no ordering
         // hazard with sibling arms.
         parse_player_with_extremum_cards_in_hand,
-        // CR 118.9 / CR 601.3: bare "<type> on the battlefield" object count.
+        // Bare "<type> on the battlefield" object count.
         // Placed LAST (lowest priority) so every specific arm — notably
         // `parse_greatest_commander_mana_value_ref` for "the greatest mana value
         // of a commander you own on the battlefield" — wins first; this fallback
@@ -945,34 +951,65 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     .parse(input)
 }
 
-/// CR 118.9 + CR 601.3: "<type> on the battlefield" → count of matching objects
-/// on the battlefield. The GE / "N or more" sibling of `parse_no_on_battlefield`
+/// "<type> on the battlefield" → count of matching objects on the battlefield.
+/// The GE / "N or more" sibling of `parse_no_on_battlefield`
 /// (`oracle_nom/condition.rs`, which emits the `== 0` form); reached after a
 /// parent combinator (`parse_there_are_conditions`) has consumed the "there are
 /// N or more " quantifier, leaving the bare noun phrase (Blasphemous Edict's
 /// "creatures on the battlefield").
 ///
-/// The full phrase is decoded by `parse_type_phrase`, so the " on the
-/// battlefield" locative is re-attached as `FilterProp::InZone { Battlefield }`
-/// exactly as the for-each battlefield-count fallback does
-/// (`oracle_quantity::parse_type_phrase_with_ctx`) — this arm therefore produces
-/// byte-identical `ObjectCount` filters for any for-each clause it now intercepts
-/// at the shared `parse_quantity_ref` seam. Guarded two ways so it stays strictly
-/// additive on that high-traffic surface: the phrase must END with the battlefield
-/// locative (rejecting "…on the battlefield or in the command zone", which its
-/// dedicated commander-mana-value arm claims), and the type phrase must fully
-/// consume and be non-`Any`.
+/// The phrase must be fully consumed here. Context-specific callers that own a
+/// clause boundary (such as cast-and-condition trigger parsing) split it before
+/// using this shared grammar. The competing zone-disjunction form remains
+/// rejected so its dedicated commander-mana-value arm can claim it.
 fn parse_type_count_on_battlefield(input: &str) -> OracleResult<'_, QuantityRef> {
+    parse_type_count_on_battlefield_with_boundary(input, BattlefieldCountBoundary::CompletePhrase)
+}
+
+/// The same count grammar when the enclosing caller owns a comma-delimited
+/// clause boundary. Keep this separate from `parse_quantity_ref`: generic
+/// condition extraction must not consume an effect tail as a quantity suffix.
+pub(crate) fn parse_type_count_on_battlefield_clause(input: &str) -> OracleResult<'_, QuantityRef> {
+    parse_type_count_on_battlefield_with_boundary(input, BattlefieldCountBoundary::Clause)
+}
+
+enum BattlefieldCountBoundary {
+    CompletePhrase,
+    Clause,
+}
+
+fn parse_type_count_on_battlefield_with_boundary(
+    input: &str,
+    boundary: BattlefieldCountBoundary,
+) -> OracleResult<'_, QuantityRef> {
     let (after_anchor, _) = take_until(" on the battlefield").parse(input)?;
-    let (after_anchor, _) = tag(" on the battlefield").parse(after_anchor)?;
-    if !after_anchor.trim().is_empty() {
-        return Err(oracle_err(input));
-    }
-    let (filter, type_rest) = parse_type_phrase(input);
+    let (rest, _) = tag(" on the battlefield").parse(after_anchor)?;
+    let (type_text, needs_battlefield_presence) = match boundary {
+        BattlefieldCountBoundary::CompletePhrase => {
+            if !rest.trim().is_empty() {
+                return Err(oracle_err(input));
+            }
+            (input, false)
+        }
+        BattlefieldCountBoundary::Clause => {
+            let (rest, _) = peek(alt((eof, tag(",")))).parse(rest)?;
+            if rest.is_empty() {
+                (input, false)
+            } else {
+                (&input[..input.len() - after_anchor.len()], true)
+            }
+        }
+    };
+    let (filter, type_rest) = parse_type_phrase(type_text);
     if matches!(filter, TargetFilter::Any) || !type_rest.trim().is_empty() {
         return Err(oracle_err(input));
     }
-    Ok(("", QuantityRef::ObjectCount { filter }))
+    let filter = if needs_battlefield_presence {
+        super::condition::inject_battlefield_presence(filter)
+    } else {
+        filter
+    };
+    Ok((rest, QuantityRef::ObjectCount { filter }))
 }
 
 /// CR 109.3 + CR 205.3m: Parse "the greatest/fewest/total number of
@@ -3012,11 +3049,16 @@ fn parse_object_mana_value_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     // building block. Only fires when the phrase actually used the "target"
     // keyword; the bare "that creature's mana value" possessive stays
     // `ObjectManaValue { scope: Target }`.
+    // Optional leading article for the prepositional "the mana value of ..."
+    // form (mirrors `parse_cost_paid_object_prepositional_ref`). The possessive
+    // fallback below re-parses from the ORIGINAL `input`, so consuming the
+    // article here only affects the "of"-form branch.
+    let (of_form_input, _) = opt(tag::<_, _, OracleError<'_>>("the ")).parse(input)?;
     if let Ok((rest, _)) = alt((
         tag::<_, _, OracleError<'_>>("mana value of "),
         tag("converted mana cost of "),
     ))
-    .parse(input)
+    .parse(of_form_input)
     {
         // CR 608.2c + CR 701.20b: "the card revealed by the other player" — the
         // OTHER revealer's revealed card in an exactly-two-target symmetric reveal
@@ -3036,13 +3078,28 @@ fn parse_object_mana_value_ref(input: &str) -> OracleResult<'_, QuantityRef> {
                 },
             ));
         }
-        let (after, filter) = parse_target_with_syntax_target_keyword(rest)?;
-        return Ok((
-            after,
-            QuantityRef::TargetObjectManaValue {
-                filter: Box::new(filter),
-            },
-        ));
+        // CR 202.3 + CR 115.1: targeted of-form ("the mana value of target
+        // <filter>") reads the ref's own target slot.
+        if let Ok((after, filter)) = parse_target_with_syntax_target_keyword(rest) {
+            return Ok((
+                after,
+                QuantityRef::TargetObjectManaValue {
+                    filter: Box::new(filter),
+                },
+            ));
+        }
+        // CR 202.3 + CR 608.2c: non-target prepositional anaphor — "the mana
+        // value of that spell" (Ovika, Enigma Goliath). Delegates to the SHARED
+        // prepositional object-scope grammar `parse_object_prepositional_scope`
+        // (the one `parse_color_of_object_for_each` /
+        // `parse_object_typeline_scope` already use), so the mana-value axis
+        // inherits its full sibling coverage — `it` / `the enchanted creature` /
+        // `the equipped creature` recipient forms and the demonstrative /
+        // triggering-spell referents — instead of a parallel table that would
+        // drift. Without this branch the clause errored out and the whole
+        // "create X … tokens, where X is …" effect dropped to `Unimplemented`.
+        let (after, scope) = parse_object_prepositional_scope(rest)?;
+        return Ok((after, QuantityRef::ObjectManaValue { scope }));
     }
 
     let (rest, scope) = parse_object_possessive_scope(input)?;
@@ -4406,7 +4463,11 @@ fn parse_object_typeline_component_count_for_each(input: &str) -> OracleResult<'
 }
 
 fn parse_object_typeline_scope(input: &str) -> OracleResult<'_, ObjectScope> {
-    alt((parse_object_color_of_scope, parse_object_possessive_scope)).parse(input)
+    alt((
+        parse_object_prepositional_scope,
+        parse_object_possessive_scope,
+    ))
+    .parse(input)
 }
 
 /// CR 201.1 + CR 201.2: Parse
@@ -4443,11 +4504,11 @@ fn parse_mana_symbols_in_object_mana_cost_for_each(input: &str) -> OracleResult<
 
 /// CR 105.1 + CR 601.2f: "for each color[s] of <object>" — scoped object-color
 /// count for cost reductions and similar per-color riders. Delegates object
-/// binding to `parse_object_color_of_scope` (target/enchanted/equipped/it-
+/// binding to `parse_object_prepositional_scope` (target/enchanted/equipped/it-
 /// targets anaphors).
 fn parse_color_of_object_for_each(input: &str) -> OracleResult<'_, QuantityRef> {
     let (rest, _) = alt((tag("color of "), tag("colors of "))).parse(input)?;
-    let (rest, scope) = parse_object_color_of_scope(rest)?;
+    let (rest, scope) = parse_object_prepositional_scope(rest)?;
     Ok((rest, QuantityRef::ObjectColorCount { scope }))
 }
 
@@ -4479,7 +4540,7 @@ fn parse_number_of_object_colors_tail(input: &str) -> OracleResult<'_, QuantityR
         value(ObjectScope::EventSource, tag("colors that spell is")),
         |i| {
             let (rest, _) = tag("colors of ").parse(i)?;
-            let (rest, scope) = parse_object_color_of_scope(rest)?;
+            let (rest, scope) = parse_object_prepositional_scope(rest)?;
             Ok((rest, scope))
         },
     ))
@@ -4573,7 +4634,15 @@ fn parse_object_possessive_scope(input: &str) -> OracleResult<'_, ObjectScope> {
     .parse(input)
 }
 
-fn parse_object_color_of_scope(input: &str) -> OracleResult<'_, ObjectScope> {
+/// CR 202.3 + CR 608.2c: the shared prepositional ("of <object>") object-scope
+/// grammar — the "of"-form sibling of [`parse_object_possessive_scope`]. It is
+/// property-agnostic: colors (`parse_color_of_object_for_each`), typeline
+/// components (`parse_object_typeline_scope`) and mana value
+/// (`parse_object_mana_value_ref`) all bind their object through this one table
+/// so the anaphor coverage cannot drift per property. Callers that support a
+/// `target ...` phrase run their own `parse_target` path first; the
+/// `target creature` / `target permanent` arms here are the bare fallback.
+fn parse_object_prepositional_scope(input: &str) -> OracleResult<'_, ObjectScope> {
     alt((
         value(ObjectScope::Recipient, tag("it")),
         value(ObjectScope::Recipient, tag("the enchanted creature")),
@@ -5462,6 +5531,48 @@ mod tests {
     }
 
     #[test]
+    fn type_count_on_battlefield_accepts_eof_tail() {
+        let (rest, parsed) = parse_type_count_on_battlefield("other creatures on the battlefield")
+            .expect("EOF terminates the noun clause");
+        assert_eq!(rest, "");
+        assert!(matches!(parsed, QuantityRef::ObjectCount { .. }));
+    }
+
+    #[test]
+    fn type_count_on_battlefield_rejects_comma_tail() {
+        assert!(parse_type_count_on_battlefield(
+            "other creatures on the battlefield, then draw a card"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn type_count_on_battlefield_clause_preserves_comma_tail() {
+        let (rest, parsed) = parse_type_count_on_battlefield_clause(
+            "other creatures on the battlefield, then draw a card",
+        )
+        .expect("the caller owns the clause boundary");
+        assert_eq!(rest, ", then draw a card");
+        assert!(matches!(parsed, QuantityRef::ObjectCount { .. }));
+    }
+
+    #[test]
+    fn type_count_on_battlefield_rejects_command_zone_disjunction() {
+        assert!(parse_type_count_on_battlefield(
+            "creatures on the battlefield or in the command zone"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn type_count_on_battlefield_rejects_non_comma_textual_tail() {
+        assert!(
+            parse_type_count_on_battlefield("creatures on the battlefield then draw a card")
+                .is_err()
+        );
+    }
+
+    #[test]
     fn for_each_opponent_dealt_damage_is_event_context_player_count() {
         for phrase in [
             "opponent dealt damage",
@@ -6216,6 +6327,44 @@ mod tests {
                 "{text:?} must remain Controller-scoped"
             );
         }
+    }
+
+    /// CR 109.5 + CR 121.1: "that player" in a per-player effect is a
+    /// recipient-scoped draw count. The this-turn boundary must remain exact.
+    #[test]
+    fn parse_cards_drawn_this_turn_scoped_player() {
+        for text in [
+            "cards that player has drawn this turn",
+            "the number of cards that player has drawn this turn",
+        ] {
+            let (rest, q) = parse_quantity_ref_complete(text).unwrap();
+            assert_eq!(rest, "", "{text:?} should fully consume");
+            assert_eq!(
+                q,
+                QuantityRef::CardsDrawnThisTurn {
+                    player: PlayerScope::ScopedPlayer,
+                },
+                "{text:?} must bind to the live scoped player"
+            );
+        }
+
+        assert!(
+            parse_quantity_ref_complete("the number of cards that player has drawn last turn")
+                .is_err(),
+            "the this-turn arm must not accept a different time window"
+        );
+
+        let (rest, q) =
+            parse_quantity_ref_complete("the number of cards that player has drawn this turn")
+                .unwrap();
+        assert_eq!(rest, "", "this-turn reach guard should fully consume");
+        assert_eq!(
+            q,
+            QuantityRef::CardsDrawnThisTurn {
+                player: PlayerScope::ScopedPlayer,
+            },
+            "the guarded this-turn form must remain reachable"
+        );
     }
 
     /// CR 601.2f: the for-each cost-mod path (Heliod) routes "card your opponents
@@ -10786,6 +10935,63 @@ mod tests {
                 }
             ),
             "the sacrificed-permanent COST referent must stay CostPaidObject, got {q:?}"
+        );
+    }
+
+    /// CR 202.3 + CR 608.2c (issue #1718 — Ovika, Enigma Goliath): the
+    /// prepositional "the mana value of that spell" of-form must bind to the
+    /// SAME referent as the possessive front-form "that spell's mana value".
+    /// Before the fix the of-form required a "target" keyword and errored out,
+    /// dropping the whole "create X … tokens, where X is the mana value of that
+    /// spell" effect to `Unimplemented`.
+    #[test]
+    fn mana_value_of_form_mirrors_possessive_scope() {
+        // Each of-form phrase must produce the same ObjectManaValue scope as its
+        // possessive counterpart (asserted by `parse_object_possessive_scope`).
+        let cases = [
+            ("the mana value of that spell", ObjectScope::EventSource),
+            ("mana value of that spell", ObjectScope::EventSource),
+            (
+                "the mana value of the triggering spell",
+                ObjectScope::EventSource,
+            ),
+            ("the mana value of that creature", ObjectScope::Target),
+            ("the mana value of that permanent", ObjectScope::Target),
+            ("the mana value of this spell", ObjectScope::Source),
+            ("the mana value of this creature", ObjectScope::Source),
+            // Sibling recipient forms inherited from the shared prepositional
+            // object-scope table (`parse_object_prepositional_scope`) — these
+            // are the forms a mana-value-only anaphor table would have missed.
+            ("the mana value of it", ObjectScope::Recipient),
+            (
+                "the mana value of the enchanted creature",
+                ObjectScope::Recipient,
+            ),
+            (
+                "the mana value of the equipped creature",
+                ObjectScope::Recipient,
+            ),
+        ];
+        for (phrase, expected_scope) in cases {
+            let (rest, q) = parse_quantity_ref(phrase)
+                .unwrap_or_else(|_| panic!("of-form {phrase:?} should bind"));
+            assert_eq!(rest, "", "of-form {phrase:?} left residue {rest:?}");
+            assert_eq!(
+                q,
+                QuantityRef::ObjectManaValue {
+                    scope: expected_scope,
+                },
+                "of-form {phrase:?} must bind ObjectManaValue{{{expected_scope:?}}}, got {q:?}"
+            );
+        }
+
+        // Negative control: the "target" of-form still routes to the target-slot
+        // reference (`TargetObjectManaValue`), never the demonstrative anaphor.
+        let (_, q) = parse_quantity_ref("mana value of target creature")
+            .expect("targeted of-form must still bind");
+        assert!(
+            matches!(q, QuantityRef::TargetObjectManaValue { .. }),
+            "targeted of-form must stay TargetObjectManaValue, got {q:?}"
         );
     }
 }

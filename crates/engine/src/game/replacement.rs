@@ -1435,10 +1435,21 @@ fn pay_replacement_may_cost(
             let amount =
                 crate::game::quantity::resolve_quantity(state, amount, player, source_id).max(0);
             let amount = u32::try_from(amount).unwrap_or(0);
-            matches!(
-                crate::game::life_costs::pay_life_as_cost(state, player, amount, events),
-                crate::game::life_costs::PayLifeCostResult::Paid { .. }
-            )
+            match crate::game::life_costs::pay_life_as_cost(state, player, amount, events) {
+                crate::game::life_costs::PayLifeCostResult::Paid { .. } => true,
+                crate::game::life_costs::PayLifeCostResult::PaidWithDeferredSubstitution {
+                    ..
+                }
+                | crate::game::life_costs::PayLifeCostResult::DeferredReplacementChoice {
+                    ..
+                } => {
+                    return MayCostOutcome::PausedForChoice {
+                        remaining_cost: None,
+                    };
+                }
+                crate::game::life_costs::PayLifeCostResult::InsufficientLife
+                | crate::game::life_costs::PayLifeCostResult::Prohibited => false,
+            }
         }
         AbilityCost::Composite { costs } => {
             // CR 614.12a: a composite accept-cost pays each sub-cost in order; a
@@ -3566,39 +3577,87 @@ fn life_reduced_applier(
 
 // --- 6b. LoseLife (oracle-parsed: e.g. Bloodletter of Aclazotz) ---
 
-fn lose_life_matcher(event: &ProposedEvent, source: ObjectId, state: &GameState) -> bool {
-    if let ProposedEvent::LifeLoss { player_id, .. } = event {
-        // Match when opponent loses life during source controller's turn
-        if let Some(obj) = state.objects.get(&source) {
-            *player_id != obj.controller && state.active_player == obj.controller
-        } else {
-            false
-        }
-    } else {
-        false
-    }
+fn lose_life_matcher(event: &ProposedEvent, _source: ObjectId, _state: &GameState) -> bool {
+    matches!(event, ProposedEvent::LifeLoss { .. })
 }
 
 fn lose_life_applier(
     event: ProposedEvent,
-    _rid: ReplacementId,
-    _state: &mut GameState,
+    rid: ReplacementId,
+    state: &mut GameState,
     _events: &mut Vec<GameEvent>,
 ) -> ApplyResult {
-    if let ProposedEvent::LifeLoss {
-        player_id,
-        amount,
-        applied,
-    } = event
-    {
-        ApplyResult::Modified(ProposedEvent::LifeLoss {
+    use crate::types::ability::QuantityModification;
+
+    let definition = state
+        .objects
+        .get(&rid.source)
+        .and_then(|obj| obj.replacement_definitions.get(rid.index));
+
+    if let Some(modification) = definition.and_then(|def| def.quantity_modification.clone()) {
+        let ProposedEvent::LifeLoss {
             player_id,
-            amount: amount * 2,
+            amount,
             applied,
-        })
-    } else {
-        ApplyResult::Modified(event)
+        } = event
+        else {
+            return ApplyResult::Modified(event);
+        };
+        let amount = match modification {
+            QuantityModification::Times { factor } => amount.saturating_mul(factor),
+            QuantityModification::Half => amount / 2,
+            QuantityModification::Plus { value } => amount.saturating_add(value),
+            QuantityModification::Minus { value } => amount.saturating_sub(value),
+            QuantityModification::Prevent => return ApplyResult::Prevented,
+        };
+        return ApplyResult::Modified(ProposedEvent::LifeLoss {
+            player_id,
+            amount,
+            applied,
+        });
     }
+
+    let Some(execute) = definition.and_then(|def| def.execute.as_deref()) else {
+        return ApplyResult::Modified(event);
+    };
+    if execute.sub_ability.is_none() {
+        if let (
+            ProposedEvent::LifeLoss {
+                player_id,
+                amount,
+                applied,
+            },
+            Effect::LoseLife {
+                amount: replacement_amount,
+                ..
+            },
+        ) = (&event, &*execute.effect)
+        {
+            if let Some(resolved) = resolve_event_replacement_quantity(replacement_amount, *amount)
+            {
+                return ApplyResult::Modified(ProposedEvent::LifeLoss {
+                    player_id: *player_id,
+                    amount: resolved.max(0) as u32,
+                    applied: applied.clone(),
+                });
+            }
+        }
+    }
+
+    // CR 614.1a + CR 614.6: A typed non-LifeLoss execute chain substitutes
+    // its effect for the life-loss event. The common replacement driver owns
+    // and drains that mandatory post-replacement continuation.
+    if !matches!(
+        &*execute.effect,
+        Effect::LoseLife { .. } | Effect::Unimplemented { .. }
+    ) {
+        if let ProposedEvent::LifeLoss { amount, .. } = event {
+            state.last_effect_count = Some(amount as i32);
+        }
+        return ApplyResult::Prevented;
+    }
+
+    ApplyResult::Modified(event)
 }
 
 // --- 7. AddCounter ---
@@ -6477,6 +6536,7 @@ fn object_replacement_candidate_applies(
         }
     }
     if let ProposedEvent::LifeGain { player_id, .. }
+    | ProposedEvent::LifeLoss { player_id, .. }
     | ProposedEvent::Draw { player_id, .. }
     | ProposedEvent::Scry { player_id, .. }
     | ProposedEvent::Mill { player_id, .. }
@@ -7122,6 +7182,40 @@ pub fn find_applicable_replacements(
                                 ObjectId(0),
                                 state,
                             ) {
+                                continue;
+                            }
+                        }
+                    }
+                    // CR 608.2c + CR 611.2c + CR 615.1a (issue #6682): an
+                    // OBJECT-population recipient (`valid_card` — Blinding
+                    // Fog's "creatures", Mutational Advantage's countered
+                    // permanents, Energy Arc's untapped-creatures tracked
+                    // set) must ALSO gate a GLOBAL (stack-sourced) shield's
+                    // OBJECT damage target, exactly as an object-hosted
+                    // shield's own per-object scan already enforces it.
+                    // Previously unreachable: every prior card whose prevent
+                    // clause carried a real `valid_card` recipient filter
+                    // happened to be sourced from a permanent already on the
+                    // battlefield (object-hosted path, checked elsewhere), so
+                    // this pending-registry path never needed to read it —
+                    // silently turning a scoped shield into a blanket one for
+                    // the FIRST instant/sorcery-sourced population recipient.
+                    // Player-target damage events are unaffected: a card-shaped
+                    // filter has no player to check against (mirrors why
+                    // `damage_target_filter` above is the player-side gate).
+                    if let Some(ref vc) = repl_def.valid_card {
+                        if let ProposedEvent::Damage {
+                            target: TargetRef::Object(obj_id),
+                            ..
+                        } = event
+                        {
+                            let ctx = match repl_def.source_controller {
+                                Some(pid) => {
+                                    FilterContext::from_source_with_controller(ObjectId(0), pid)
+                                }
+                                None => FilterContext::from_source(state, ObjectId(0)),
+                            };
+                            if !matches_target_filter(state, *obj_id, vc, &ctx) {
                                 continue;
                             }
                         }
@@ -9495,8 +9589,8 @@ mod tests {
     use crate::game::game_object::{AttachTarget, GameObject};
     use crate::types::ability::{
         AbilityCost, AbilityDefinition, AbilityKind, CastManaObjectScope, CastManaSpentMetric,
-        ChosenAttribute, ControllerRef, Effect, EffectScope, FilterProp, OriginConstraint,
-        PlayerFilter, PtValue, QuantityExpr, QuantityModification, QuantityRef,
+        ChosenAttribute, Comparator, ControllerRef, Effect, EffectScope, FilterProp,
+        OriginConstraint, PlayerFilter, PtValue, QuantityExpr, QuantityModification, QuantityRef,
         ReplacementDefinition, ReplacementMode, ReplacementPlayerScope, TapStateChange,
         TargetFilter, TargetRef, TypeFilter, TypedFilter,
     };
@@ -17547,7 +17641,13 @@ mod tests {
         let bloodletter = ObjectId(10);
         let repl = {
             let mut repl = ReplacementDefinition::new(ReplacementEvent::LoseLife)
-                .quantity_modification(QuantityModification::DOUBLE);
+                .quantity_modification(QuantityModification::DOUBLE)
+                .condition(ReplacementCondition::OnlyIfQuantity {
+                    lhs: QuantityExpr::Fixed { value: 0 },
+                    comparator: Comparator::EQ,
+                    rhs: QuantityExpr::Fixed { value: 0 },
+                    active_player_req: Some(ControllerRef::You),
+                });
             repl.valid_player = Some(ReplacementPlayerScope::Opponent);
             repl
         };
@@ -17578,13 +17678,151 @@ mod tests {
         assert_eq!(amount, 6);
     }
 
+    /// CR 109.5 + CR 614.1a: LoseLife recipient scope is independent of turn
+    /// ownership. Turn restrictions belong in `ReplacementCondition`.
+    #[test]
+    fn lose_life_player_scopes_apply_on_either_players_turn() {
+        let cases = [
+            (
+                ReplacementPlayerScope::You,
+                PlayerId(0),
+                true,
+                "You/controller",
+            ),
+            (
+                ReplacementPlayerScope::You,
+                PlayerId(1),
+                false,
+                "You/opponent",
+            ),
+            (
+                ReplacementPlayerScope::Opponent,
+                PlayerId(0),
+                false,
+                "Opponent/controller",
+            ),
+            (
+                ReplacementPlayerScope::Opponent,
+                PlayerId(1),
+                true,
+                "Opponent/opponent",
+            ),
+            (
+                ReplacementPlayerScope::AnyPlayer,
+                PlayerId(0),
+                true,
+                "AnyPlayer/controller",
+            ),
+            (
+                ReplacementPlayerScope::AnyPlayer,
+                PlayerId(1),
+                true,
+                "AnyPlayer/opponent",
+            ),
+        ];
+
+        for active_player in [PlayerId(0), PlayerId(1)] {
+            for (scope, recipient, should_double, label) in &cases {
+                let mut repl = ReplacementDefinition::new(ReplacementEvent::LoseLife)
+                    .quantity_modification(QuantityModification::DOUBLE);
+                repl.valid_player = Some(scope.clone());
+                let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+                state.active_player = active_player;
+                let mut events = Vec::new();
+
+                let result = replace_event(
+                    &mut state,
+                    ProposedEvent::LifeLoss {
+                        player_id: *recipient,
+                        amount: 3,
+                        applied: HashSet::new(),
+                    },
+                    &mut events,
+                );
+                let ReplacementResult::Execute(ProposedEvent::LifeLoss { amount, .. }) = result
+                else {
+                    panic!("{label} on P{}'s turn returned {result:?}", active_player.0);
+                };
+                assert_eq!(
+                    amount,
+                    if *should_double { 6 } else { 3 },
+                    "{label} on P{}'s turn",
+                    active_player.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lose_life_quantity_prevent_suppresses_event() {
+        let repl = {
+            let mut repl = ReplacementDefinition::new(ReplacementEvent::LoseLife)
+                .quantity_modification(QuantityModification::Prevent);
+            repl.valid_player = Some(ReplacementPlayerScope::Opponent);
+            repl
+        };
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        state.active_player = PlayerId(0);
+        let mut events = Vec::new();
+
+        let result = replace_event(
+            &mut state,
+            ProposedEvent::LifeLoss {
+                player_id: PlayerId(1),
+                amount: 3,
+                applied: HashSet::new(),
+            },
+            &mut events,
+        );
+
+        assert!(matches!(result, ReplacementResult::Prevented));
+    }
+
+    #[test]
+    fn lose_life_cross_event_execute_stashes_substitution() {
+        let mut repl =
+            ReplacementDefinition::new(ReplacementEvent::LoseLife).execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Ref {
+                        qty: crate::types::ability::QuantityRef::EventContextAmount,
+                    },
+                    player: TargetFilter::Controller,
+                },
+            ));
+        repl.valid_player = Some(ReplacementPlayerScope::Opponent);
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        state.active_player = PlayerId(0);
+        let mut events = Vec::new();
+
+        let result = replace_event(
+            &mut state,
+            ProposedEvent::LifeLoss {
+                player_id: PlayerId(1),
+                amount: 3,
+                applied: HashSet::new(),
+            },
+            &mut events,
+        );
+
+        assert!(matches!(result, ReplacementResult::Prevented));
+        assert_eq!(state.last_effect_count, Some(3));
+        assert!(state.has_post_replacement_drain());
+    }
+
     /// CR 614.1a: Bloodletter only doubles during the source controller's turn.
     #[test]
     fn bloodletter_does_not_double_on_opponents_turn() {
         let bloodletter = ObjectId(10);
         let repl = {
             let mut repl = ReplacementDefinition::new(ReplacementEvent::LoseLife)
-                .quantity_modification(QuantityModification::DOUBLE);
+                .quantity_modification(QuantityModification::DOUBLE)
+                .condition(ReplacementCondition::OnlyIfQuantity {
+                    lhs: QuantityExpr::Fixed { value: 0 },
+                    comparator: Comparator::EQ,
+                    rhs: QuantityExpr::Fixed { value: 0 },
+                    active_player_req: Some(ControllerRef::You),
+                });
             repl.valid_player = Some(ReplacementPlayerScope::Opponent);
             repl
         };
@@ -19236,13 +19474,17 @@ mod tests {
     }
 
     #[test]
-    fn global_store_damage_path_ignores_valid_card_filter() {
-        // REGRESSION (BLOCKER guard): the prevent_damage typed-recipient shield
-        // sets a `valid_card` recipient filter that is DELIBERATELY not enforced
-        // for damage (prevent_damage.rs: "global shields must match any damage
-        // event"). The generalized scan must still prevent a damage event whose
-        // recipient does NOT match that typed filter — i.e. the new valid_card
-        // gate must NOT run on the Damage path.
+    fn global_store_damage_path_ignores_valid_card_filter_for_player_targets() {
+        // A card-shaped `valid_card` recipient filter has no player to check
+        // against, so it must remain a no-op for a PLAYER-target damage
+        // event — the generalized scan must still prevent damage dealt to a
+        // player even though the shield's `valid_card` is creature-shaped.
+        // CR 608.2c + CR 615.1a (issue #6682): `valid_card` IS now enforced
+        // on this path for OBJECT-target damage events (see
+        // `find_applicable_replacements`'s dedicated `valid_card` gate,
+        // covered by `game::effects::prevent_damage::tests`'s tracked-set
+        // recipient tests) — this test pins the complementary player-target
+        // case, where the gate correctly does not apply.
         let registry = build_replacement_registry();
         let mut state = GameState::new_two_player(42);
         // Global prevention shield carrying a typed recipient valid_card filter
@@ -19266,6 +19508,73 @@ mod tests {
                 index: 0
             }],
             "damage prevention shield must remain a candidate despite a non-matching valid_card recipient filter"
+        );
+    }
+
+    /// CR 608.2c + CR 611.2c + CR 615.1a (issue #6682): a GLOBAL (stack-sourced)
+    /// prevention shield's `valid_card` recipient filter MUST gate an
+    /// OBJECT-target damage event — the mass/tracked-set recipient class
+    /// (Blinding Fog's "creatures", Mutational Advantage's countered
+    /// permanents, Energy Arc's untapped creatures) that only ever reaches
+    /// the pending registry because its source is an instant/sorcery on the
+    /// stack, never a battlefield permanent. Without this gate, ANY object
+    /// took damage as if the shield were unscoped.
+    #[test]
+    fn global_store_damage_path_enforces_valid_card_filter_for_object_targets() {
+        let registry = build_replacement_registry();
+        let mut state = GameState::new_two_player(42);
+        let mut land = GameObject::new(
+            ObjectId(30),
+            CardId(1),
+            PlayerId(0),
+            "Land".to_string(),
+            Zone::Battlefield,
+        );
+        land.card_types.core_types = vec![CoreType::Land];
+        state.objects.insert(ObjectId(30), land);
+        let mut creature = GameObject::new(
+            ObjectId(31),
+            CardId(2),
+            PlayerId(0),
+            "Creature".to_string(),
+            Zone::Battlefield,
+        );
+        creature.card_types.core_types = vec![CoreType::Creature];
+        state.objects.insert(ObjectId(31), creature);
+
+        let shield = ReplacementDefinition::new(ReplacementEvent::DamageDone)
+            .prevention_shield(PreventionAmount::All)
+            .valid_card(TargetFilter::Typed(TypedFilter::creature()));
+        state.pending_damage_replacements.push(shield);
+
+        // The land does NOT match the creature-shaped valid_card filter.
+        let land_event = ProposedEvent::Damage {
+            source_id: ObjectId(50),
+            target: TargetRef::Object(ObjectId(30)),
+            amount: 3,
+            is_combat: false,
+            applied: HashSet::new(),
+        };
+        assert!(
+            find_applicable_replacements(&state, &land_event, &registry).is_empty(),
+            "a non-matching object target must NOT be gated in by an unscoped shield"
+        );
+
+        // The creature DOES match.
+        let creature_event = ProposedEvent::Damage {
+            source_id: ObjectId(50),
+            target: TargetRef::Object(ObjectId(31)),
+            amount: 3,
+            is_combat: false,
+            applied: HashSet::new(),
+        };
+        assert_eq!(
+            find_applicable_replacements(&state, &creature_event, &registry),
+            vec![ReplacementId {
+                source: ObjectId(0),
+                index: 0
+            }],
+            "a matching object target must still be gated in"
         );
     }
 

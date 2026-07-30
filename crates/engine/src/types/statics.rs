@@ -1896,6 +1896,12 @@ pub enum StaticMode {
         filter: Option<ManaColor>,
         action: StepEndManaAction,
     },
+    /// CR 106.4 + CR 119.3: If an affected player loses unspent mana as a
+    /// step or phase ends, that player loses that much life.
+    ///
+    /// This is a boolean rule modification: multiple active instances do not
+    /// multiply the life loss caused by a single mana-loss event.
+    UnspentManaLossCausesLifeLoss,
     /// CR 702.3b: Allows creatures with defender to attack despite having the keyword.
     /// "can attack as though it didn't have defender" overrides the defender restriction.
     CanAttackWithDefender,
@@ -2141,6 +2147,7 @@ pub enum StaticModeKind {
     SpendManaAsAnyColor,
     PayLifeAsColoredMana,
     StepEndUnspentMana,
+    UnspentManaLossCausesLifeLoss,
     CanAttackWithDefender,
     AttackOnlyNeighbor,
     IgnoreLandwalkForBlocking,
@@ -2284,6 +2291,9 @@ impl StaticMode {
             StaticMode::SpendManaAsAnyColor { .. } => StaticModeKind::SpendManaAsAnyColor,
             StaticMode::PayLifeAsColoredMana { .. } => StaticModeKind::PayLifeAsColoredMana,
             StaticMode::StepEndUnspentMana { .. } => StaticModeKind::StepEndUnspentMana,
+            StaticMode::UnspentManaLossCausesLifeLoss => {
+                StaticModeKind::UnspentManaLossCausesLifeLoss
+            }
             StaticMode::CanAttackWithDefender => StaticModeKind::CanAttackWithDefender,
             StaticMode::AttackOnlyNeighbor => StaticModeKind::AttackOnlyNeighbor,
             StaticMode::IgnoreLandwalkForBlocking { .. } => {
@@ -2405,6 +2415,7 @@ impl Hash for StaticMode {
                 filter.hash(state);
                 action.hash(state);
             }
+            StaticMode::UnspentManaLossCausesLifeLoss => {}
             StaticMode::IgnoreLandwalkForBlocking { qualifier } => qualifier.hash(state),
             StaticMode::Other(s) => s.hash(state),
             StaticMode::GraveyardCastPermission {
@@ -2638,6 +2649,7 @@ impl StaticMode {
             | StaticMode::SpendManaAsAnyColor { .. }
             | StaticMode::PayLifeAsColoredMana { .. }
             | StaticMode::StepEndUnspentMana { .. }
+            | StaticMode::UnspentManaLossCausesLifeLoss
             | StaticMode::CanAttackWithDefender
             | StaticMode::IgnoreLandwalkForBlocking { .. }
             | StaticMode::CanActivateAbilitiesAsThoughHaste
@@ -3041,6 +3053,9 @@ impl fmt::Display for StaticMode {
             }
             StaticMode::StepEndUnspentMana { filter, action } => {
                 write!(f, "StepEndUnspentMana({filter:?},{action})")
+            }
+            StaticMode::UnspentManaLossCausesLifeLoss => {
+                write!(f, "UnspentManaLossCausesLifeLoss")
             }
             StaticMode::CanAttackWithDefender => write!(f, "CanAttackWithDefender"),
             // CR 509.1b + CR 609.4 + CR 702.14c: Display follows the existing
@@ -3505,6 +3520,7 @@ impl FromStr for StaticMode {
             "CanActivateAbilitiesAsThoughHaste" => StaticMode::CanActivateAbilitiesAsThoughHaste,
             "CanBlockShadow" => StaticMode::CanBlockShadow,
             s if s.starts_with("StepEndUnspentMana(") => StaticMode::Other(s.to_string()),
+            "UnspentManaLossCausesLifeLoss" => StaticMode::UnspentManaLossCausesLifeLoss,
             "UntapsDuringEachOtherPlayersUntapStep" => {
                 StaticMode::UntapsDuringEachOtherPlayersUntapStep
             }

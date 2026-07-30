@@ -477,6 +477,118 @@ fn ability_chain_has_unimplemented(ability: &AbilityDefinition) -> bool {
             .is_some_and(ability_chain_has_unimplemented)
 }
 
+/// CR 608.2c + CR 701.24a + CR 121.1 + CR 120.3: Molten Psyche's complete
+/// Oracle text keeps the all-player hand-to-library shuffle inside each player
+/// pass, then starts a distinct all-player draw instruction. Its Metalcraft
+/// rider must bind "that player" to the `DamageEachPlayer` recipient rather
+/// than the spell controller.
+#[test]
+fn molten_psyche_full_oracle_text_has_scoped_shuffle_and_recipient_damage() {
+    let parsed = parse_oracle_text(
+        "Each player shuffles the cards from their hand into their library, then draws that many cards.\n\
+         Metalcraft — If you control three or more artifacts, Molten Psyche deals damage to each opponent equal to the number of cards that player has drawn this turn.",
+        "Molten Psyche",
+        &[],
+        &["Sorcery".to_string()],
+        &[],
+    );
+    assert!(
+        parsed.parse_warnings.is_empty(),
+        "Molten Psyche must parse cleanly: {:?}",
+        parsed.parse_warnings
+    );
+    let ability = parsed
+        .abilities
+        .first()
+        .expect("Molten Psyche must produce one spell ability");
+    assert!(
+        parsed
+            .abilities
+            .iter()
+            .all(|ability| !ability_chain_has_unimplemented(ability)),
+        "Molten Psyche must not retain an Unimplemented node: {:#?}",
+        parsed.abilities
+    );
+    assert_eq!(ability.player_scope, Some(PlayerFilter::All));
+    assert!(matches!(
+        &*ability.effect,
+        Effect::ChangeZoneAll {
+            origin: Some(Zone::Hand),
+            destination: Zone::Library,
+            target: TargetFilter::ScopedPlayer,
+            ..
+        }
+    ));
+
+    let shuffle = ability
+        .sub_ability
+        .as_deref()
+        .expect("hand move must continue to its terminal shuffle");
+    assert!(matches!(
+        &*shuffle.effect,
+        Effect::Shuffle {
+            target: TargetFilter::ScopedPlayer
+        }
+    ));
+
+    let draw = shuffle
+        .sub_ability
+        .as_deref()
+        .expect("shuffle must be followed by the all-player draw instruction");
+    assert_eq!(draw.player_scope, Some(PlayerFilter::All));
+    assert!(matches!(
+        &*draw.effect,
+        Effect::Draw {
+            count: QuantityExpr::Ref {
+                qty: QuantityRef::EventContextAmount
+            },
+            target: TargetFilter::Controller,
+        }
+    ));
+
+    fn find_damage_each_player(ability: &AbilityDefinition) -> Option<&AbilityDefinition> {
+        if matches!(*ability.effect, Effect::DamageEachPlayer { .. }) {
+            return Some(ability);
+        }
+        ability
+            .sub_ability
+            .as_deref()
+            .and_then(find_damage_each_player)
+            .or_else(|| {
+                ability
+                    .else_ability
+                    .as_deref()
+                    .and_then(find_damage_each_player)
+            })
+    }
+
+    let damage = parsed
+        .abilities
+        .iter()
+        .find_map(find_damage_each_player)
+        .unwrap_or_else(|| {
+            panic!(
+                "Metalcraft rider must lower to DamageEachPlayer: {:#?}",
+                parsed.abilities
+            )
+        });
+    assert!(
+        damage.condition.is_some(),
+        "Metalcraft rider must stay conditional"
+    );
+    assert!(matches!(
+        &*damage.effect,
+        Effect::DamageEachPlayer {
+            player_filter: PlayerFilter::Opponent,
+            amount: QuantityExpr::Ref {
+                qty: QuantityRef::CardsDrawnThisTurn {
+                    player: PlayerScope::ScopedPlayer,
+                },
+            },
+        }
+    ));
+}
+
 /// CR 510.1a + CR 613.11: Plagon, Lord of the Beach — the singular one-shot
 /// EFFECT form "Target creature you control assigns combat damage equal to its
 /// toughness rather than its power this turn". The effect pipeline deconjugates
@@ -7730,18 +7842,15 @@ fn suffer_the_past_exiles_from_target_player_graveyard() {
 
 #[test]
 fn relic_of_progenitus_target_player_exiles_from_their_graveyard() {
-    // GitHub phase-rs/phase#1077: "target player [verb]s ... from their
-    // [zone]" is a different grammatical shape than Suffer the Past's direct
-    // "target player's graveyard" possessive above — here "target player" is
-    // an explicit target declaration, so the ability lowers to a
-    // `TargetOnly { target: Player }` wrapper around a `sub_ability` holding
-    // the actual `ChangeZone` (mirrors Memory's Journey's "shuffles ... from
-    // their graveyard" wrapping just above in `lower_subject_predicate_ast`).
-    // The zone-suffix parser treats "their" as scope-agnostic
-    // (`Owned { controller: ScopedPlayer }`); this test pins that the
-    // rebind at that wrapping site resolves it to the actual targeted
-    // player, not the activator. Same class also covers Scrabbling Claws,
-    // Merrow Bonegnawer, Graveyard Shovel, Grave Birthing, and Gravestorm.
+    // GitHub phase-rs/phase#6446 (supersedes #1077 Stack+TargetPlayer framing):
+    // "Target player exiles a card from their graveyard." The ability targets
+    // ONLY the player (CR 115.1c). The card is an untargeted resolution choice
+    // by that player (CR 115.10a + CR 608.2d) — `Owned{ScopedPlayer}` +
+    // `TargetChoiceTiming::Resolution` — so companion TargetPlayer and card
+    // object stack slots do not appear (exactly one target slot).
+    // Same class: Scrabbling Claws, Merrow Bonegnawer, Graveyard Shovel,
+    // Grave Birthing, Gravestorm. Contrast Memory's Journey ("target cards
+    // from their graveyard") which stays Stack + Owned{TargetPlayer}.
     let def = parse_effect_chain(
         "Target player exiles a card from their graveyard.",
         AbilityKind::Activated,
@@ -7761,6 +7870,11 @@ fn relic_of_progenitus_target_player_exiles_from_their_graveyard() {
         .sub_ability
         .as_ref()
         .expect("exile effect should be in sub-ability after the player target");
+    assert_eq!(
+        sub.target_choice_timing,
+        TargetChoiceTiming::Resolution,
+        "GY card is chosen at resolution, not announced as a stack target"
+    );
     let Effect::ChangeZone {
         origin,
         destination,
@@ -7790,15 +7904,31 @@ fn relic_of_progenitus_target_player_exiles_from_their_graveyard() {
     );
     assert!(
         typed.properties.contains(&FilterProp::Owned {
-            controller: ControllerRef::TargetPlayer
+            controller: ControllerRef::ScopedPlayer
         }),
-        "target must be constrained to the TARGETED player's graveyard, not the activator's — got {typed:?}"
+        "must keep ScopedPlayer so the targeted player chooses at resolution — got {typed:?}"
     );
     assert!(
         !typed.properties.contains(&FilterProp::Owned {
-            controller: ControllerRef::ScopedPlayer
+            controller: ControllerRef::TargetPlayer
         }),
-        "must not retain the stale scope-agnostic ScopedPlayer binding, got {typed:?}"
+        "must not rebind to TargetPlayer (that forced activator stack targeting) — got {typed:?}"
+    );
+
+    // Exactly one stack slot (the player). Revert Resolution stamp or
+    // TargetPlayer rebind → companion + card slots → len 2 or 3.
+    let state = crate::types::game_state::GameState::new_two_player(42);
+    let resolved = crate::game::ability_utils::build_resolved_from_def(
+        &def,
+        crate::types::identifiers::ObjectId(1),
+        crate::types::player::PlayerId(0),
+    );
+    let slots = crate::game::ability_utils::build_target_slots(&state, &resolved)
+        .expect("Relic first ability must build target slots");
+    assert_eq!(
+        slots.len(),
+        1,
+        "exactly one stack target (the player); got {slots:?}"
     );
 }
 
@@ -11503,6 +11633,177 @@ fn effect_its_controller_manifests_top_card() {
         "expected subject-predicate Manifest {{ ParentTargetController, count: 1, enters_under: None }}, got: {:?}",
         sub.effect
     );
+}
+
+/// The all-player shuffle target normalizer owns only its immediate
+/// hand-to-library move/shuffle pair. It must neither retarget nearby library
+/// moves nor overwrite a concrete/anaphoric player target.
+#[test]
+fn all_player_hand_shuffle_normalizer_requires_an_immediate_defaulted_pair() {
+    fn move_to_library(origin: Zone, target: TargetFilter) -> Effect {
+        Effect::ChangeZoneAll {
+            origin: Some(origin),
+            destination: Zone::Library,
+            target,
+            enters_under: None,
+            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enter_with_counters: vec![],
+            face_down_profile: None,
+            library_position: None,
+            random_order: false,
+        }
+    }
+
+    fn all_player_chain(effects: Vec<Effect>) -> AbilityDefinition {
+        let mut effects = effects.into_iter().rev();
+        let mut chain = AbilityDefinition::new(
+            AbilityKind::Spell,
+            effects.next().expect("test chain has an effect"),
+        );
+        for effect in effects {
+            let mut head = AbilityDefinition::new(AbilityKind::Spell, effect);
+            head.sub_ability = Some(Box::new(chain));
+            chain = head;
+        }
+        chain.player_scope = Some(PlayerFilter::All);
+        chain
+    }
+
+    let mut exact = all_player_chain(vec![
+        move_to_library(Zone::Hand, TargetFilter::Controller),
+        Effect::Shuffle {
+            target: TargetFilter::Any,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut exact);
+    assert!(matches!(
+        &*exact.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::ScopedPlayer,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*exact.sub_ability.expect("immediate shuffle").effect,
+        Effect::Shuffle {
+            target: TargetFilter::ScopedPlayer,
+        }
+    ));
+
+    let mut non_hand = all_player_chain(vec![
+        move_to_library(Zone::Graveyard, TargetFilter::Controller),
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut non_hand);
+    assert!(matches!(
+        &*non_hand.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*non_hand
+            .sub_ability
+            .expect("shuffle after non-hand move")
+            .effect,
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        }
+    ));
+
+    let mut anaphoric_target = all_player_chain(vec![
+        move_to_library(Zone::Hand, TargetFilter::ParentTargetController),
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut anaphoric_target);
+    assert!(matches!(
+        &*anaphoric_target.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::ParentTargetController,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*anaphoric_target
+            .sub_ability
+            .expect("shuffle after anaphoric move")
+            .effect,
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        }
+    ));
+
+    let mut intervening_move = all_player_chain(vec![
+        move_to_library(Zone::Hand, TargetFilter::Controller),
+        move_to_library(Zone::Graveyard, TargetFilter::Any),
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut intervening_move);
+    assert!(matches!(
+        &*intervening_move.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
+    let intermediate = intervening_move
+        .sub_ability
+        .as_deref()
+        .expect("intervening library move");
+    assert!(matches!(
+        &*intermediate.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::Any,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*intermediate
+            .sub_ability
+            .as_deref()
+            .expect("terminal shuffle")
+            .effect,
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        }
+    ));
+
+    let mut intervening_draw = all_player_chain(vec![
+        move_to_library(Zone::Hand, TargetFilter::Controller),
+        Effect::Draw {
+            count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::Controller,
+        },
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut intervening_draw);
+    assert!(matches!(
+        &*intervening_draw.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*intervening_draw
+            .sub_ability
+            .as_deref()
+            .expect("intervening draw")
+            .effect,
+        Effect::Draw {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -18414,6 +18715,81 @@ fn kicker_instead_chain_produces_correct_condition() {
     ));
 }
 
+/// Issue #6507 review follow-up: `Effect::Populate` has no `target` field
+/// (`target_filter()` is `None`, just like a mana ability's untargeted `Add`),
+/// but it DOES publish a created-token referent via
+/// `chain_prior_referent_is_created_token` — the same "populate anaphor
+/// chain" class documented at the sacrifice imperative's bare-"it" binding.
+/// A conditional "sacrifice it" tail after Populate must keep inheriting the
+/// populated token (`ParentTarget`, rewritten to `LastCreated` by
+/// `rewrite_parent_target_to_last_created`) — NOT get rebound to `SelfRef`,
+/// which would sacrifice the ability's source instead of the populated copy.
+#[test]
+fn populate_conditional_sacrifice_keeps_created_token_not_self_ref() {
+    let ability = parse_effect_chain(
+        "Populate. If it was kicked, sacrifice it.",
+        AbilityKind::Spell,
+    );
+    assert!(matches!(&*ability.effect, Effect::Populate));
+    let sub = ability.sub_ability.as_ref().expect("expected sub_ability");
+    assert!(
+        sub.condition.is_some(),
+        "expected the 'if it was kicked' gate to survive as a condition"
+    );
+    let Effect::Sacrifice { target, .. } = &*sub.effect else {
+        panic!("expected Effect::Sacrifice, got {:?}", sub.effect);
+    };
+    assert_eq!(
+        *target,
+        TargetFilter::LastCreated,
+        "sacrifice target must bind to the populated token (LastCreated), \
+         not fall back to SelfRef (the ability's own source)"
+    );
+}
+
+/// Issue #6507 review follow-up (HIGH): an `Otherwise` else-branch is parsed
+/// as its own recursive `parse_effect_chain_ir` call whose own `clauses` start
+/// empty (see `parse_effect_chain_ir`'s "Otherwise" handler) — so a naive
+/// "does the immediately-preceding INTERNAL clause expose a target?" check
+/// can never see an outer referent established BEFORE the paired conditional
+/// (Brilliance Unleashed's class). That outer referent is exactly what
+/// `ctx.parent_target_available` carries across the recursive call for. Drive
+/// the recursive parser directly with `parent_target_available: true` seeded
+/// (mirroring what the "Otherwise" handler seeds from a real outer typed
+/// target) to prove the no-antecedent Sacrifice fallback defers to it: a
+/// targetless inner clause (`create an emblem` has no `target` field, so it
+/// looks exactly like Gemstone Mine's untargeted mana ability in isolation)
+/// followed by a conditional "sacrifice it" must still resolve to
+/// `ParentTarget` — inheriting the outer referent — not get misrouted to
+/// `SelfRef` (the ability's own source).
+#[test]
+fn conditional_sacrifice_defers_to_seeded_parent_target_available() {
+    let mut ctx = ParseContext {
+        parent_target_available: true,
+        ..Default::default()
+    };
+    let ability = parse_effect_chain_with_context(
+        "create an emblem. If it wasn't kicked, sacrifice it.",
+        AbilityKind::Spell,
+        &mut ctx,
+    );
+    assert!(matches!(&*ability.effect, Effect::Unimplemented { .. }));
+    let sac = ability
+        .sub_ability
+        .as_ref()
+        .expect("expected the conditional sacrifice chained after the targetless clause");
+    let Effect::Sacrifice { target, .. } = &*sac.effect else {
+        panic!("expected Effect::Sacrifice, got {:?}", sac.effect);
+    };
+    assert_eq!(
+        *target,
+        TargetFilter::ParentTarget,
+        "with parent_target_available seeded (simulating an inherited outer \
+         referent from an enclosing Otherwise chain), sacrifice must keep \
+         ParentTarget, not fall back to SelfRef"
+    );
+}
+
 #[test]
 fn kicker_leading_instead_produces_correct_condition() {
     // CR 608.2c: "if kicked, instead [effect]" — leading "instead" variant.
@@ -24151,7 +24527,10 @@ fn gollum_scheming_guide_guess_sequence_has_no_unimplemented() {
                 && matches!(
                     node.effect.as_ref(),
                     Effect::Choose {
-                        choice_type: ChoiceType::Opponent { restriction: None },
+                        choice_type: ChoiceType::Opponent {
+                            restriction: None,
+                            ..
+                        },
                         persist: false,
                         ..
                     }
@@ -24364,7 +24743,10 @@ fn committed_choice_guess_chooses_single_opponent_before_guess() {
         matches!(
             choose_opponent.effect.as_ref(),
             Effect::Choose {
-                choice_type: ChoiceType::Opponent { restriction: None },
+                choice_type: ChoiceType::Opponent {
+                    restriction: None,
+                    ..
+                },
                 persist: false,
                 ..
             }
@@ -38889,6 +39271,7 @@ fn the_master_most_life_villainous_choice() {
             choice_type:
                 ChoiceType::Opponent {
                     restriction: Some(restriction),
+                    ..
                 },
             persist,
             ..
@@ -49233,6 +49616,151 @@ fn they_binds_producer_population_across_mass_effect_family() {
              population precedes it"
         );
     }
+}
+
+/// CR 611.2c + CR 615.11 (issue #6682): Mutational Advantage's second clause
+/// ("Prevent all damage that would be dealt to those permanents this turn")
+/// must NOT collapse to the `Any` fallback that silently protected every
+/// permanent in the game, including opponents'. "Those permanents" resolves
+/// to a `TrackedSet` sentinel — `parse_target`'s existing dispatch for the
+/// phrase (shared with Energy Arc's target-derived "those creatures") —
+/// which `prevent_damage::resolve` then resolves to a concrete, FROZEN set
+/// id at shield-creation time (see
+/// `mutational_advantage_shield_freezes_population_at_resolution` in
+/// `game::effects::prevent_damage::tests` for the runtime freeze semantics:
+/// verified against the official ruling that "the set of permanents
+/// affected by Mutational Advantage is determined at the time Mutational
+/// Advantage resolves"). Binding directly to a live copy of the grant's
+/// filter would re-check "has a counter" at every future damage event,
+/// which the ruling explicitly forbids.
+#[test]
+fn mutational_advantage_prevent_binds_to_countered_permanents_population() {
+    let def = parse_effect_chain(
+        "Permanents you control with counters on them gain hexproof and indestructible \
+         until end of turn. Prevent all damage that would be dealt to those permanents \
+         this turn.",
+        AbilityKind::Spell,
+    );
+
+    let Effect::GenericEffect {
+        static_abilities,
+        target: None,
+        ..
+    } = &*def.effect
+    else {
+        panic!(
+            "expected the hexproof/indestructible grant, got {:?}",
+            def.effect
+        );
+    };
+    static_abilities
+        .first()
+        .and_then(|sd| sd.affected.clone())
+        .expect("the grant clause must carry an affected population filter");
+
+    let prevent = def
+        .sub_ability
+        .as_deref()
+        .expect("the prevent clause must chain after the grant");
+    let Effect::PreventDamage { target, .. } = &*prevent.effect else {
+        panic!("expected PreventDamage, got {:?}", prevent.effect);
+    };
+    assert_eq!(
+        *target,
+        TargetFilter::TrackedSet {
+            id: crate::types::identifiers::TrackedSetId(0)
+        },
+        "\"those permanents\" must resolve to the TrackedSet sentinel, not a live copy \
+         of the grant's filter (which would re-check \"has a counter\" live) or Any"
+    );
+}
+
+/// CR 615.1 (issue #6682): Blinding Fog's bare "creatures" recipient (no
+/// anaphor, no antecedent clause — the prevent clause comes FIRST) must
+/// resolve to an unqualified `Typed(Creature)` mass filter via `parse_target`'s
+/// shared grammar, not the `Any` fallback that silently prevented damage to
+/// players too.
+#[test]
+fn blinding_fog_prevent_binds_to_bare_creatures_recipient() {
+    let def = parse_effect_chain(
+        "Prevent all damage that would be dealt to creatures this turn. Creatures you \
+         control gain hexproof until end of turn.",
+        AbilityKind::Spell,
+    );
+    let Effect::PreventDamage { target, .. } = &*def.effect else {
+        panic!("expected PreventDamage, got {:?}", def.effect);
+    };
+    assert!(
+        matches!(
+            target,
+            TargetFilter::Typed(tf)
+                if tf.type_filters.contains(&TypeFilter::Creature) && tf.controller.is_none()
+        ),
+        "bare \"creatures\" must resolve to an unqualified Typed(Creature) filter, got {target:?}"
+    );
+}
+
+/// CR 615.1 (issue #6682): Defend the Hearth's bare "players" recipient must
+/// resolve to `TargetFilter::Player`, not the `Any` fallback that silently
+/// prevented combat damage to creatures too.
+#[test]
+fn defend_the_hearth_prevent_binds_to_bare_players_recipient() {
+    let def = parse_effect_chain(
+        "Prevent all combat damage that would be dealt to players this turn.",
+        AbilityKind::Spell,
+    );
+    let Effect::PreventDamage { target, scope, .. } = &*def.effect else {
+        panic!("expected PreventDamage, got {:?}", def.effect);
+    };
+    assert_eq!(*target, TargetFilter::Player);
+    assert_eq!(*scope, PreventionScope::CombatDamage);
+}
+
+/// CR 608.2c + CR 615 (issue #6682): Energy Arc's bidirectional "dealt to and
+/// dealt by those creatures" must bind BOTH shields to the untapped creatures
+/// selected by the preceding clause — a target-derived tracked-set anaphor —
+/// not the `Any` fallback that silently protected/exposed every creature.
+#[test]
+fn energy_arc_bidirectional_prevent_binds_to_untapped_targets() {
+    let def = parse_effect_chain(
+        "Untap any number of target creatures. Prevent all combat damage that would be \
+         dealt to and dealt by those creatures this turn.",
+        AbilityKind::Spell,
+    );
+    let prevent = def
+        .sub_ability
+        .as_deref()
+        .expect("the prevent clause must chain after the untap");
+    let Effect::PreventDamage { target, .. } = &*prevent.effect else {
+        panic!(
+            "expected the recipient (\"to\") shield, got {:?}",
+            prevent.effect
+        );
+    };
+    assert!(
+        matches!(target, TargetFilter::TrackedSet { .. }),
+        "the recipient shield must bind to the untapped-creatures tracked set, got {target:?}"
+    );
+    assert_ne!(*target, TargetFilter::Any);
+
+    let by_ability = prevent
+        .sub_ability
+        .as_deref()
+        .expect("the source (\"by\") shield must chain as a sequential sibling");
+    let Effect::PreventDamage {
+        damage_source_filter,
+        ..
+    } = &*by_ability.effect
+    else {
+        panic!(
+            "expected the source (\"by\") shield, got {:?}",
+            by_ability.effect
+        );
+    };
+    assert!(
+        matches!(damage_source_filter, Some(TargetFilter::TrackedSet { .. })),
+        "the source shield must also bind to the same tracked set, got {damage_source_filter:?}"
+    );
 }
 
 /// CR 111.3 + CR 118.12: A token created "with" a quoted activated ability whose

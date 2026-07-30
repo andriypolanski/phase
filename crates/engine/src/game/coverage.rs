@@ -2030,7 +2030,7 @@ fn fmt_choice_type(ct: &ChoiceType) -> String {
         ChoiceType::CardPredicate { .. } => "card predicate",
         ChoiceType::CardPredicateGuess { .. } => "card predicate guess",
         ChoiceType::Opponent { .. } => "opponent",
-        ChoiceType::Player => "player",
+        ChoiceType::Player { .. } => "player",
         ChoiceType::TwoColors => "two colors",
         ChoiceType::Word => "word",
         ChoiceType::Artist => "artist",
@@ -9164,6 +9164,10 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
                         && effective_lower.contains("becomes")
                 }
             },
+            StaticMode::UnspentManaLossCausesLifeLoss => {
+                effective_lower.contains("losing unspent mana")
+                    && effective_lower.contains("causes that player to lose that much life")
+            }
             StaticMode::CanAttackWithDefender => {
                 effective_lower.contains("as though it didn't have defender")
             }
