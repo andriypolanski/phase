@@ -4669,6 +4669,31 @@ pub(super) fn handle_resolution_choice(
                 // Issue #423 audit: no cards chosen — this branch moves no
                 // objects and emits no battlefield-exit events, so no
                 // dies-trigger collection is needed.
+                //
+                // CR 603.7: Terminal empty `up_to` must still rebind a fresh
+                // empty chain tracked set before the continuation drains, or a
+                // following `TargetFilter::TrackedSet` can observe a prior
+                // non-empty set. Mid-pause empty publishes stay skipped at the
+                // NeedsAura / NeedsChoice call sites (`mid_pause: true`).
+                if matches!(
+                    effect_kind,
+                    EffectKind::Sacrifice
+                        | EffectKind::ChangeZone
+                        | EffectKind::BounceAll
+                        | EffectKind::Tap
+                        | EffectKind::Untap
+                        | EffectKind::PutAtLibraryPosition
+                        | EffectKind::CastFromZone
+                ) && state.active_ability_continuation().is_some()
+                {
+                    publish_effect_zone_choice_tracked_set(
+                        state,
+                        effect_kind,
+                        &[],
+                        library_position,
+                        false,
+                    );
+                }
                 state.last_effect_count = Some(0);
                 events.push(GameEvent::EffectResolved {
                     kind: effect_kind,
@@ -9594,16 +9619,33 @@ mod tests {
     }
 
     /// CR 603.7: Terminal `up_to` EffectZoneChoice with zero cards selected must
-    /// rebind a fresh empty chain tracked set so a following TrackedSet consumer
-    /// cannot reuse a prior non-empty set. Mid-pause empty publishes stay skipped.
+    /// rebind a fresh empty chain tracked set through the production
+    /// `handle_resolution_choice` path so a following TrackedSet consumer cannot
+    /// reuse a prior non-empty set. Mid-pause empty publishes stay skipped.
     #[test]
     fn terminal_empty_up_to_effect_zone_choice_rebinds_empty_tracked_set() {
-        use crate::types::ability::{Effect, ResolvedAbility};
+        use crate::types::ability::{
+            CastingPermission, Effect, PermissionGrantee, ResolvedAbility,
+        };
         use crate::types::game_state::PendingContinuation;
         use crate::types::identifiers::TrackedSetId;
         use crate::types::zones::EtbTapState;
 
         let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source".to_string(),
+            Zone::Battlefield,
+        );
+        let eligible = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Eligible Aura".to_string(),
+            Zone::Graveyard,
+        );
         let stale = create_object(
             &mut state,
             CardId(5),
@@ -9617,28 +9659,6 @@ mod tests {
         state.next_tracked_set_id = 2;
         state.chain_tracked_set_id = Some(TrackedSetId(1));
 
-        let continuation = ResolvedAbility::new(
-            Effect::ChangeZone {
-                origin: Some(Zone::Graveyard),
-                destination: Zone::Battlefield,
-                target: TargetFilter::Typed(TypedFilter::default().subtype("Aura".into())),
-                owner_library: false,
-                enter_transformed: false,
-                enters_under: None,
-                enter_tapped: EtbTapState::Unspecified,
-                enters_attacking: false,
-                up_to: false,
-                enter_with_counters: vec![],
-                conditional_enter_with_counters: vec![],
-                face_down_profile: None,
-                enters_modified_if: None,
-            },
-            vec![],
-            ObjectId(99),
-            PlayerId(0),
-        );
-        state.park_ability_continuation(PendingContinuation::new(Box::new(continuation), &state));
-
         // Mid-pause empty must not rebind (Storm Herald Aura-host pause).
         publish_effect_zone_choice_tracked_set(&mut state, EffectKind::ChangeZone, &[], None, true);
         assert_eq!(state.chain_tracked_set_id, Some(TrackedSetId(1)));
@@ -9647,18 +9667,80 @@ mod tests {
             Some(&vec![stale])
         );
 
-        // Terminal empty up_to completion must rebind a fresh empty set.
-        publish_effect_zone_choice_tracked_set(
+        // Continuation consumes the chain tracked set — must observe the fresh
+        // empty set from terminal zero-choice, not the stale prior members.
+        state.park_ability_continuation(PendingContinuation::new(
+            Box::new(ResolvedAbility::new(
+                Effect::GrantCastingPermission {
+                    permission: CastingPermission::Plotted { turn_plotted: 0 },
+                    target: TargetFilter::TrackedSet {
+                        id: TrackedSetId(0),
+                    },
+                    grantee: PermissionGrantee::ObjectOwner,
+                },
+                vec![],
+                source,
+                PlayerId(0),
+            )),
+            &state,
+        ));
+
+        let waiting = WaitingFor::EffectZoneChoice {
+            player: PlayerId(0),
+            cards: vec![eligible],
+            count: 1,
+            min_count: 0,
+            up_to: true,
+            source_id: source,
+            effect_kind: EffectKind::ChangeZone,
+            zone: Zone::Graveyard,
+            destination: Some(Zone::Battlefield),
+            enter_tapped: EtbTapState::Unspecified,
+            enter_transformed: false,
+            enters_under_player: None,
+            enters_attacking: false,
+            owner_library: false,
+            track_exiled_by_source: false,
+            face_down_profile: None,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            count_param: 0,
+            library_position: None,
+            is_cost_payment: false,
+            enters_modified_if: None,
+            duration: None,
+        };
+        state.waiting_for = waiting.clone();
+
+        let mut events = Vec::new();
+        handle_resolution_choice(
             &mut state,
-            EffectKind::ChangeZone,
-            &[],
-            None,
-            false,
+            waiting,
+            GameAction::SelectCards { cards: vec![] },
+            &mut events,
+        )
+        .expect("terminal empty up_to EffectZoneChoice resolves");
+
+        assert_eq!(
+            state.chain_tracked_set_id,
+            Some(TrackedSetId(2)),
+            "production empty up_to path must rebind a fresh chain tracked set"
         );
-        assert_eq!(state.chain_tracked_set_id, Some(TrackedSetId(2)));
         assert!(state
             .tracked_object_sets
             .get(&TrackedSetId(2))
             .is_some_and(|objects| objects.is_empty()));
+        assert!(
+            state
+                .objects
+                .get(&stale)
+                .is_some_and(|obj| obj.casting_permissions.is_empty()),
+            "TrackedSet continuation must not grant against the prior non-empty set"
+        );
+        assert_eq!(
+            state.objects.get(&eligible).map(|obj| obj.zone),
+            Some(Zone::Graveyard),
+            "zero-choice must leave eligible cards unmoved"
+        );
     }
 }
