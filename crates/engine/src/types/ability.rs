@@ -23329,6 +23329,11 @@ impl ResolvedAbility {
     /// CR 400.7 + CR 704.5m: True when this ability returns `SelfRef` from the
     /// graveyard and the source is now there after an SBA move that followed a
     /// battlefield latch (AttachedTo dies → Aura to GY before resolution).
+    ///
+    /// Provenance mirrors `self_ref_own_departure_successor`: the BF→GY record
+    /// must carry the captured source identity (incarnation), and no later
+    /// same-id zone change may have occurred — a same-id blink/re-entry must
+    /// not be rebound as the old source.
     fn self_ref_post_sba_graveyard_return(
         &self,
         state: &crate::types::game_state::GameState,
@@ -23345,10 +23350,40 @@ impl ResolvedAbility {
         if !self.effect_returns_self_ref_from_graveyard() {
             return false;
         }
-        state
+        if !state
             .objects
             .get(&self.source_id)
             .is_some_and(|object| object.zone == crate::types::zones::Zone::Graveyard)
+        {
+            return false;
+        }
+
+        // CR 400.7e: Find the BF→GY departure whose captured identity matches
+        // the ability's latched stamp, then require it is still the latest
+        // same-id zone change this turn.
+        let Some(departure_index) = state
+            .zone_changes_this_turn
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, record)| {
+                (record.object_id == self.source_id
+                    && record.from_zone == Some(crate::types::zones::Zone::Battlefield)
+                    && record.to_zone == crate::types::zones::Zone::Graveyard
+                    && record.trigger_source_context().is_some_and(|event_source| {
+                        event_source.identity.reference == source.identity.reference
+                    }))
+                .then_some(index)
+            })
+        else {
+            return false;
+        };
+
+        state
+            .zone_changes_this_turn
+            .iter()
+            .skip(departure_index + 1)
+            .all(|later| later.object_id != self.source_id)
     }
 
     /// True when this ability (or a nested sub) is a `ChangeZone` of `SelfRef`
@@ -26611,6 +26646,112 @@ mod tests {
             assert!(
                 ability.self_ref_is_current(runner.state()),
                 "relatch must early-true without requiring own-departure successor proof"
+            );
+        }
+
+        fn gy_return_ability(
+            source_id: ObjectId,
+            source_context: TriggerSourceContext,
+        ) -> ResolvedAbility {
+            let mut ability = ResolvedAbility::new(
+                Effect::ChangeZone {
+                    origin: Some(Zone::Graveyard),
+                    destination: Zone::Battlefield,
+                    target: TargetFilter::SelfRef,
+                    owner_library: false,
+                    enter_transformed: false,
+                    enters_under: None,
+                    enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                    enters_attacking: false,
+                    up_to: false,
+                    enter_with_counters: vec![],
+                    conditional_enter_with_counters: vec![],
+                    face_down_profile: None,
+                    enters_modified_if: None,
+                },
+                vec![],
+                source_id,
+                P0,
+            );
+            ability.trigger_source = Some(source_context);
+            ability
+        }
+
+        /// CR 400.7 + CR 704.5m: post-SBA BF→GY departure with matching captured
+        /// identity permits SelfRef return-from-GY (Necrotic Plague).
+        #[test]
+        fn self_ref_post_sba_gy_return_binds_matching_bf_departure() {
+            let mut scenario = GameScenario::new();
+            let source = scenario.add_vanilla(P0, 2, 2);
+            let mut runner = scenario.build();
+
+            let bf_context = {
+                let obj = runner.state().objects.get(&source).unwrap();
+                crate::game::triggers::trigger_source_context_for_latch(runner.state(), obj)
+            };
+            let mut events = Vec::new();
+            move_to_zone(runner.state_mut(), source, Zone::Graveyard, &mut events);
+
+            let record = {
+                let mut record = ZoneChangeRecord::test_minimal(
+                    source,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                );
+                record.trigger_source_context = Some(bf_context.clone());
+                record.turn_zone_change_index = 0;
+                record
+            };
+            runner.state_mut().zone_changes_this_turn = vec![record].into();
+
+            let ability = gy_return_ability(source, bf_context);
+            assert!(
+                ability.self_ref_is_current(runner.state()),
+                "matching BF→GY departure must bind SelfRef return-from-GY"
+            );
+        }
+
+        /// CR 400.7e: a same-id second zone change after the BF→GY departure
+        /// must not rebind SelfRef to the stale source.
+        #[test]
+        fn self_ref_post_sba_gy_return_rejects_stale_after_second_zone_change() {
+            let mut scenario = GameScenario::new();
+            let source = scenario.add_vanilla(P0, 2, 2);
+            let mut runner = scenario.build();
+
+            let bf_context = {
+                let obj = runner.state().objects.get(&source).unwrap();
+                crate::game::triggers::trigger_source_context_for_latch(runner.state(), obj)
+            };
+            let mut events = Vec::new();
+            move_to_zone(runner.state_mut(), source, Zone::Graveyard, &mut events);
+            move_to_zone(runner.state_mut(), source, Zone::Exile, &mut events);
+
+            let gy_record = {
+                let mut record = ZoneChangeRecord::test_minimal(
+                    source,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                );
+                record.trigger_source_context = Some(bf_context.clone());
+                record.turn_zone_change_index = 0;
+                record
+            };
+            let exile_record = {
+                let mut record =
+                    ZoneChangeRecord::test_minimal(source, Some(Zone::Graveyard), Zone::Exile);
+                record.turn_zone_change_index = 1;
+                record
+            };
+            // Leave the object in GY for the zone gate so only the second-move
+            // provenance rejects — mirrors a same-id return that later left again.
+            move_to_zone(runner.state_mut(), source, Zone::Graveyard, &mut events);
+            runner.state_mut().zone_changes_this_turn = vec![gy_record, exile_record].into();
+
+            let ability = gy_return_ability(source, bf_context);
+            assert!(
+                !ability.self_ref_is_current(runner.state()),
+                "second same-id zone change must reject post-SBA SelfRef return"
             );
         }
     }

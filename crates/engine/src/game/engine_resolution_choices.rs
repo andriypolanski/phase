@@ -4838,6 +4838,7 @@ pub(super) fn handle_resolution_choice(
                                     effect_kind,
                                     &chosen_ids,
                                     library_position,
+                                    true,
                                 );
                                 crate::game::triggers::append_and_collect_logical_zone_trigger_segment(
                                     state,
@@ -4903,6 +4904,7 @@ pub(super) fn handle_resolution_choice(
                                     effect_kind,
                                     &chosen_ids,
                                     library_position,
+                                    true,
                                 );
                                 crate::game::triggers::append_and_collect_logical_zone_trigger_segment(
                                     state,
@@ -5465,6 +5467,7 @@ pub(super) fn handle_resolution_choice(
                     effect_kind,
                     &tracked,
                     library_position,
+                    false,
                 );
             }
             state.last_effect_count = Some(chosen.len() as i32);
@@ -6612,11 +6615,17 @@ fn action_result_outcome(
 /// replacement `NeedsChoice`): those early-return before the terminal publish
 /// at the end of the EffectZoneChoice arm, and Storm Herald's delayed exile
 /// would otherwise bind `TrackedSet` against an unbound sentinel.
+///
+/// `mid_pause`: when true, an empty selection is not published yet (Aura host
+/// choice / replacement ordering still open). When false (terminal completion),
+/// an empty `up_to` selection must rebind a fresh empty chain set so a following
+/// `TargetFilter::TrackedSet` cannot reuse a prior non-empty set.
 fn publish_effect_zone_choice_tracked_set(
     state: &mut GameState,
     effect_kind: EffectKind,
     chosen: &[ObjectId],
     library_position: Option<LibraryPosition>,
+    mid_pause: bool,
 ) {
     if !matches!(
         effect_kind,
@@ -6663,7 +6672,9 @@ fn publish_effect_zone_choice_tracked_set(
     } else {
         chosen.to_vec()
     };
-    if tracked.is_empty() && !narrowed {
+    // Pause-only: skip empty until the selection is terminal. Terminal empty
+    // (including narrowed-to-empty Bottom) must still rebind.
+    if tracked.is_empty() && mid_pause && !narrowed {
         return;
     }
     let tracked_id = TrackedSetId(state.next_tracked_set_id);
@@ -9580,5 +9591,74 @@ mod tests {
 
         assert_eq!(active_plane(&state), Some(deck_second));
         assert!(state.planar_deck.contains(&deck_top));
+    }
+
+    /// CR 603.7: Terminal `up_to` EffectZoneChoice with zero cards selected must
+    /// rebind a fresh empty chain tracked set so a following TrackedSet consumer
+    /// cannot reuse a prior non-empty set. Mid-pause empty publishes stay skipped.
+    #[test]
+    fn terminal_empty_up_to_effect_zone_choice_rebinds_empty_tracked_set() {
+        use crate::types::ability::{Effect, ResolvedAbility};
+        use crate::types::game_state::PendingContinuation;
+        use crate::types::identifiers::TrackedSetId;
+        use crate::types::zones::EtbTapState;
+
+        let mut state = GameState::new_two_player(42);
+        let stale = create_object(
+            &mut state,
+            CardId(5),
+            PlayerId(0),
+            "Stale".to_string(),
+            Zone::Exile,
+        );
+        state
+            .tracked_object_sets
+            .insert(TrackedSetId(1), vec![stale]);
+        state.next_tracked_set_id = 2;
+        state.chain_tracked_set_id = Some(TrackedSetId(1));
+
+        let continuation = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: Some(Zone::Graveyard),
+                destination: Zone::Battlefield,
+                target: TargetFilter::Typed(TypedFilter::default().subtype("Aura".into())),
+                owner_library: false,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: EtbTapState::Unspecified,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                face_down_profile: None,
+                enters_modified_if: None,
+            },
+            vec![],
+            ObjectId(99),
+            PlayerId(0),
+        );
+        state.park_ability_continuation(PendingContinuation::new(Box::new(continuation), &state));
+
+        // Mid-pause empty must not rebind (Storm Herald Aura-host pause).
+        publish_effect_zone_choice_tracked_set(&mut state, EffectKind::ChangeZone, &[], None, true);
+        assert_eq!(state.chain_tracked_set_id, Some(TrackedSetId(1)));
+        assert_eq!(
+            state.tracked_object_sets.get(&TrackedSetId(1)),
+            Some(&vec![stale])
+        );
+
+        // Terminal empty up_to completion must rebind a fresh empty set.
+        publish_effect_zone_choice_tracked_set(
+            &mut state,
+            EffectKind::ChangeZone,
+            &[],
+            None,
+            false,
+        );
+        assert_eq!(state.chain_tracked_set_id, Some(TrackedSetId(2)));
+        assert!(state
+            .tracked_object_sets
+            .get(&TrackedSetId(2))
+            .is_some_and(|objects| objects.is_empty()));
     }
 }
