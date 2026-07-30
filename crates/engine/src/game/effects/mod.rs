@@ -5458,6 +5458,22 @@ fn ability_refs_triggering_source(ability: &ResolvedAbility) -> bool {
             .is_some_and(ability_refs_triggering_source)
 }
 
+/// True when any effect in the ability chain references `ParentTarget`
+/// (including nested sub/else abilities). Used by delayed-trigger snapshotting
+/// so an Attach host on a ChangeZone sub-chain (Gift of Immortality #4956) still
+/// freezes the parent referent at creation time.
+fn ability_refs_parent_target(ability: &ResolvedAbility) -> bool {
+    effect_refs_parent_target(&ability.effect)
+        || ability
+            .sub_ability
+            .as_deref()
+            .is_some_and(ability_refs_parent_target)
+        || ability
+            .else_ability
+            .as_deref()
+            .is_some_and(ability_refs_parent_target)
+}
+
 /// CR 603.7 + CR 109.5: Replace the first `TargetRef::Object` in a target
 /// slice with the supplied object id. Used by the `repeat_for: TrackedSetSize`
 /// per-iteration rebind so the i-th iteration's parent reference (e.g.,
@@ -10055,15 +10071,48 @@ fn resolve_chain_body(
         // isn't an implicit tracked-set consumer), prepend the moved
         // card as a target so `ParentTarget` consumers downstream
         // resolve to it.
-        if !forwarded_objects.is_empty() {
+        // CR 303.4g + CR 303.4i (#4956): `forward_result` Attach is realized via
+        // `enter_attached_to` on the zone move. If that move Remained, there is
+        // no ZoneChanged event — running Attach would stamp `attached_to` onto
+        // an Aura that never left its origin zone.
+        if ability.forward_result
+            && forwarded_objects.is_empty()
+            && matches!(
+                ability.effect,
+                Effect::ChangeZone {
+                    destination: Zone::Battlefield,
+                    ..
+                }
+            )
+            && matches!(sub.effect, Effect::Attach { .. })
+        {
+            if let Some(trailing) = sub.sub_ability.as_ref() {
+                let mut trailing_resolved = trailing.as_ref().clone();
+                apply_parent_chain_context(
+                    &mut trailing_resolved,
+                    ability,
+                    effect_context_object.as_ref(),
+                    state,
+                );
+                resolve_ability_chain(state, &trailing_resolved, events, depth + 1)?;
+            }
+        } else if !forwarded_objects.is_empty() {
             let mut sub_with_context = sub.as_ref().clone();
             // CR 707.10: `CopySpell { SelfRef }` copies the resolving spell
             // itself (Sevinne's Reclamation, Chain cycle). `forward_result`
             // rebinding `source_id` to the just-moved permanent would make
             // `copy_spell::resolve` look up the wrong stack entry after
             // `resolve_top` has popped the spell (issue #2860).
+            //
+            // CR 603.7c + CR 201.5: `CreateDelayedTrigger` must keep the
+            // creating ability's source. SelfRef inside the delayed body means
+            // "this card" (Gift of Immortality #4956), not the just-returned
+            // host. ParentTarget anaphora still receive the moved object via
+            // `targets` below (snapshot at delayed-trigger creation).
             if !copy_spell_self_ref_keeps_resolving_spell_source(sub) {
-                sub_with_context.source_id = forwarded_objects[0];
+                if !matches!(sub.effect, Effect::CreateDelayedTrigger { .. }) {
+                    sub_with_context.source_id = forwarded_objects[0];
+                }
                 if matches!(
                     ability.effect,
                     Effect::Conjure {

@@ -127,7 +127,7 @@ pub fn resolve(
         )
         .map(|t| vec![t])
         .unwrap_or_default()
-    } else if super::effect_refs_parent_target(&delayed_ability.effect) {
+    } else if super::ability_refs_parent_target(&delayed_ability) {
         parent_target_snapshot(state, ability)
     } else if effect_references_last_created(&delayed_ability.effect)
         && !state.last_created_token_ids.is_empty()
@@ -170,13 +170,28 @@ pub fn resolve(
     // and activated-ability sources may not already carry trigger provenance;
     // capture their current incarnation at creation rather than later rebinding
     // the stored ObjectId. CR 400.7.
+    //
+    // CR 400.7 + CR 603.7c: when the delayed ability's source is still the same
+    // ObjectId, refresh zone + incarnation to that object's creation-time
+    // location. The parent trigger often latched while the source was on the
+    // battlefield (Gift of Immortality's dies trigger), but SBAs may already
+    // have moved that Aura to the graveyard (bumping incarnation) before the
+    // delayed return is created. SelfRef resolution requires a zone+incarnation
+    // match (`source_is_current_via_zone_match`); keeping the BF/pre-move stamp
+    // would make the end-step SelfRef ChangeZone no-op.
     let source_context = ability.trigger_source.clone().or_else(|| {
         state
             .objects
             .get(&ability.source_id)
             .map(|source| super::super::triggers::trigger_source_context_for_latch(state, source))
     });
-    if let Some(source_context) = source_context {
+    if let Some(mut source_context) = source_context {
+        if source_context.identity.reference.object_id == delayed_ability.source_id {
+            if let Some(obj) = state.objects.get(&delayed_ability.source_id) {
+                source_context.identity.expected_zone = obj.zone;
+                source_context.identity.reference.incarnation = obj.incarnation;
+            }
+        }
         delayed_ability.set_trigger_source_recursive(source_context);
     }
 

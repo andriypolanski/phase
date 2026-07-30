@@ -538,6 +538,7 @@ mod issue_4835_intimidation_tactics;
 mod issue_4836_mindskinner;
 mod issue_4921_skullscorch_unless_deal_damage;
 mod issue_4955_greenbelt_rampager;
+mod issue_4956_gift_of_immortality_reattach;
 mod issue_4960_nova_flame;
 mod issue_4962_volo_guide_to_monsters;
 mod issue_4966_waterbenders_ascension;

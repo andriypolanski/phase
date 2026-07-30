@@ -15684,6 +15684,11 @@ fn try_parse_verb_and_target<'a>(
                         rem,
                     ))
                 } else {
+                    // CR 701.3a + CR 303.4f: consume "attached to <host>" from the
+                    // destination remainder so it does not fall through as an
+                    // Unimplemented follow-up clause (Gift of Immortality #4956).
+                    let attach_host = sequence::parse_search_attach_host(rem);
+                    let rem = if attach_host.is_some() { "" } else { rem };
                     Some((
                         TargetedImperativeAst::ReturnToBattlefield {
                             target,
@@ -15694,6 +15699,7 @@ fn try_parse_verb_and_target<'a>(
                             enters_attacking: d.enters_attacking,
                             enter_with_counters: d.enter_with_counters,
                             face_down: d.face_down,
+                            attach_host,
                         },
                         rem,
                     ))

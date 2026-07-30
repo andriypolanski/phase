@@ -63,6 +63,9 @@ fn resolve_forward_result_search_attach_host(
     let targets = forward_result_attach_host_targets(ability);
     match target {
         TargetFilter::SelfRef => Some(AttachTarget::Object(ability.source_id)),
+        // CR 303.4b + CR 109.4: "attached to you" (Lynde, Cheerful Tormentor)
+        // binds the Aura host to the resolving ability's controller.
+        TargetFilter::Controller => Some(AttachTarget::Player(ability.controller)),
         TargetFilter::ParentTarget => targets
             .first()
             .map(|target| match target {

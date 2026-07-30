@@ -1002,6 +1002,12 @@ pub(crate) enum TargetedImperativeAst {
         /// a Forest land."). Lowered to a default vanilla-2/2 `face_down_profile`,
         /// refined by a trailing "It's a <type>" `FaceDownProfileSpec`.
         face_down: bool,
+        /// CR 701.3a + CR 303.4f/i: Optional "attached to <host>" rider on the
+        /// return (Gift of Immortality, Next of Kin, Lynde). When set, lowering
+        /// nests `Effect::Attach { SelfRef → host }` under the ChangeZone with
+        /// `forward_result` so the Aura enters attached and skips the CR 303.4f
+        /// host-choice consult.
+        attach_host: Option<TargetFilter>,
     },
     /// CR 400.6: Return to a specific non-hand, non-battlefield zone (zone change).
     ReturnToZone {

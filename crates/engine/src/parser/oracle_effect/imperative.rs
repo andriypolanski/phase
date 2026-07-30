@@ -1890,12 +1890,13 @@ pub(super) fn parse_targeted_action_ast(
             rest
         };
         let rest_lower = &lower[lower.len() - rest.len()..];
-        let (trailing_target_text, trailing_dest) = super::strip_return_destination_ext(rest);
+        let (trailing_target_text, trailing_dest, trailing_dest_remainder) =
+            super::strip_return_destination_ext_with_remainder(rest);
         let (leading_target_text, leading_dest) = super::strip_leading_return_destination_ext(rest);
-        let (target_text, dest) = if leading_dest.is_some() {
-            (leading_target_text, leading_dest)
+        let (target_text, dest, dest_remainder) = if leading_dest.is_some() {
+            (leading_target_text, leading_dest, "")
         } else {
-            (trailing_target_text, trailing_dest)
+            (trailing_target_text, trailing_dest, trailing_dest_remainder)
         };
         let (is_mass, target_text) = if let Some((_, rest)) =
             nom_on_lower(target_text, &target_text.to_ascii_lowercase(), |input| {
@@ -2015,6 +2016,9 @@ pub(super) fn parse_targeted_action_ast(
                         enter_with_counters: d.enter_with_counters,
                     })
                 } else {
+                    // CR 701.3a + CR 303.4f: "return … to the battlefield attached
+                    // to <host>" (Gift of Immortality, Next of Kin, Lynde).
+                    let attach_host = super::sequence::parse_search_attach_host(dest_remainder);
                     Some(TargetedImperativeAst::ReturnToBattlefield {
                         target,
                         origin,
@@ -2024,6 +2028,7 @@ pub(super) fn parse_targeted_action_ast(
                         enters_attacking: d.enters_attacking,
                         enter_with_counters: d.enter_with_counters,
                         face_down: d.face_down,
+                        attach_host,
                     })
                 }
             }
@@ -2299,6 +2304,8 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
             count,
         },
         // CR 400.7: Return to battlefield is a zone change, not a bounce.
+        // CR 701.3a: `attach_host` is an ability-level sub_ability (Attach under
+        // ChangeZone with forward_result), recovered in `lower_imperative_family_ast`.
         TargetedImperativeAst::ReturnToBattlefield {
             target,
             origin,
@@ -2308,6 +2315,7 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
             enters_attacking,
             enter_with_counters,
             face_down,
+            attach_host: _,
         } => Effect::ChangeZone {
             origin,
             destination: Zone::Battlefield,
@@ -12045,6 +12053,47 @@ pub(super) fn lower_imperative_family_ast(ast: ImperativeFamilyAst) -> ParsedEff
             };
             let mut clause = parsed_clause(lower_zone_counter_ast(ast));
             clause.multi_target = multi_target;
+            clause
+        }
+        // CR 701.3a + CR 303.4f: "return … to the battlefield attached to <host>"
+        // (Gift of Immortality, Next of Kin, Lynde). Bare Effect lowering cannot
+        // carry the Attach sub-chain — nest it here (Cloak / SearchLibrary pattern)
+        // so assembly can wrap a single ChangeZone[+Attach] unit in CreateDelayedTrigger.
+        ImperativeFamilyAst::Structured(ImperativeAst::Targeted(
+            TargetedImperativeAst::ReturnToBattlefield {
+                target,
+                origin,
+                enter_transformed,
+                enters_under,
+                enter_tapped,
+                enters_attacking,
+                enter_with_counters,
+                face_down,
+                attach_host: Some(host),
+            },
+        )) => {
+            let mut clause = parsed_clause(lower_targeted_action_ast(
+                TargetedImperativeAst::ReturnToBattlefield {
+                    target,
+                    origin,
+                    enter_transformed,
+                    enters_under,
+                    enter_tapped,
+                    enters_attacking,
+                    enter_with_counters,
+                    face_down,
+                    attach_host: None,
+                },
+            ));
+            // CR 701.3a: the returning Aura/permanent is SelfRef; the host is the
+            // anaphor captured on the IR (`that creature` / `you`).
+            clause.sub_ability = Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Attach {
+                    attachment: TargetFilter::SelfRef,
+                    target: host,
+                },
+            )));
             clause
         }
         // All other arms produce a bare Effect with no sub_ability chain.

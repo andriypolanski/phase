@@ -6256,6 +6256,9 @@ fn strip_trailing_battlefield_riders(after_destination: &str) -> (&str, Battlefi
 }
 
 /// Detect "return ... to <zone>" destination phrase, including "transformed" flag.
+/// Thin wrapper over [`strip_return_destination_ext_with_remainder`] for call sites
+/// that discard the attach-host remainder (unit tests + legacy helpers).
+#[allow(dead_code)] // exercised from `oracle_effect/tests.rs` (cfg(test) sibling)
 pub(super) fn strip_return_destination_ext(text: &str) -> (&str, Option<ReturnDestination>) {
     let (target, dest, _) = strip_return_destination_ext_with_remainder(text);
     (target, dest)

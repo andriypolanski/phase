@@ -117,7 +117,9 @@ fn parse_search_attach_host_phrase(input: &str) -> OracleResult<'_, TargetFilter
     .parse(input)
 }
 
-fn parse_search_attach_host(text: &str) -> Option<TargetFilter> {
+/// CR 701.3a + CR 303.4f: Parse an "attached to <host>" rider from return /
+/// search destination remainders (Gift of Immortality, Next of Kin, Lynde).
+pub(crate) fn parse_search_attach_host(text: &str) -> Option<TargetFilter> {
     let lower = text.to_ascii_lowercase();
     nom_on_lower(text, &lower, |input| {
         let (input, _) = take_until("attached to").parse(input)?;

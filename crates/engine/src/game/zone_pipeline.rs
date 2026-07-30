@@ -2952,6 +2952,9 @@ fn execute_zone_move_with_applied_terminal(
                         }
                     }
                 }
+                // CR 303.4i specified-host Remain is handled after delivery when
+                // `attach_to` fails / SBA (CR 704.5m). Pre-move filter checks while
+                // the Aura is still in GY falsely Remained legal Gift/Lynde hosts.
             }
             if let Some((controller, aura_id, legal_targets)) = pending_aura_choice {
                 let delivery_start = events.len();
