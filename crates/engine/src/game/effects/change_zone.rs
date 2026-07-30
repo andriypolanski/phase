@@ -73,6 +73,21 @@ fn resolve_forward_result_search_attach_host(
                 TargetRef::Player(id) => AttachTarget::Player(*id),
             })
             .or_else(|| {
+                // CR 603.2 + CR 608.2c + CR 701.3a: Event-subject return Auras
+                // ("return this … attached to that creature" — Dragon Breath,
+                // Smoke Shroud) bind ParentTarget to the trigger-event referent
+                // (entering creature), not the Aura's prior host.
+                crate::game::targeting::resolve_event_context_target(
+                    state,
+                    &TargetFilter::ParentTarget,
+                    ability.source_id,
+                )
+                .map(|target| match target {
+                    TargetRef::Object(id) => AttachTarget::Object(id),
+                    TargetRef::Player(id) => AttachTarget::Player(id),
+                })
+            })
+            .or_else(|| {
                 // CR 303.4b + CR 608.2c: Aura search-put "attached to that/enchanted
                 // player" binds ParentTarget to the source's enchanted host when no
                 // player target was chosen at trigger placement (Curse of Misfortunes).

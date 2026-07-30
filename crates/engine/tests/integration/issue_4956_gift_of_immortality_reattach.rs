@@ -5,7 +5,7 @@
 
 use engine::game::effects::attach::{attach_to, attach_to_player};
 use engine::game::game_object::AttachTarget;
-use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::game::scenario::{GameRunner, GameScenario, P0};
 use engine::game::triggers::process_triggers;
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
@@ -34,6 +34,112 @@ Whenever a Curse is put into your graveyard from the battlefield, return it to \
 the battlefield attached to you at the beginning of the next end step.\n\
 At the beginning of your upkeep, you may attach a Curse attached to you to one \
 of your opponents. If you do, draw two cards.";
+
+const SMOKE_SHROUD_ORACLE: &str = "Enchant creature\n\
+Enchanted creature gets +1/+1 and has flying.\n\
+When a Ninja you control enters, you may return this card from your graveyard \
+to the battlefield attached to that creature.";
+
+const DRAGON_BREATH_ORACLE: &str = "Enchant creature\n\
+Enchanted creature has haste.\n\
+{R}: Enchanted creature gets +1/+0 until end of turn.\n\
+When a creature with mana value 6 or greater enters, you may return this card \
+from your graveyard to the battlefield attached to that creature.";
+
+const CASS_ORACLE: &str = "Vigilance\n\
+Whenever Cass or another creature you control dies, if it was enchanted or \
+equipped, return any number of Aura cards that were attached to it from your \
+graveyard to the battlefield attached to target creature, then attach any \
+number of Equipment that were attached to it to that creature.";
+
+const STORM_HERALD_ORACLE: &str = "Haste\n\
+When this creature enters, return any number of Aura cards from your graveyard \
+to the battlefield attached to creatures you control. Exile those Auras at the \
+beginning of your next end step. If those Auras would leave the battlefield, \
+exile them instead of putting them anywhere else.";
+
+/// Event-subject GY return with nested Attach→ParentTarget (Smoke Shroud / Dragon Breath).
+fn event_subject_return_attach_host(
+    parsed: &engine::parser::oracle::ParsedAbilities,
+) -> &TargetFilter {
+    let trigger = parsed
+        .triggers
+        .iter()
+        .find(|t| {
+            matches!(
+                t.execute.as_ref().map(|e| e.effect.as_ref()),
+                Some(Effect::ChangeZone {
+                    destination: Zone::Battlefield,
+                    ..
+                })
+            )
+        })
+        .expect("GY return trigger");
+    let execute = trigger.execute.as_ref().expect("execute");
+    assert!(
+        execute.forward_result,
+        "event-subject return must stamp forward_result for Attach nest"
+    );
+    let attach = execute.sub_ability.as_ref().expect("Attach nest");
+    match attach.effect.as_ref() {
+        Effect::Attach {
+            attachment: TargetFilter::SelfRef,
+            target,
+        } => target,
+        other => panic!("expected Attach SelfRef→host, got {other:?}"),
+    }
+}
+
+fn ability_chain_contains_equipment_attach(
+    def: &engine::types::ability::AbilityDefinition,
+) -> bool {
+    let is_equipment_attach = matches!(
+        def.effect.as_ref(),
+        Effect::Attach {
+            attachment: TargetFilter::Typed(tf),
+            ..
+        } if tf.type_filters.iter().any(|f| {
+            matches!(f, engine::types::ability::TypeFilter::Subtype(s) if s == "Equipment")
+        })
+    );
+    is_equipment_attach
+        || def
+            .sub_ability
+            .as_deref()
+            .is_some_and(ability_chain_contains_equipment_attach)
+        || def
+            .else_ability
+            .as_deref()
+            .is_some_and(ability_chain_contains_equipment_attach)
+}
+
+fn ability_chain_contains_delayed_exile(def: &engine::types::ability::AbilityDefinition) -> bool {
+    let is_exile = match def.effect.as_ref() {
+        Effect::CreateDelayedTrigger { effect, .. } => {
+            matches!(
+                effect.effect.as_ref(),
+                Effect::ChangeZone {
+                    destination: Zone::Exile,
+                    ..
+                }
+            ) || ability_chain_contains_delayed_exile(effect)
+        }
+        Effect::ChangeZone {
+            destination: Zone::Exile,
+            ..
+        } => true,
+        _ => false,
+    };
+    is_exile
+        || def
+            .sub_ability
+            .as_deref()
+            .is_some_and(ability_chain_contains_delayed_exile)
+        || def
+            .else_ability
+            .as_deref()
+            .is_some_and(ability_chain_contains_delayed_exile)
+}
 
 fn effect_is_unimplemented(effect: &Effect) -> bool {
     matches!(effect, Effect::Unimplemented { .. })
@@ -471,6 +577,18 @@ fn gift_of_immortality_stays_in_graveyard_when_host_gone() {
     process_triggers(runner.state_mut(), &events);
     drain_priority(&mut runner);
 
+    assert_eq!(
+        runner.state().delayed_triggers.len(),
+        1,
+        "hostile path must install the delayed reattach before the host is exiled; \
+         otherwise the negative assertion can pass without exercising CR 303.4i"
+    );
+    assert_eq!(
+        runner.state().objects[&host].zone,
+        Zone::Battlefield,
+        "dies trigger must return the host before the hostile exile"
+    );
+
     // CR 303.4i + Gatherer: exile the returned host before end step → Gift remains in GY.
     let mut exile_events = Vec::new();
     engine::game::zones::move_to_zone(runner.state_mut(), host, Zone::Exile, &mut exile_events);
@@ -607,5 +725,132 @@ fn lynde_returns_curse_attached_to_controller() {
         Some(AttachTarget::Player(P0)),
         "Lynde returns the Curse attached to you"
     );
-    let _ = P1;
+}
+
+#[test]
+fn smoke_shroud_and_dragon_breath_attach_host_is_parent_target() {
+    for (name, oracle) in [
+        ("Smoke Shroud", SMOKE_SHROUD_ORACLE),
+        ("Dragon Breath", DRAGON_BREATH_ORACLE),
+    ] {
+        let parsed = parse_oracle_text(
+            oracle,
+            name,
+            &[],
+            &["Enchantment".to_string()],
+            &["Aura".to_string()],
+        );
+        assert_eq!(
+            event_subject_return_attach_host(&parsed),
+            &TargetFilter::ParentTarget,
+            "{name}: GY return Attach host must be ParentTarget (that creature)"
+        );
+    }
+}
+
+#[test]
+fn cass_preserves_equipment_reattach_continuation() {
+    let parsed = parse_oracle_text(
+        CASS_ORACLE,
+        "Cass, Hand of Vengeance",
+        &[],
+        &["Creature".to_string()],
+        &["Human".to_string(), "Assassin".to_string()],
+    );
+    let execute = parsed
+        .triggers
+        .first()
+        .and_then(|t| t.execute.as_ref())
+        .expect("Cass dies trigger");
+    assert!(
+        ability_chain_contains_equipment_attach(execute),
+        "Cass ', then attach any number of Equipment …' must survive attach-host parse; \
+         execute={:?}",
+        execute.effect
+    );
+}
+
+#[test]
+fn storm_herald_preserves_delayed_exile_continuation() {
+    let parsed = parse_oracle_text(
+        STORM_HERALD_ORACLE,
+        "Storm Herald",
+        &[],
+        &["Creature".to_string()],
+        &["Human".to_string(), "Shaman".to_string()],
+    );
+    let execute = parsed
+        .triggers
+        .first()
+        .and_then(|t| t.execute.as_ref())
+        .expect("Storm Herald ETB");
+    assert!(
+        ability_chain_contains_delayed_exile(execute),
+        "Storm Herald '. Exile those Auras …' must survive attach-host parse; execute={:?}",
+        execute.effect
+    );
+}
+
+#[test]
+fn smoke_shroud_attaches_to_entering_ninja_among_multiple_hosts() {
+    // CR 303.4f + CR 608.2c: with another legal Aura host on the battlefield,
+    // the event-subject return must bind ParentTarget to the entering Ninja —
+    // no CR 303.4f prompt, and not the distractor creature.
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let distractor = scenario.add_creature(P0, "Grizzly Bears", 2, 2).id();
+    let ninja = scenario
+        .add_creature_to_hand(P0, "Ninja of the Deep Hours", 2, 2)
+        .with_subtypes(vec!["Human", "Ninja"])
+        .id();
+    let aura = scenario
+        .add_creature(P0, "Smoke Shroud", 0, 0)
+        .as_enchantment()
+        .with_subtypes(vec!["Aura"])
+        .from_oracle_text(SMOKE_SHROUD_ORACLE)
+        .with_keyword(Keyword::Enchant(TargetFilter::Typed(
+            TypedFilter::creature(),
+        )))
+        .id();
+
+    let mut runner = scenario.build();
+    // Prior host so AttachedTo fallback would prefer the distractor if the
+    // event referent is not hydrated onto the nested Attach.
+    attach_to(runner.state_mut(), aura, distractor);
+    let mut gy_events = Vec::new();
+    engine::game::zones::move_to_zone(runner.state_mut(), aura, Zone::Graveyard, &mut gy_events);
+    process_triggers(runner.state_mut(), &gy_events);
+    drain_priority(&mut runner);
+    assert_eq!(runner.state().objects[&aura].zone, Zone::Graveyard);
+
+    let mut etb_events = Vec::new();
+    engine::game::zones::move_to_zone(
+        runner.state_mut(),
+        ninja,
+        Zone::Battlefield,
+        &mut etb_events,
+    );
+    process_triggers(runner.state_mut(), &etb_events);
+    drain_priority(&mut runner);
+
+    assert_eq!(
+        runner.state().objects[&aura].zone,
+        Zone::Battlefield,
+        "Smoke Shroud returns from GY on Ninja ETB"
+    );
+    assert_eq!(
+        runner.state().objects[&aura].attached_to,
+        Some(AttachTarget::Object(ninja)),
+        "must attach to the entering Ninja, not the distractor ({distractor:?}); \
+         attached_to={:?}",
+        runner.state().objects[&aura].attached_to
+    );
+    assert!(
+        !matches!(
+            runner.state().waiting_for,
+            WaitingFor::ReturnAsAuraTarget { .. }
+        ),
+        "must not open CR 303.4f Aura host choice among multiple legal hosts"
+    );
 }

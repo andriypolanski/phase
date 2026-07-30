@@ -6488,24 +6488,66 @@ fn filter_refs_post_replacement_event_target(filter: &TargetFilter) -> bool {
 /// effect carries an event-context recipient (`TriggeringPlayer`, etc.), bind
 /// that referent into `targets` before payer/effect resolution. Shared by the
 /// unless-pay interceptor and the main effect path (issue #2361).
+///
+/// CR 603.2 + CR 701.3a + CR 303.4f: Event-subject return Auras nest
+/// `Attach { target: ParentTarget }` under a `forward_result` ChangeZone whose
+/// own target is `SelfRef` (Dragon Breath, Smoke Shroud). Hydrate the nested
+/// host onto the Attach sub so zone entry binds the trigger-event creature
+/// instead of falling through to CR 303.4f Aura choice.
 fn hydrate_event_context_targets<'a>(
     state: &GameState,
     ability: &'a ResolvedAbility,
 ) -> Cow<'a, ResolvedAbility> {
-    if !ability.targets.is_empty() {
+    let root_ref = if ability.targets.is_empty() {
+        extract_event_context_filter(&ability.effect).and_then(|filter| {
+            crate::game::targeting::resolve_event_context_target(state, filter, ability.source_id)
+        })
+    } else {
+        None
+    };
+    let nested_host_ref = nested_forward_result_attach_parent_target_ref(state, ability);
+
+    if root_ref.is_none() && nested_host_ref.is_none() {
         return Cow::Borrowed(ability);
     }
-    let Some(filter) = extract_event_context_filter(&ability.effect) else {
-        return Cow::Borrowed(ability);
-    };
-    let Some(target_ref) =
-        crate::game::targeting::resolve_event_context_target(state, filter, ability.source_id)
-    else {
-        return Cow::Borrowed(ability);
-    };
+
     let mut resolved = ability.clone();
-    resolved.targets = vec![target_ref];
+    if let Some(target_ref) = root_ref {
+        resolved.targets = vec![target_ref];
+    }
+    if let Some(host_ref) = nested_host_ref {
+        if let Some(sub) = resolved.sub_ability.as_mut() {
+            sub.targets = vec![host_ref];
+        }
+    }
     Cow::Owned(resolved)
+}
+
+/// CR 603.2 + CR 701.3a: Resolve `ParentTarget` for a nested forward-result
+/// Attach host when the sub still has empty `targets`.
+fn nested_forward_result_attach_parent_target_ref(
+    state: &GameState,
+    ability: &ResolvedAbility,
+) -> Option<TargetRef> {
+    if !ability.forward_result {
+        return None;
+    }
+    let sub = ability.sub_ability.as_ref()?;
+    if !sub.targets.is_empty() {
+        return None;
+    }
+    let Effect::Attach {
+        target: TargetFilter::ParentTarget,
+        ..
+    } = &sub.effect
+    else {
+        return None;
+    };
+    crate::game::targeting::resolve_event_context_target(
+        state,
+        &TargetFilter::ParentTarget,
+        ability.source_id,
+    )
 }
 
 /// CR 603.2: Filters that auto-resolve from `state.current_trigger_event` during

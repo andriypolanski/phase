@@ -2018,7 +2018,8 @@ pub(super) fn parse_targeted_action_ast(
                 } else {
                     // CR 701.3a + CR 303.4f: "return … to the battlefield attached
                     // to <host>" (Gift of Immortality, Next of Kin, Lynde).
-                    let attach_host = super::sequence::parse_search_attach_host(dest_remainder);
+                    let attach_host =
+                        super::sequence::parse_search_attach_host(dest_remainder).map(|(h, _)| h);
                     Some(TargetedImperativeAst::ReturnToBattlefield {
                         target,
                         origin,

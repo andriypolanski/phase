@@ -15775,8 +15775,25 @@ fn try_parse_verb_and_target<'a>(
                     // CR 701.3a + CR 303.4f: consume "attached to <host>" from the
                     // destination remainder so it does not fall through as an
                     // Unimplemented follow-up clause (Gift of Immortality #4956).
-                    let attach_host = sequence::parse_search_attach_host(rem);
-                    let rem = if attach_host.is_some() { "" } else { rem };
+                    // Prefer `dest_remainder` over target-parse leftovers such as
+                    // "from your graveyard" (Smoke Shroud / Dragon Breath) so the
+                    // host rider is not skipped when `parse_target` leaves a zone
+                    // phrase in `rem`. Preserve the unconsumed suffix for
+                    // continuation parsing (Cass ", then attach …"; Storm Herald
+                    // ". Exile those …").
+                    let attach_source = if nom_primitives::scan_contains(
+                        &dest_remainder.to_ascii_lowercase(),
+                        "attached to",
+                    ) {
+                        dest_remainder
+                    } else {
+                        rem
+                    };
+                    let (attach_host, rem) = match sequence::parse_search_attach_host(attach_source)
+                    {
+                        Some((host, rest)) => (Some(host), rest),
+                        None => (None, rem),
+                    };
                     Some((
                         TargetedImperativeAst::ReturnToBattlefield {
                             target,
