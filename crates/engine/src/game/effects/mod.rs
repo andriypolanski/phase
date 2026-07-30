@@ -5880,7 +5880,7 @@ fn drive_batched_repeated_optional_modal_payment(
         source_id,
         controller: player,
         condition: None,
-        ability: reflexive_prepared,
+        ability: Box::new(reflexive_prepared),
         timestamp: state.turn_number,
         target_constraints: reflexive.target_constraints.clone(),
         distribute: None,
@@ -5900,7 +5900,7 @@ fn drive_batched_repeated_optional_modal_payment(
         trigger_events,
         events,
     );
-    state.pending_trigger = Some(pending_for_state);
+    state.pending_trigger = Some(Box::new(pending_for_state));
     state.pending_trigger_entry = Some(entry_id);
 
     state.push_repeated_optional_payment_frame(RepeatedOptionalPaymentFrame {
