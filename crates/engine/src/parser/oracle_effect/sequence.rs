@@ -12975,11 +12975,10 @@ mod tests {
             host,
             TargetFilter::Typed(crate::types::ability::TypedFilter::creature())
         );
-        let rem_lower = rem.trim().to_ascii_lowercase();
-        assert!(
-            rem_lower.strip_prefix("then attach").is_some()
-                || rem_lower.strip_prefix(", then attach").is_some(),
-            "Cass continuation must survive attach-host parse, got {rem:?}"
+        assert_eq!(
+            rem.trim(),
+            "then attach any number of Equipment that were attached to it to that creature",
+            "Cass continuation must survive attach-host parse"
         );
 
         // Storm Herald: host phrase ends at the period; exile delayed clause must remain.
@@ -12991,10 +12990,10 @@ mod tests {
             matches!(host, TargetFilter::Typed(_)),
             "Storm Herald host must parse as typed filter, got {host:?}"
         );
-        let rem_lower = rem.trim().to_ascii_lowercase();
-        assert!(
-            rem_lower.strip_prefix("exile those auras").is_some(),
-            "Storm Herald exile clause must survive attach-host parse, got {rem:?}"
+        assert_eq!(
+            rem.trim(),
+            "Exile those Auras at the beginning of your next end step.",
+            "Storm Herald exile clause must survive attach-host parse"
         );
     }
 

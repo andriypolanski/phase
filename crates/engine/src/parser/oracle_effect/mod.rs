@@ -1847,6 +1847,39 @@ fn try_parse_die_exile_rider(lower: &str, kind: AbilityKind) -> Option<AbilityDe
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaveBattlefieldRiderSubject {
+    Singular,
+    TrackedSetPlural,
+}
+
+impl LeaveBattlefieldRiderSubject {
+    fn is_tracked_set_plural(self) -> bool {
+        matches!(self, Self::TrackedSetPlural)
+    }
+}
+
+fn parse_leave_battlefield_rider_subject(
+    input: &str,
+) -> OracleResult<'_, LeaveBattlefieldRiderSubject> {
+    alt((
+        value(
+            LeaveBattlefieldRiderSubject::TrackedSetPlural,
+            alt((
+                tag("those auras"),
+                tag("those enchantments"),
+                tag("those permanents"),
+                tag("those creatures"),
+                tag("them"),
+            )),
+        ),
+        map(parse_leave_battlefield_rider_ref, |_| {
+            LeaveBattlefieldRiderSubject::Singular
+        }),
+    ))
+    .parse(input)
+}
+
 fn parse_leave_battlefield_rider_ref(input: &str) -> OracleResult<'_, ()> {
     value(
         (),
@@ -1858,6 +1891,7 @@ fn parse_leave_battlefield_rider_ref(input: &str) -> OracleResult<'_, ()> {
             // prefix-collides with the "it"/"the …"/"that …"/"this …" arms below.
             tag("~"),
             tag("it"),
+            tag("them"),
             tag("the card"),
             tag("the creature"),
             tag("the permanent"),
@@ -1869,6 +1903,12 @@ fn parse_leave_battlefield_rider_ref(input: &str) -> OracleResult<'_, ()> {
             tag("this creature"),
             tag("this land"),
             tag("this permanent"),
+            // Storm Herald: "If those Auras would leave the battlefield, exile them
+            // instead of putting them anywhere else."
+            tag("those auras"),
+            tag("those enchantments"),
+            tag("those permanents"),
+            tag("those creatures"),
         )),
     )
     .parse(input)
@@ -1948,7 +1988,7 @@ pub(crate) fn try_parse_leave_battlefield_exile_replacement(lower: &str) -> Opti
     let (rest, _) = nom::combinator::opt(tag::<_, _, OracleError<'_>>("if "))
         .parse(lower)
         .ok()?;
-    let (rest, _) = parse_leave_battlefield_rider_ref(rest).ok()?;
+    let (rest, subject) = parse_leave_battlefield_rider_subject(rest).ok()?;
     let (rest, _) = tag::<_, _, OracleError<'_>>(" would leave the battlefield, ")
         .parse(rest)
         .ok()?;
@@ -1963,6 +2003,16 @@ pub(crate) fn try_parse_leave_battlefield_exile_replacement(lower: &str) -> Opti
         .ok()?;
     parse_optional_period_and_end(rest)?;
 
+    // CR 603.7 + CR 614.1a: Plural "those Auras/… them" riders install on the
+    // just-returned tracked set (Storm Herald), not a singular ParentTarget.
+    let target = if subject.is_tracked_set_plural() {
+        TargetFilter::TrackedSet {
+            id: TrackedSetId(0),
+        }
+    } else {
+        TargetFilter::Any
+    };
+
     Some(Effect::AddTargetReplacement {
         // CR 400.7: The standalone rider is bound to the lifetime of the object it
         // is installed on; stamp the expiry here so the lifetime is self-contained
@@ -1974,7 +2024,7 @@ pub(crate) fn try_parse_leave_battlefield_exile_replacement(lower: &str) -> Opti
         replacement: Box::new(
             leave_battlefield_exile_replacement().expiry(RestrictionExpiry::UntilHostLeavesPlay),
         ),
-        target: TargetFilter::Any,
+        target,
     })
 }
 
@@ -24538,6 +24588,7 @@ fn hand_reveal_target_to_controller_ref(target: &TargetFilter) -> Option<Control
 
 fn publishes_tracked_set_from_resolution(effect: &Effect) -> bool {
     is_exile_effect(effect)
+        || is_battlefield_return_effect(effect)
         || is_token_creating_effect(effect)
         || is_mass_coerce_static(effect)
         || matches!(
@@ -24547,6 +24598,21 @@ fn publishes_tracked_set_from_resolution(effect: &Effect) -> bool {
                 | Effect::MultiplyCounter { .. }
                 | Effect::MoveCounters { .. }
         )
+}
+
+/// CR 603.7 + CR 400.7: A return/put onto the battlefield publishes the moved
+/// objects as the chain tracked set (Storm Herald "those Auras", Returned cause).
+fn is_battlefield_return_effect(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::ChangeZone {
+            destination: Zone::Battlefield,
+            ..
+        } | Effect::ChangeZoneAll {
+            destination: Zone::Battlefield,
+            ..
+        }
+    )
 }
 
 /// CR 608.2c + CR 701.21a: Does this clause publish, at resolution, a chain
@@ -24783,6 +24849,9 @@ fn contains_explicit_tracked_set_pronoun(lower: &str) -> bool {
         || scan_contains_phrase(lower, "those permanents")
         || scan_contains_phrase(lower, "those creatures")
         || scan_contains_phrase(lower, "those tokens")
+        // Storm Herald: "Exile those Auras at the beginning of your next end step."
+        || scan_contains_phrase(lower, "those auras")
+        || scan_contains_phrase(lower, "those enchantments")
         || scan_contains_phrase(lower, "the exiled card")
         || scan_contains_phrase(lower, "the exiled permanent")
         || scan_contains_phrase(lower, "the exiled creature")

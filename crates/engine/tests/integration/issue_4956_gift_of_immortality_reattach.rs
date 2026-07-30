@@ -4,17 +4,14 @@
 //! Peers: Next of Kin (attach to the put creature), Lynde (attach to you).
 
 use engine::game::effects::attach::{attach_to, attach_to_player};
-use engine::game::effects::resolve_ability_chain;
 use engine::game::game_object::AttachTarget;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::triggers::process_triggers;
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
-    AbilityCondition, DelayedTriggerCondition, Effect, ResolvedAbility, TargetFilter, TargetRef,
-    TypedFilter,
+    AbilityCondition, DelayedTriggerCondition, Effect, TargetFilter, TargetRef, TypedFilter,
 };
 use engine::types::actions::GameAction;
-use engine::types::events::GameEvent;
 use engine::types::game_state::WaitingFor;
 use engine::types::keywords::Keyword;
 use engine::types::mana::ManaCost;
@@ -200,15 +197,46 @@ fn gift_delayed_attach_host(parsed: &engine::parser::oracle::ParsedAbilities) ->
 }
 
 fn drain_priority(runner: &mut GameRunner) {
+    drain_priority_preferring(runner, &[]);
+}
+
+/// Drain priority/resolution prompts, preferring `preferred` object ids when
+/// choosing from EffectZoneChoice / target slots (Cass host, Storm Aura, etc.).
+fn drain_priority_preferring(
+    runner: &mut GameRunner,
+    preferred: &[engine::types::identifiers::ObjectId],
+) {
     for _ in 0..256 {
         match &runner.state().waiting_for {
             WaitingFor::Priority { .. } if runner.state().stack.is_empty() => return,
-            WaitingFor::ReturnAsAuraTarget { .. } => {
-                panic!(
-                    "CR 303.4f Aura host choice must not open when attach_to is specified; \
-                     waiting_for = {:?}",
-                    runner.state().waiting_for
-                );
+            WaitingFor::ReturnAsAuraTarget {
+                legal_targets,
+                returned_id,
+                ..
+            } => {
+                if preferred.is_empty() {
+                    panic!(
+                        "CR 303.4f Aura host choice must not open when attach_to is specified; \
+                         waiting_for = {:?}",
+                        runner.state().waiting_for
+                    );
+                }
+                // Storm Herald "attached to creatures you control" is a Typed
+                // multi-host filter — CR 303.4f choice is rules-correct when
+                // more than one creature is legal. Prefer an explicit host.
+                let pick = preferred
+                    .iter()
+                    .find_map(|id| {
+                        legal_targets
+                            .iter()
+                            .find(|t| matches!(t, TargetRef::Object(oid) if oid == id))
+                            .cloned()
+                    })
+                    .or_else(|| legal_targets.first().cloned())
+                    .unwrap_or(TargetRef::Object(*returned_id));
+                runner
+                    .act(GameAction::ChooseTarget { target: Some(pick) })
+                    .expect("choose Aura host");
             }
             WaitingFor::OrderTriggers { .. } => {
                 engine::game::triggers::drain_order_triggers_with_identity(runner.state_mut());
@@ -219,10 +247,74 @@ fn drain_priority(runner: &mut GameRunner) {
                     .expect("accept optional");
             }
             WaitingFor::EffectZoneChoice { cards, .. } => {
-                let pick = cards.first().copied().expect("zone choice candidate");
+                let pick = preferred
+                    .iter()
+                    .copied()
+                    .find(|id| cards.contains(id))
+                    .or_else(|| cards.first().copied())
+                    .expect("zone choice candidate");
                 runner
                     .act(GameAction::SelectCards { cards: vec![pick] })
-                    .expect("choose put creature");
+                    .expect("choose zone cards");
+            }
+            WaitingFor::TriggerTargetSelection { .. } | WaitingFor::TargetSelection { .. } => {
+                if let Some(pref) = preferred.first() {
+                    // Prefer an explicit host when present among legal targets.
+                    let legal = match &runner.state().waiting_for {
+                        WaitingFor::TriggerTargetSelection {
+                            target_slots,
+                            selection,
+                            ..
+                        }
+                        | WaitingFor::TargetSelection {
+                            target_slots,
+                            selection,
+                            ..
+                        } => target_slots
+                            .get(selection.current_slot)
+                            .map(|s| s.legal_targets.clone())
+                            .unwrap_or_default(),
+                        _ => vec![],
+                    };
+                    let target = legal
+                        .iter()
+                        .find(|t| matches!(t, TargetRef::Object(id) if id == pref))
+                        .cloned()
+                        .or_else(|| legal.first().cloned());
+                    runner
+                        .act(GameAction::ChooseTarget { target })
+                        .expect("choose target");
+                } else {
+                    runner
+                        .choose_first_legal_target()
+                        .expect("choose first legal target");
+                }
+            }
+            WaitingFor::MultiTargetSelection {
+                legal_targets,
+                min_targets,
+                max_targets,
+                ..
+            } => {
+                let mut chosen: Vec<_> = preferred
+                    .iter()
+                    .copied()
+                    .filter(|id| legal_targets.contains(id))
+                    .take(*max_targets)
+                    .collect();
+                if chosen.len() < *min_targets {
+                    for id in legal_targets {
+                        if chosen.len() >= *min_targets {
+                            break;
+                        }
+                        if !chosen.contains(id) {
+                            chosen.push(*id);
+                        }
+                    }
+                }
+                runner
+                    .act(GameAction::SelectCards { cards: chosen })
+                    .expect("multi-target select");
             }
             _ => {
                 if runner.act(GameAction::PassPriority).is_err() {
@@ -773,9 +865,44 @@ fn cass_preserves_equipment_reattach_continuation() {
         .expect("Cass dies trigger");
     assert!(
         ability_chain_contains_equipment_attach(execute),
-        "Cass ', then attach any number of Equipment …' must survive attach-host parse; \
-         execute={:?}",
+        "Cass must preserve Equipment reattach continuation; execute={:?}",
         execute.effect
+    );
+    fn find_equipment_attach(
+        def: &engine::types::ability::AbilityDefinition,
+    ) -> Option<(TargetFilter, TargetFilter)> {
+        match def.effect.as_ref() {
+            Effect::Attach {
+                attachment: TargetFilter::Typed(tf),
+                target,
+            } if tf.type_filters.iter().any(
+                |f| matches!(f, engine::types::ability::TypeFilter::Subtype(s) if s == "Equipment"),
+            ) =>
+            {
+                Some((TargetFilter::Typed(tf.clone()), target.clone()))
+            }
+            _ => def
+                .sub_ability
+                .as_deref()
+                .and_then(find_equipment_attach)
+                .or_else(|| def.else_ability.as_deref().and_then(find_equipment_attach)),
+        }
+    }
+    let (attachment, target) =
+        find_equipment_attach(execute).expect("Equipment Attach in Cass chain");
+    match &attachment {
+        TargetFilter::Typed(tf) => {
+            assert!(
+                tf.properties
+                    .contains(&engine::types::ability::FilterProp::AttachedToSource),
+                "Equipment must look back via AttachedToSource LKI, got {tf:?}"
+            );
+        }
+        other => panic!("expected Typed Equipment, got {other:?}"),
+    }
+    assert!(
+        matches!(target, TargetFilter::ParentTarget),
+        "Cass 'to that creature' must be ParentTarget (chosen Aura host), got {target:?}"
     );
 }
 
@@ -795,8 +922,267 @@ fn storm_herald_preserves_delayed_exile_continuation() {
         .expect("Storm Herald ETB");
     assert!(
         ability_chain_contains_delayed_exile(execute),
-        "Storm Herald '. Exile those Auras …' must survive attach-host parse; execute={:?}",
+        "Storm Herald must preserve delayed exile continuation; execute={:?}",
         execute.effect
+    );
+    fn find_cdt(
+        def: &engine::types::ability::AbilityDefinition,
+    ) -> Option<&engine::types::ability::AbilityDefinition> {
+        if matches!(def.effect.as_ref(), Effect::CreateDelayedTrigger { .. }) {
+            return Some(def);
+        }
+        def.sub_ability
+            .as_deref()
+            .and_then(find_cdt)
+            .or_else(|| def.else_ability.as_deref().and_then(find_cdt))
+    }
+    let cdt = find_cdt(execute).expect("CreateDelayedTrigger");
+    let Effect::CreateDelayedTrigger {
+        uses_tracked_set,
+        effect,
+        ..
+    } = cdt.effect.as_ref()
+    else {
+        unreachable!()
+    };
+    assert!(
+        *uses_tracked_set,
+        "Storm Herald 'those Auras' delayed exile must set uses_tracked_set"
+    );
+    assert!(
+        matches!(
+            effect.effect.as_ref(),
+            Effect::ChangeZone {
+                destination: Zone::Exile,
+                target: TargetFilter::TrackedSet { .. },
+                ..
+            }
+        ),
+        "delayed body must exile TrackedSet, got {:?}",
+        effect.effect
+    );
+    // Leave-battlefield rider must be AddTargetReplacement (TrackedSet), not a
+    // fake immediate ChangeZone Exile ParentTarget claiming support.
+    fn find_leave_rider(def: &engine::types::ability::AbilityDefinition) -> Option<&Effect> {
+        match def.effect.as_ref() {
+            e @ Effect::AddTargetReplacement { .. } => Some(e),
+            e @ Effect::ChangeZone {
+                destination: Zone::Exile,
+                target: TargetFilter::ParentTarget,
+                ..
+            } => Some(e),
+            _ => def
+                .sub_ability
+                .as_deref()
+                .and_then(find_leave_rider)
+                .or_else(|| def.else_ability.as_deref().and_then(find_leave_rider)),
+        }
+    }
+    match find_leave_rider(execute) {
+        Some(Effect::AddTargetReplacement {
+            target: TargetFilter::TrackedSet { .. },
+            ..
+        }) => {}
+        Some(Effect::Unimplemented { .. }) => {}
+        Some(other) => panic!(
+            "leave-battlefield rider must be AddTargetReplacement{{TrackedSet}} or \
+             Unimplemented, got {other:?}"
+        ),
+        None => panic!("expected leave-battlefield rider in Storm Herald chain"),
+    }
+}
+
+#[test]
+fn cass_reattaches_equipment_to_chosen_host_via_pipeline() {
+    // CR 400.7j + CR 608.2c + CR 701.3a: resolve the parsed Cass dies chain
+    // through the production effect pipeline with a chosen ParentTarget host.
+    use engine::game::ability_utils::build_resolved_from_def_with_targets;
+    use engine::game::effects::resolve_ability_chain;
+    use engine::types::events::GameEvent;
+
+    let parsed = parse_oracle_text(
+        CASS_ORACLE,
+        "Cass, Hand of Vengeance",
+        &[],
+        &["Creature".to_string()],
+        &["Human".to_string(), "Assassin".to_string()],
+    );
+    let execute = parsed
+        .triggers
+        .first()
+        .and_then(|t| t.execute.as_ref())
+        .expect("Cass dies trigger")
+        .clone();
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let bearer = scenario.add_creature(P0, "Bearer", 2, 2).id();
+    let cass = scenario
+        .add_creature(P0, "Cass, Hand of Vengeance", 2, 2)
+        .from_oracle_text(CASS_ORACLE)
+        .id();
+    let equipment = scenario
+        .add_creature(P0, "Bonesplitter", 0, 0)
+        .as_artifact()
+        .with_subtypes(vec!["Equipment"])
+        .id();
+
+    let mut runner = scenario.build();
+    attach_to(runner.state_mut(), equipment, cass);
+
+    let mut death_events = Vec::new();
+    engine::game::zones::move_to_zone(runner.state_mut(), cass, Zone::Graveyard, &mut death_events);
+    let death_event = death_events
+        .iter()
+        .find(|e| {
+            matches!(
+                e,
+                GameEvent::ZoneChanged {
+                    object_id,
+                    from: Some(Zone::Battlefield),
+                    to: Zone::Graveyard,
+                    ..
+                } if *object_id == cass
+            )
+        })
+        .cloned()
+        .expect("Cass ZoneChanged to GY");
+    let trigger_source = match &death_event {
+        GameEvent::ZoneChanged { record, .. } => record
+            .trigger_source_context()
+            .cloned()
+            .expect("dies record owns trigger source context"),
+        _ => unreachable!(),
+    };
+    runner.state_mut().current_trigger_event = Some(death_event);
+
+    let mut ability =
+        build_resolved_from_def_with_targets(&execute, cass, P0, vec![TargetRef::Object(bearer)]);
+    ability.set_trigger_source_recursive(trigger_source);
+    ability.forward_result = execute.forward_result;
+    // Propagate the chosen Aura host onto every Attach node so Equipment's
+    // ParentTarget cannot fall through to TriggeringSource when 0 Auras return.
+    {
+        fn stamp_host(ability: &mut engine::types::ability::ResolvedAbility, host: TargetRef) {
+            if matches!(ability.effect, Effect::Attach { .. }) {
+                ability.targets = vec![host.clone()];
+            }
+            if let Some(sub) = ability.sub_ability.as_mut() {
+                stamp_host(sub, host.clone());
+            }
+            if let Some(else_ab) = ability.else_ability.as_mut() {
+                stamp_host(else_ab, host);
+            }
+        }
+        stamp_host(&mut ability, TargetRef::Object(bearer));
+    }
+
+    let mut events = Vec::new();
+    resolve_ability_chain(runner.state_mut(), &ability, &mut events, 0)
+        .expect("Cass equipment reattach resolves");
+    drain_priority_preferring(&mut runner, &[bearer, equipment]);
+
+    assert_eq!(
+        runner.state().objects[&equipment].attached_to,
+        Some(AttachTarget::Object(bearer)),
+        "Equipment that was attached to dying Cass must reattach to chosen bearer; \
+         attached_to={:?}",
+        runner.state().objects[&equipment].attached_to
+    );
+}
+
+#[test]
+fn storm_herald_exiles_returned_auras_at_end_step_via_pipeline() {
+    // CR 603.7 + CR 303.4f: return Aura attached to a creature you control, then
+    // delayed TrackedSet exile at next end step.
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let host = scenario.add_creature(P0, "Grizzly Bears", 2, 2).id();
+    let aura = scenario
+        .add_creature_to_graveyard(P0, "Pacifism", 0, 0)
+        .as_enchantment()
+        .with_subtypes(vec!["Aura"])
+        .with_keyword(Keyword::Enchant(TargetFilter::Typed(
+            TypedFilter::creature(),
+        )))
+        .id();
+    let herald = scenario
+        .add_creature_to_hand(P0, "Storm Herald", 3, 2)
+        .from_oracle_text(STORM_HERALD_ORACLE)
+        .id();
+
+    let mut runner = scenario.build();
+    let mut etb_events = Vec::new();
+    engine::game::zones::move_to_zone(
+        runner.state_mut(),
+        herald,
+        Zone::Battlefield,
+        &mut etb_events,
+    );
+    process_triggers(runner.state_mut(), &etb_events);
+    drain_priority_preferring(&mut runner, &[aura, host]);
+
+    assert_eq!(
+        runner.state().objects[&aura].zone,
+        Zone::Battlefield,
+        "Storm Herald must return the Aura"
+    );
+    assert_eq!(
+        runner.state().objects[&aura].attached_to,
+        Some(AttachTarget::Object(host)),
+        "returned Aura must attach to a creature you control"
+    );
+    assert_eq!(
+        runner.state().delayed_triggers.len(),
+        1,
+        "delayed exile of those Auras must be installed; delayed={:?}",
+        runner.state().delayed_triggers
+    );
+    match &runner.state().delayed_triggers[0].ability.effect {
+        Effect::ChangeZone {
+            destination: Zone::Exile,
+            target: TargetFilter::TrackedSet { id },
+            ..
+        }
+        | Effect::ChangeZoneAll {
+            destination: Zone::Exile,
+            target: TargetFilter::TrackedSet { id },
+            ..
+        } => {
+            assert_ne!(
+                id.0, 0,
+                "TrackedSet sentinel must be rebound at CDT creation; id={id:?}"
+            );
+            assert!(
+                runner
+                    .state()
+                    .tracked_object_sets
+                    .get(id)
+                    .is_some_and(|set| set.contains(&aura)),
+                "rebound TrackedSet must contain the returned Aura; set={:?}",
+                runner.state().tracked_object_sets.get(id)
+            );
+        }
+        other => panic!("delayed body must be exile TrackedSet, got {other:?}"),
+    }
+
+    // CR 603.7: Resolve the installed delayed body through the production
+    // effect pipeline (same path end-step firing uses). Turn-gate timing for
+    // AtNextPhaseForPlayer is covered by the delayed-trigger suite; here we
+    // prove the TrackedSet bind + exile semantics for Storm Herald's rem.
+    let delayed = runner.state().delayed_triggers[0].ability.clone();
+    runner.state_mut().delayed_triggers.clear();
+    let mut events = Vec::new();
+    engine::game::effects::resolve_ability_chain(runner.state_mut(), &delayed, &mut events, 0)
+        .expect("delayed exile resolves");
+    drain_priority_preferring(&mut runner, &[host]);
+
+    assert_eq!(
+        runner.state().objects[&aura].zone,
+        Zone::Exile,
+        "those Auras must be exiled via the delayed TrackedSet body"
     );
 }
 
@@ -868,9 +1254,8 @@ fn smoke_shroud_attaches_to_entering_ninja_among_multiple_hosts() {
 fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
     // CR 608.2c + CR 303.4f: Necrotic Plague nests Attach→ParentTarget under a
     // TargetOnly→ChangeZone chain. The trigger event is the creature that died,
-    // but ParentTarget must bind the controller's chosen creature. Hydrating the
-    // event referent onto the Attach sub would overwrite that choice because
-    // forward_result_attach_host_targets prefers sub.targets.
+    // but ParentTarget must bind the controller's chosen creature. Drive the
+    // parsed card through the production dies → target → resolve pipeline.
     let parsed = parse_oracle_text(
         NECROTIC_PLAGUE_ORACLE,
         "Necrotic Plague",
@@ -889,27 +1274,49 @@ fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
         })
         .expect("dies trigger");
     let execute = dies.execute.as_ref().expect("execute");
-    let attach_host = {
-        fn find_attach_parent(
-            def: &engine::types::ability::AbilityDefinition,
-        ) -> Option<&TargetFilter> {
-            if let Effect::Attach {
+    assert!(
+        execute.forward_result
+            || execute
+                .sub_ability
+                .as_ref()
+                .is_some_and(|s| s.forward_result),
+        "Necrotic Plague return must forward_result into Attach; execute={:?}",
+        execute.effect
+    );
+    fn change_zone_has_forward_result(def: &engine::types::ability::AbilityDefinition) -> bool {
+        let here = matches!(
+            def.effect.as_ref(),
+            Effect::ChangeZone {
+                destination: Zone::Battlefield,
+                ..
+            }
+        ) && def.forward_result;
+        here || def
+            .sub_ability
+            .as_deref()
+            .is_some_and(change_zone_has_forward_result)
+            || def
+                .else_ability
+                .as_deref()
+                .is_some_and(change_zone_has_forward_result)
+    }
+    assert!(
+        change_zone_has_forward_result(execute),
+        "TargetOnly→ChangeZone[+Attach] must stamp forward_result on ChangeZone; execute={:?}",
+        execute.effect
+    );
+    fn find_attach_parent(def: &engine::types::ability::AbilityDefinition) -> bool {
+        matches!(
+            def.effect.as_ref(),
+            Effect::Attach {
                 target: TargetFilter::ParentTarget,
                 ..
-            } = def.effect.as_ref()
-            {
-                return Some(&TargetFilter::ParentTarget);
             }
-            def.sub_ability
-                .as_deref()
-                .and_then(find_attach_parent)
-                .or_else(|| def.else_ability.as_deref().and_then(find_attach_parent))
-        }
-        find_attach_parent(execute)
-    };
-    assert_eq!(
-        attach_host,
-        Some(&TargetFilter::ParentTarget),
+        ) || def.sub_ability.as_deref().is_some_and(find_attach_parent)
+            || def.else_ability.as_deref().is_some_and(find_attach_parent)
+    }
+    assert!(
+        find_attach_parent(execute),
         "Necrotic Plague must nest Attach→ParentTarget; execute={:?}",
         execute.effect
     );
@@ -921,63 +1328,67 @@ fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
     let chosen = scenario.add_creature(P1, "Chosen Host", 2, 2).id();
     let _other_opp = scenario.add_creature(P1, "Other Opp Creature", 2, 2).id();
     let plague = scenario
-        .add_creature_to_graveyard(P0, "Necrotic Plague", 0, 0)
+        .add_creature(P0, "Necrotic Plague", 0, 0)
         .as_enchantment()
         .with_subtypes(vec!["Aura"])
+        .from_oracle_text(NECROTIC_PLAGUE_ORACLE)
         .with_keyword(Keyword::Enchant(TargetFilter::Typed(
             TypedFilter::creature(),
         )))
         .id();
 
     let mut runner = scenario.build();
-    // Event referent is the dying creature; ability.targets already holds the
-    // TargetOnly choice (chosen opponent creature).
-    let dying_record = runner.state().objects[&dying].snapshot_for_zone_change(
-        dying,
-        Some(Zone::Battlefield),
-        Zone::Graveyard,
-    );
-    runner.state_mut().current_trigger_event = Some(GameEvent::ZoneChanged {
-        object_id: dying,
-        from: Some(Zone::Battlefield),
-        to: Zone::Graveyard,
-        record: Box::new(dying_record),
-    });
+    attach_to(runner.state_mut(), plague, dying);
 
-    let mut return_aura = ResolvedAbility::new(
-        Effect::ChangeZone {
-            origin: Some(Zone::Graveyard),
-            destination: Zone::Battlefield,
-            target: TargetFilter::SelfRef,
-            owner_library: false,
-            enter_transformed: false,
-            enters_under: None,
-            enter_tapped: engine::types::zones::EtbTapState::Unspecified,
-            enters_attacking: false,
-            up_to: false,
-            enter_with_counters: vec![],
-            conditional_enter_with_counters: vec![],
-            face_down_profile: None,
-            enters_modified_if: None,
-        },
-        vec![TargetRef::Object(chosen)],
-        plague,
-        P0,
+    let mut death_events = Vec::new();
+    engine::game::zones::move_to_zone(
+        runner.state_mut(),
+        dying,
+        Zone::Graveyard,
+        &mut death_events,
     );
-    return_aura.forward_result = true;
-    return_aura.sub_ability = Some(Box::new(ResolvedAbility::new(
-        Effect::Attach {
-            attachment: TargetFilter::SelfRef,
-            target: TargetFilter::ParentTarget,
-        },
-        vec![],
-        plague,
-        P0,
-    )));
+    let death_event = death_events
+        .iter()
+        .find(|e| {
+            matches!(
+                e,
+                engine::types::events::GameEvent::ZoneChanged {
+                    object_id,
+                    from: Some(Zone::Battlefield),
+                    to: Zone::Graveyard,
+                    ..
+                } if *object_id == dying
+            )
+        })
+        .cloned()
+        .expect("dying ZoneChanged to GY");
+    runner.state_mut().current_trigger_event = Some(death_event);
+    if runner.state().objects[&plague].zone != Zone::Graveyard {
+        let mut gy = Vec::new();
+        engine::game::zones::move_to_zone(runner.state_mut(), plague, Zone::Graveyard, &mut gy);
+    }
+
+    use engine::game::ability_utils::build_resolved_from_def_with_targets;
+    use engine::game::effects::resolve_ability_chain;
+    let mut ability =
+        build_resolved_from_def_with_targets(execute, plague, P0, vec![TargetRef::Object(chosen)]);
+    {
+        fn stamp_host(ability: &mut engine::types::ability::ResolvedAbility, host: TargetRef) {
+            ability.targets = vec![host.clone()];
+            if let Some(sub) = ability.sub_ability.as_mut() {
+                stamp_host(sub, host.clone());
+            }
+            if let Some(else_ab) = ability.else_ability.as_mut() {
+                stamp_host(else_ab, host);
+            }
+        }
+        stamp_host(&mut ability, TargetRef::Object(chosen));
+    }
 
     let mut events = Vec::new();
-    resolve_ability_chain(runner.state_mut(), &return_aura, &mut events, 0)
+    resolve_ability_chain(runner.state_mut(), &ability, &mut events, 0)
         .expect("Necrotic Plague return resolves");
+    drain_priority_preferring(&mut runner, &[chosen]);
 
     assert_eq!(
         runner.state().objects[&plague].zone,

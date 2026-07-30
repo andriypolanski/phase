@@ -5515,23 +5515,45 @@ pub(super) fn parse_utility_imperative_ast(
             return Some(UtilityImperativeAst::SwitchPT { target });
         }
     }
-    // CR 400.7j + CR 608.2h: Zack Fair — "attach an Equipment that was attached
-    // to ~ to that creature". The attachment is battlefield Equipment whose
-    // host was the ability source (including LKI after self-sacrifice).
+    // CR 400.7j + CR 608.2h: Zack Fair / Cass — "attach [an / any number of]
+    // Equipment that was/were attached to ~/it to that creature". The attachment
+    // is battlefield Equipment whose host was the ability source or the
+    // triggering object (AttachedToSource + trigger_source LKI). "to that
+    // creature" after a chosen attach-host is ParentTarget (Cass), not the
+    // dies-trigger TriggeringSource demonstrative.
     if let Some((multi_target, recipient_text)) = nom_on_lower(text, lower, |input| {
         let (input, _) = tag("attach ").parse(input)?;
-        let (input, _) = opt(tag("an ")).parse(input)?;
-        let (input, multi_target) = opt(value(
-            MultiTargetSpec::up_to(QuantityExpr::Fixed { value: 1 }),
-            tag("up to one "),
+        let (input, multi_target) = alt((
+            value(Some(MultiTargetSpec::unlimited(0)), tag("any number of ")),
+            value(
+                Some(MultiTargetSpec::up_to(QuantityExpr::Fixed { value: 1 })),
+                tag("up to one "),
+            ),
+            map(opt(tag("an ")), |_| None),
         ))
         .parse(input)?;
-        let (input, _) = tag("equipment that was attached to ").parse(input)?;
-        let (input, _) = alt((tag("~"), tag("this equipment"))).parse(input)?;
+        let (input, _) = tag("equipment that ").parse(input)?;
+        let (input, _) = alt((tag("was "), tag("were "))).parse(input)?;
+        let (input, _) = tag("attached to ").parse(input)?;
+        let (input, _) = alt((tag("~"), tag("it"), tag("this equipment"))).parse(input)?;
         let (input, _) = tag(" to ").parse(input)?;
         Ok((input, multi_target))
     }) {
-        let (target, _target_rem) = parse_attach_recipient(recipient_text, ctx);
+        // CR 608.2c: "to that creature" names the chosen Aura host from the prior
+        // return/attach clause (Cass), not the dying creature. Force ParentTarget
+        // for that demonstrative; other recipients keep attach-recipient dispatch.
+        let (target, _target_rem) = {
+            let recipient_lower = recipient_text.trim().to_ascii_lowercase();
+            if tag::<_, _, OracleError<'_>>("that creature")
+                .parse(recipient_lower.as_str())
+                .ok()
+                .is_some_and(|(rest, _)| rest.trim().is_empty())
+            {
+                (TargetFilter::ParentTarget, "")
+            } else {
+                parse_attach_recipient(recipient_text, ctx)
+            }
+        };
         #[cfg(debug_assertions)]
         assert_no_compound_remainder(_target_rem, text);
         if _target_rem.trim().is_empty() {
@@ -14699,6 +14721,40 @@ mod tests {
         }
         assert!(matches!(target, TargetFilter::ParentTarget));
         assert_eq!(multi_target, None);
+    }
+
+    #[test]
+    fn parse_attach_any_number_equipment_were_attached_to_it_to_parent_target() {
+        // Cass, Hand of Vengeance — dies-trigger "that creature" is the chosen
+        // Aura host (ParentTarget), not TriggeringSource.
+        let input = "attach any number of Equipment that were attached to it to that creature";
+        let lower = input.to_lowercase();
+        let mut ctx = ParseContext::default();
+        ctx.subject = Some(TargetFilter::SelfRef);
+        let result = parse_utility_imperative_ast(input, &lower, &mut ctx);
+        let Some(UtilityImperativeAst::Attach {
+            attachment,
+            target,
+            multi_target,
+        }) = result
+        else {
+            panic!("{input}: expected Attach, got {result:?}");
+        };
+        match attachment {
+            TargetFilter::Typed(tf) => {
+                assert!(tf
+                    .type_filters
+                    .iter()
+                    .any(|t| matches!(t, TypeFilter::Subtype(s) if s == "Equipment")));
+                assert!(tf.properties.contains(&FilterProp::AttachedToSource));
+            }
+            other => panic!("expected typed Equipment filter, got {other:?}"),
+        }
+        assert!(
+            matches!(target, TargetFilter::ParentTarget),
+            "Cass Equipment host must be ParentTarget, got {target:?}"
+        );
+        assert_eq!(multi_target, Some(MultiTargetSpec::unlimited(0)));
     }
 
     #[test]

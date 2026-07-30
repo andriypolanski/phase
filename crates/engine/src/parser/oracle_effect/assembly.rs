@@ -98,6 +98,33 @@ fn is_multi_target_player_subject_definition(def: &AbilityDefinition) -> bool {
             })
 }
 
+/// CR 701.3a + CR 303.4f: Stamp `forward_result` on a ChangeZone→Battlefield that
+/// nests Attach, including when that return sits under TargetOnly (Necrotic Plague).
+fn stamp_forward_result_on_battlefield_attach_return(def: &mut AbilityDefinition) {
+    let nests_attach = matches!(
+        def.sub_ability.as_deref().map(|s| &*s.effect),
+        Some(Effect::Attach { .. })
+    );
+    if nests_attach
+        && matches!(
+            &*def.effect,
+            Effect::ChangeZone {
+                destination: Zone::Battlefield,
+                ..
+            }
+        )
+    {
+        def.forward_result = true;
+        return;
+    }
+    if let Some(sub) = def.sub_ability.as_mut() {
+        stamp_forward_result_on_battlefield_attach_return(sub);
+    }
+    if let Some(else_ability) = def.else_ability.as_mut() {
+        stamp_forward_result_on_battlefield_attach_return(else_ability);
+    }
+}
+
 /// CR 608.2c: A bare verb after a multi-target player subject continues that
 /// subject. A printed player subject (especially `you`) starts an independent
 /// actor-relative instruction instead.
@@ -1901,6 +1928,13 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
         // nests before wrap; mirror that for this attach-on-return shape.
         let clause_sub = if is_target_only {
             def.sub_ability = clause_ir.parsed.sub_ability.clone();
+            // CR 701.3a + CR 303.4f: TargetOnly → ChangeZone[+Attach] (Necrotic
+            // Plague) must stamp `forward_result` on the nested return so the
+            // chosen host propagates into Attach (see
+            // `change_zone_forwards_chosen_attach_host`).
+            if let Some(sub) = def.sub_ability.as_mut() {
+                stamp_forward_result_on_battlefield_attach_return(sub);
+            }
             None
         } else if matches!(
             &*def.effect,

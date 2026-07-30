@@ -5299,6 +5299,14 @@ fn mandatory_parent_effect_performed(effect: &Effect, events: &[GameEvent]) -> b
 }
 
 pub(crate) fn publish_tracked_set(state: &mut GameState, affected_ids: Vec<ObjectId>) {
+    // CR 603.7 + CR 608.2c: An empty publish must not allocate a chain set id —
+    // otherwise a deferred Resolution-time zone choice (Storm Herald: choose
+    // Auras, then move) can stamp `chain_tracked_set_id` to an empty set before
+    // the real move, and a following CreateDelayedTrigger binds TrackedSet to
+    // that empty id forever.
+    if affected_ids.is_empty() {
+        return;
+    }
     // CR 603.7 + CR 608.2c: Chain unification. If an ancestor in this
     // resolution chain already published a tracked set, extend that set with
     // the current publish so compound zone-changing effects expose every

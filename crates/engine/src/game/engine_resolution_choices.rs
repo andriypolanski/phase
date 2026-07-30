@@ -4829,6 +4829,16 @@ pub(super) fn handle_resolution_choice(
                                 }
                             }
                             crate::game::zone_pipeline::ZoneMoveTerminalResult::NeedsAuraAttachmentChoice => {
+                                // CR 608.2c + CR 603.7 + CR 303.4f: Publish the
+                                // selection before pausing for Aura host choice —
+                                // this early return skips the terminal publish
+                                // below (Storm Herald "Exile those Auras").
+                                publish_effect_zone_choice_tracked_set(
+                                    state,
+                                    effect_kind,
+                                    &chosen_ids,
+                                    library_position,
+                                );
                                 crate::game::triggers::append_and_collect_logical_zone_trigger_segment(
                                     state,
                                     &mut logical_zone_change_group,
@@ -4885,6 +4895,15 @@ pub(super) fn handle_resolution_choice(
                                 // `effects/mod.rs::drain_pending_change_zone_iteration`
                                 // resumes the loop after this replacement
                                 // choice resolves (issue #535).
+                                // CR 608.2c + CR 603.7: Publish selection before
+                                // the replacement pause — same early-return gap
+                                // as NeedsAuraAttachmentChoice above.
+                                publish_effect_zone_choice_tracked_set(
+                                    state,
+                                    effect_kind,
+                                    &chosen_ids,
+                                    library_position,
+                                );
                                 crate::game::triggers::append_and_collect_logical_zone_trigger_segment(
                                     state,
                                     &mut logical_zone_change_group,
@@ -5437,34 +5456,16 @@ pub(super) fn handle_resolution_choice(
                             GameEvent::PermanentSacrificed { object_id, .. } => Some(*object_id),
                             _ => None,
                         })
-                        .collect()
-                } else if matches!(effect_kind, EffectKind::PutAtLibraryPosition)
-                    && matches!(library_position, Some(LibraryPosition::Bottom))
-                    && state.active_ability_continuation().is_some()
-                {
-                    // CR 608.2c: Expressive Iteration's bottom pick narrows the
-                    // tracked set to the remaining looked-at library cards so the
-                    // chained exile step cannot re-select the bottomed card.
-                    state
-                        .chain_tracked_set_id
-                        .and_then(|id| state.tracked_object_sets.get(&id).cloned())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|id| !chosen.contains(id))
-                        .filter(|id| {
-                            state
-                                .objects
-                                .get(id)
-                                .is_some_and(|obj| obj.zone == Zone::Library)
-                        })
-                        .collect()
+                        .collect::<Vec<_>>()
                 } else {
                     chosen.clone()
                 };
-                let tracked_id = TrackedSetId(state.next_tracked_set_id);
-                state.next_tracked_set_id += 1;
-                state.tracked_object_sets.insert(tracked_id, tracked);
-                state.chain_tracked_set_id = Some(tracked_id);
+                publish_effect_zone_choice_tracked_set(
+                    state,
+                    effect_kind,
+                    &tracked,
+                    library_position,
+                );
             }
             state.last_effect_count = Some(chosen.len() as i32);
             events.push(GameEvent::EffectResolved {
@@ -6601,6 +6602,68 @@ fn action_result_outcome(
         waiting_for,
         log_entries: vec![],
     })
+}
+
+/// CR 608.2c + CR 603.7: Publish the EffectZoneChoice selection as the chain
+/// tracked set when a continuation will consume it ("those Auras", plotted
+/// cards, etc.).
+///
+/// Must also run on mid-delivery pauses (`NeedsAuraAttachmentChoice` /
+/// replacement `NeedsChoice`): those early-return before the terminal publish
+/// at the end of the EffectZoneChoice arm, and Storm Herald's delayed exile
+/// would otherwise bind `TrackedSet` against an unbound sentinel.
+fn publish_effect_zone_choice_tracked_set(
+    state: &mut GameState,
+    effect_kind: EffectKind,
+    chosen: &[ObjectId],
+    library_position: Option<LibraryPosition>,
+) {
+    if !matches!(
+        effect_kind,
+        EffectKind::Sacrifice
+            | EffectKind::ChangeZone
+            | EffectKind::BounceAll
+            | EffectKind::Tap
+            | EffectKind::Untap
+            | EffectKind::PutAtLibraryPosition
+            | EffectKind::CastFromZone
+    ) || state.active_ability_continuation().is_none()
+    {
+        return;
+    }
+    let tracked = if matches!(effect_kind, EffectKind::Sacrifice) {
+        // Sacrifice publishes from PermanentSacrificed events at the completion
+        // seam; callers pass the sacrificed ids already.
+        chosen.to_vec()
+    } else if matches!(effect_kind, EffectKind::PutAtLibraryPosition)
+        && matches!(library_position, Some(LibraryPosition::Bottom))
+    {
+        // CR 608.2c: Expressive Iteration's bottom pick narrows the tracked set
+        // to the remaining looked-at library cards so the chained exile step
+        // cannot re-select the bottomed card.
+        state
+            .chain_tracked_set_id
+            .and_then(|id| state.tracked_object_sets.get(&id).cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| !chosen.contains(id))
+            .filter(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|obj| obj.zone == Zone::Library)
+            })
+            .collect()
+    } else {
+        chosen.to_vec()
+    };
+    if tracked.is_empty() {
+        return;
+    }
+    let tracked_id = TrackedSetId(state.next_tracked_set_id);
+    state.next_tracked_set_id += 1;
+    state.tracked_object_sets.insert(tracked_id, tracked);
+    state.chain_tracked_set_id = Some(tracked_id);
 }
 
 fn set_priority(state: &mut GameState, player: crate::types::player::PlayerId) {

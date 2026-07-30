@@ -44,8 +44,19 @@ pub fn resolve(
     // chosen object. This ordering is mandatory: running the contextual bind
     // first would pre-empt the tracked-set rewrite and break the "those cards"
     // cards.
+    // CR 603.7: Prefer the active nonempty resolution-chain set, then the latest
+    // nonempty published set. An empty chain id (stale pre-choice publish) must
+    // not shadow a later nonempty set (Storm Herald delayed exile).
     let tracked_set_id = if uses_tracked_set {
-        crate::game::targeting::latest_tracked_set_id(state)
+        state
+            .chain_tracked_set_id
+            .filter(|id| {
+                state
+                    .tracked_object_sets
+                    .get(id)
+                    .is_some_and(|objects| !objects.is_empty())
+            })
+            .or_else(|| crate::game::targeting::latest_tracked_set_id(state))
     } else {
         None
     };
