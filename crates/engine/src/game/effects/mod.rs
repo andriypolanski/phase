@@ -2479,12 +2479,37 @@ fn apply_parent_chain_context(
 fn should_propagate_parent_targets(ability: &ResolvedAbility, sub: &ResolvedAbility) -> bool {
     sub.targets.is_empty()
         && !ability.targets.is_empty()
-        && sub.target_choice_timing != TargetChoiceTiming::Resolution
+        && (sub.target_choice_timing != TargetChoiceTiming::Resolution
+            // CR 608.2c + CR 303.4f: TargetOnly → ChangeZone[+Attach ParentTarget]
+            // (Necrotic Plague) stamps Resolution on the return clause, but the
+            // chosen host is still the parent's bound target — propagate it so
+            // nested Attach does not fall through to the trigger-event referent.
+            || change_zone_forwards_chosen_attach_host(sub))
         && !(sub
             .effect
             .target_filter()
             .is_some_and(TargetFilter::references_exiled_by_source)
             && !effect_refs_parent_target(&sub.effect))
+}
+
+/// CR 701.3a + CR 303.4f: `forward_result` ChangeZone nesting Attach→ParentTarget
+/// carries the parent's chosen host (not a fresh Resolution-time object pick).
+fn change_zone_forwards_chosen_attach_host(sub: &ResolvedAbility) -> bool {
+    sub.forward_result
+        && matches!(
+            &sub.effect,
+            Effect::ChangeZone {
+                destination: Zone::Battlefield,
+                ..
+            }
+        )
+        && matches!(
+            sub.sub_ability.as_deref().map(|s| &s.effect),
+            Some(Effect::Attach {
+                target: TargetFilter::ParentTarget,
+                ..
+            })
+        )
 }
 
 fn waits_for_resolution_choice(waiting_for: &WaitingFor) -> bool {
@@ -6494,6 +6519,12 @@ fn filter_refs_post_replacement_event_target(filter: &TargetFilter) -> bool {
 /// own target is `SelfRef` (Dragon Breath, Smoke Shroud). Hydrate the nested
 /// host onto the Attach sub so zone entry binds the trigger-event creature
 /// instead of falling through to CR 303.4f Aura choice.
+///
+/// Do **not** inject an event referent when the ability chain already carries a
+/// bound parent target (Necrotic Plague: controller's chosen creature wins over
+/// the creature that died). `forward_result_attach_host_targets` prefers a
+/// filled Attach sub over `ability.targets`, so an eager hydrate would overwrite
+/// the explicit choice.
 fn hydrate_event_context_targets<'a>(
     state: &GameState,
     ability: &'a ResolvedAbility,
@@ -6505,7 +6536,13 @@ fn hydrate_event_context_targets<'a>(
     } else {
         None
     };
-    let nested_host_ref = nested_forward_result_attach_parent_target_ref(state, ability);
+    // Only hydrate an event-context Attach host when the chain has no bound
+    // parent target yet — an explicit/snapshotted choice must stand.
+    let nested_host_ref = if ability.targets.is_empty() {
+        nested_forward_result_attach_parent_target_ref(state, ability)
+    } else {
+        None
+    };
 
     if root_ref.is_none() && nested_host_ref.is_none() {
         return Cow::Borrowed(ability);
@@ -6524,12 +6561,18 @@ fn hydrate_event_context_targets<'a>(
 }
 
 /// CR 603.2 + CR 701.3a: Resolve `ParentTarget` for a nested forward-result
-/// Attach host when the sub still has empty `targets`.
+/// Attach host when the chain still has no bound parent target.
 fn nested_forward_result_attach_parent_target_ref(
     state: &GameState,
     ability: &ResolvedAbility,
 ) -> Option<TargetRef> {
     if !ability.forward_result {
+        return None;
+    }
+    // CR 608.2c + CR 303.4f: A chosen/snapshotted parent target on the ability
+    // (Necrotic Plague's "target creature one of their opponents controls") must
+    // not be overwritten by the trigger-event referent (the creature that died).
+    if !ability.targets.is_empty() {
         return None;
     }
     let sub = ability.sub_ability.as_ref()?;

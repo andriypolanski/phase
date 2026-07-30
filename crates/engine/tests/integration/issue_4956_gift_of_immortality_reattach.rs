@@ -4,14 +4,17 @@
 //! Peers: Next of Kin (attach to the put creature), Lynde (attach to you).
 
 use engine::game::effects::attach::{attach_to, attach_to_player};
+use engine::game::effects::resolve_ability_chain;
 use engine::game::game_object::AttachTarget;
-use engine::game::scenario::{GameRunner, GameScenario, P0};
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::triggers::process_triggers;
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
-    AbilityCondition, DelayedTriggerCondition, Effect, TargetFilter, TypedFilter,
+    AbilityCondition, DelayedTriggerCondition, Effect, ResolvedAbility, TargetFilter, TargetRef,
+    TypedFilter,
 };
 use engine::types::actions::GameAction;
+use engine::types::events::GameEvent;
 use engine::types::game_state::WaitingFor;
 use engine::types::keywords::Keyword;
 use engine::types::mana::ManaCost;
@@ -57,6 +60,12 @@ When this creature enters, return any number of Aura cards from your graveyard \
 to the battlefield attached to creatures you control. Exile those Auras at the \
 beginning of your next end step. If those Auras would leave the battlefield, \
 exile them instead of putting them anywhere else.";
+
+const NECROTIC_PLAGUE_ORACLE: &str = "Enchant creature\n\
+Enchanted creature has \"At the beginning of your upkeep, sacrifice this creature.\"\n\
+When enchanted creature dies, its controller chooses target creature one of \
+their opponents controls. Return this card from its owner's graveyard to the \
+battlefield attached to that creature.";
 
 /// Event-subject GY return with nested Attach→ParentTarget (Smoke Shroud / Dragon Breath).
 fn event_subject_return_attach_host(
@@ -853,4 +862,141 @@ fn smoke_shroud_attaches_to_entering_ninja_among_multiple_hosts() {
         ),
         "must not open CR 303.4f Aura host choice among multiple legal hosts"
     );
+}
+
+#[test]
+fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
+    // CR 608.2c + CR 303.4f: Necrotic Plague nests Attach→ParentTarget under a
+    // TargetOnly→ChangeZone chain. The trigger event is the creature that died,
+    // but ParentTarget must bind the controller's chosen creature. Hydrating the
+    // event referent onto the Attach sub would overwrite that choice because
+    // forward_result_attach_host_targets prefers sub.targets.
+    let parsed = parse_oracle_text(
+        NECROTIC_PLAGUE_ORACLE,
+        "Necrotic Plague",
+        &[],
+        &["Enchantment".to_string()],
+        &["Aura".to_string()],
+    );
+    let dies = parsed
+        .triggers
+        .iter()
+        .find(|t| {
+            matches!(
+                t.execute.as_ref().map(|e| e.effect.as_ref()),
+                Some(Effect::TargetOnly { .. })
+            )
+        })
+        .expect("dies trigger");
+    let execute = dies.execute.as_ref().expect("execute");
+    let attach_host = {
+        fn find_attach_parent(
+            def: &engine::types::ability::AbilityDefinition,
+        ) -> Option<&TargetFilter> {
+            if let Effect::Attach {
+                target: TargetFilter::ParentTarget,
+                ..
+            } = def.effect.as_ref()
+            {
+                return Some(&TargetFilter::ParentTarget);
+            }
+            def.sub_ability
+                .as_deref()
+                .and_then(find_attach_parent)
+                .or_else(|| def.else_ability.as_deref().and_then(find_attach_parent))
+        }
+        find_attach_parent(execute)
+    };
+    assert_eq!(
+        attach_host,
+        Some(&TargetFilter::ParentTarget),
+        "Necrotic Plague must nest Attach→ParentTarget; execute={:?}",
+        execute.effect
+    );
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let dying = scenario.add_creature(P0, "Dying Host", 2, 2).id();
+    let chosen = scenario.add_creature(P1, "Chosen Host", 2, 2).id();
+    let _other_opp = scenario.add_creature(P1, "Other Opp Creature", 2, 2).id();
+    let plague = scenario
+        .add_creature_to_graveyard(P0, "Necrotic Plague", 0, 0)
+        .as_enchantment()
+        .with_subtypes(vec!["Aura"])
+        .with_keyword(Keyword::Enchant(TargetFilter::Typed(
+            TypedFilter::creature(),
+        )))
+        .id();
+
+    let mut runner = scenario.build();
+    // Event referent is the dying creature; ability.targets already holds the
+    // TargetOnly choice (chosen opponent creature).
+    let dying_record = runner.state().objects[&dying].snapshot_for_zone_change(
+        dying,
+        Some(Zone::Battlefield),
+        Zone::Graveyard,
+    );
+    runner.state_mut().current_trigger_event = Some(GameEvent::ZoneChanged {
+        object_id: dying,
+        from: Some(Zone::Battlefield),
+        to: Zone::Graveyard,
+        record: Box::new(dying_record),
+    });
+
+    let mut return_aura = ResolvedAbility::new(
+        Effect::ChangeZone {
+            origin: Some(Zone::Graveyard),
+            destination: Zone::Battlefield,
+            target: TargetFilter::SelfRef,
+            owner_library: false,
+            enter_transformed: false,
+            enters_under: None,
+            enter_tapped: engine::types::zones::EtbTapState::Unspecified,
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            face_down_profile: None,
+            enters_modified_if: None,
+        },
+        vec![TargetRef::Object(chosen)],
+        plague,
+        P0,
+    );
+    return_aura.forward_result = true;
+    return_aura.sub_ability = Some(Box::new(ResolvedAbility::new(
+        Effect::Attach {
+            attachment: TargetFilter::SelfRef,
+            target: TargetFilter::ParentTarget,
+        },
+        vec![],
+        plague,
+        P0,
+    )));
+
+    let mut events = Vec::new();
+    resolve_ability_chain(runner.state_mut(), &return_aura, &mut events, 0)
+        .expect("Necrotic Plague return resolves");
+
+    assert_eq!(
+        runner.state().objects[&plague].zone,
+        Zone::Battlefield,
+        "Necrotic Plague returns from GY"
+    );
+    assert_eq!(
+        runner.state().objects[&plague].attached_to,
+        Some(AttachTarget::Object(chosen)),
+        "must attach to the chosen opponent creature ({chosen:?}), not the dying host ({dying:?}); \
+         attached_to={:?}",
+        runner.state().objects[&plague].attached_to
+    );
+    assert!(
+        !matches!(
+            runner.state().waiting_for,
+            WaitingFor::ReturnAsAuraTarget { .. }
+        ),
+        "must not open CR 303.4f Aura host choice when ParentTarget is the chosen creature"
+    );
+    let _ = _other_opp;
 }

@@ -12977,7 +12977,8 @@ mod tests {
         );
         let rem_lower = rem.trim().to_ascii_lowercase();
         assert!(
-            rem_lower.starts_with("then attach") || rem_lower.starts_with(", then attach"),
+            rem_lower.strip_prefix("then attach").is_some()
+                || rem_lower.strip_prefix(", then attach").is_some(),
             "Cass continuation must survive attach-host parse, got {rem:?}"
         );
 
@@ -12992,7 +12993,7 @@ mod tests {
         );
         let rem_lower = rem.trim().to_ascii_lowercase();
         assert!(
-            rem_lower.starts_with("exile those auras"),
+            rem_lower.strip_prefix("exile those auras").is_some(),
             "Storm Herald exile clause must survive attach-host parse, got {rem:?}"
         );
     }
