@@ -6631,6 +6631,11 @@ fn publish_effect_zone_choice_tracked_set(
     {
         return;
     }
+    // Distinguish mid-pause "nothing to publish yet" from a genuine empty
+    // narrowed set (PutAtLibraryPosition Bottom). The latter must still rebind
+    // `chain_tracked_set_id` so a chained TrackedSet exile cannot re-select
+    // cards that just left the library (CR 608.2c).
+    let mut narrowed = false;
     let tracked = if matches!(effect_kind, EffectKind::Sacrifice) {
         // Sacrifice publishes from PermanentSacrificed events at the completion
         // seam; callers pass the sacrificed ids already.
@@ -6638,6 +6643,7 @@ fn publish_effect_zone_choice_tracked_set(
     } else if matches!(effect_kind, EffectKind::PutAtLibraryPosition)
         && matches!(library_position, Some(LibraryPosition::Bottom))
     {
+        narrowed = true;
         // CR 608.2c: Expressive Iteration's bottom pick narrows the tracked set
         // to the remaining looked-at library cards so the chained exile step
         // cannot re-select the bottomed card.
@@ -6657,7 +6663,7 @@ fn publish_effect_zone_choice_tracked_set(
     } else {
         chosen.to_vec()
     };
-    if tracked.is_empty() {
+    if tracked.is_empty() && !narrowed {
         return;
     }
     let tracked_id = TrackedSetId(state.next_tracked_set_id);

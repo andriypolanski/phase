@@ -14729,8 +14729,10 @@ mod tests {
         // Aura host (ParentTarget), not TriggeringSource.
         let input = "attach any number of Equipment that were attached to it to that creature";
         let lower = input.to_lowercase();
-        let mut ctx = ParseContext::default();
-        ctx.subject = Some(TargetFilter::SelfRef);
+        let mut ctx = ParseContext {
+            subject: Some(TargetFilter::SelfRef),
+            ..Default::default()
+        };
         let result = parse_utility_imperative_ast(input, &lower, &mut ctx);
         let Some(UtilityImperativeAst::Attach {
             attachment,

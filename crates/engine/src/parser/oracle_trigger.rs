@@ -1878,12 +1878,20 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
         && def.destination == Some(Zone::Graveyard)
     {
         def.trigger_zones = vec![Zone::Graveyard];
-    } else if let Some(zone) = def
-        .execute
-        .as_deref()
-        .and_then(|execute| self_recursion_trigger_zone(execute, modifiers.effect_lower.as_str()))
-    {
-        def.trigger_zones = vec![zone];
+    } else if !matches!(def.valid_card, Some(TargetFilter::AttachedTo)) {
+        // CR 603.6c + CR 113.6 + CR 704.5m: A SelfRef return "from your
+        // graveyard" in the effect body implies the source is already in that
+        // zone when the trigger fires — EXCEPT for AttachedTo dies triggers
+        // (Necrotic Plague: "When enchanted creature dies, … Return this card
+        // from its owner's graveyard"). Those fire while the Aura is still on
+        // the battlefield; SBAs move it to the GY before the effect resolves.
+        // Applying self-recursion here would park the trigger in the GY only,
+        // so the enchanted-creature death never matches.
+        if let Some(zone) = def.execute.as_deref().and_then(|execute| {
+            self_recursion_trigger_zone(execute, modifiers.effect_lower.as_str())
+        }) {
+            def.trigger_zones = vec![zone];
+        }
     }
 
     // CR 608.2c: Off-battlefield source-return triggers (Senu, Keen-Eyed

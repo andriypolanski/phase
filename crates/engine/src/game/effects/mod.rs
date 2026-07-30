@@ -10416,8 +10416,18 @@ fn resolve_chain_body(
             )
             && matches!(sub.effect, Effect::Attach { .. })
         {
+            // CR 303.4g + CR 608.2c: Zero cards returned — skip the Attach that
+            // would have bound SelfRef attachments on entry, but still run
+            // trailing instructions (Cass: "then attach any number of Equipment
+            // … to that creature"). The skipped Attach node holds the chosen
+            // host target; ParentTarget on the trailing Attach must inherit it.
             if let Some(trailing) = sub.sub_ability.as_ref() {
                 let mut trailing_resolved = trailing.as_ref().clone();
+                if should_propagate_parent_targets(sub, &trailing_resolved) {
+                    trailing_resolved.targets = sub.targets.clone();
+                } else if should_propagate_parent_targets(ability, &trailing_resolved) {
+                    trailing_resolved.targets = ability.targets.clone();
+                }
                 apply_parent_chain_context(
                     &mut trailing_resolved,
                     ability,
@@ -10467,7 +10477,22 @@ fn resolve_chain_body(
                             ..
                         }
                     );
-                    if !attach_target_is_last_created
+                    // CR 608.2c: ParentTarget hosts inherit the parent's chosen
+                    // object (Necrotic Plague / Cass trailing Equipment). Do not
+                    // append the ability source — that would rebind the host to
+                    // the returned Aura/attachment itself.
+                    let attach_target_is_parent = matches!(
+                        &sub.effect,
+                        Effect::Attach {
+                            target: TargetFilter::ParentTarget,
+                            ..
+                        }
+                    );
+                    if attach_target_is_parent {
+                        if sub_with_context.targets.is_empty() && !ability.targets.is_empty() {
+                            sub_with_context.targets = ability.targets.clone();
+                        }
+                    } else if !attach_target_is_last_created
                         && !sub_with_context
                             .targets
                             .iter()

@@ -4016,8 +4016,25 @@ fn execute_effect(
     ) {
         return;
     }
+    // CR 400.7 + CR 603.6c + CR 704.5m: A dies trigger may latch while its
+    // source is still on the battlefield (Necrotic Plague: "When enchanted
+    // creature dies, … Return this card from its owner's graveyard"). SBAs
+    // then move that Aura to the GY and bump incarnation before the stack
+    // ability resolves. Refresh zone+incarnation onto the resolving SelfRef
+    // stamp — same currency repair delayed triggers apply at creation
+    // (`delayed_trigger::resolve`) — so ChangeZone SelfRef does not no-op.
+    let mut ability = ability.clone();
+    if let Some(mut source_context) = ability.trigger_source.clone() {
+        if source_context.identity.reference.object_id == ability.source_id {
+            if let Some(obj) = state.objects.get(&ability.source_id) {
+                source_context.identity.expected_zone = obj.zone;
+                source_context.identity.reference.incarnation = obj.incarnation;
+                ability.set_trigger_source_recursive(source_context);
+            }
+        }
+    }
     // Use resolve_ability_chain to support SubAbility/Execute chaining
-    let _ = effects::resolve_ability_chain(state, ability, events, 0);
+    let _ = effects::resolve_ability_chain(state, &ability, events, 0);
 }
 
 pub fn stack_is_empty(state: &GameState) -> bool {

@@ -966,6 +966,7 @@ fn storm_herald_preserves_delayed_exile_continuation() {
     fn find_leave_rider(def: &engine::types::ability::AbilityDefinition) -> Option<&Effect> {
         match def.effect.as_ref() {
             e @ Effect::AddTargetReplacement { .. } => Some(e),
+            e @ Effect::Unimplemented { .. } => Some(e),
             e @ Effect::ChangeZone {
                 destination: Zone::Exile,
                 target: TargetFilter::ParentTarget,
@@ -994,26 +995,10 @@ fn storm_herald_preserves_delayed_exile_continuation() {
 
 #[test]
 fn cass_reattaches_equipment_to_chosen_host_via_pipeline() {
-    // CR 400.7j + CR 608.2c + CR 701.3a: resolve the parsed Cass dies chain
-    // through the production effect pipeline with a chosen ParentTarget host.
-    use engine::game::ability_utils::build_resolved_from_def_with_targets;
-    use engine::game::effects::resolve_ability_chain;
-    use engine::types::events::GameEvent;
-
-    let parsed = parse_oracle_text(
-        CASS_ORACLE,
-        "Cass, Hand of Vengeance",
-        &[],
-        &["Creature".to_string()],
-        &["Human".to_string(), "Assassin".to_string()],
-    );
-    let execute = parsed
-        .triggers
-        .first()
-        .and_then(|t| t.execute.as_ref())
-        .expect("Cass dies trigger")
-        .clone();
-
+    // CR 400.7j + CR 608.2c + CR 701.3a: drive the printed Cass dies trigger
+    // through process_triggers → TriggerTargetSelection → resolution. ParentTarget
+    // for the Equipment attach must bind the chosen host without a test-side
+    // stamp_host helper.
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
 
@@ -1033,54 +1018,18 @@ fn cass_reattaches_equipment_to_chosen_host_via_pipeline() {
 
     let mut death_events = Vec::new();
     engine::game::zones::move_to_zone(runner.state_mut(), cass, Zone::Graveyard, &mut death_events);
-    let death_event = death_events
-        .iter()
-        .find(|e| {
-            matches!(
-                e,
-                GameEvent::ZoneChanged {
-                    object_id,
-                    from: Some(Zone::Battlefield),
-                    to: Zone::Graveyard,
-                    ..
-                } if *object_id == cass
-            )
-        })
-        .cloned()
-        .expect("Cass ZoneChanged to GY");
-    let trigger_source = match &death_event {
-        GameEvent::ZoneChanged { record, .. } => record
-            .trigger_source_context()
-            .cloned()
-            .expect("dies record owns trigger source context"),
-        _ => unreachable!(),
-    };
-    runner.state_mut().current_trigger_event = Some(death_event);
-
-    let mut ability =
-        build_resolved_from_def_with_targets(&execute, cass, P0, vec![TargetRef::Object(bearer)]);
-    ability.set_trigger_source_recursive(trigger_source);
-    ability.forward_result = execute.forward_result;
-    // Propagate the chosen Aura host onto every Attach node so Equipment's
-    // ParentTarget cannot fall through to TriggeringSource when 0 Auras return.
-    {
-        fn stamp_host(ability: &mut engine::types::ability::ResolvedAbility, host: TargetRef) {
-            if matches!(ability.effect, Effect::Attach { .. }) {
-                ability.targets = vec![host.clone()];
-            }
-            if let Some(sub) = ability.sub_ability.as_mut() {
-                stamp_host(sub, host.clone());
-            }
-            if let Some(else_ab) = ability.else_ability.as_mut() {
-                stamp_host(else_ab, host);
-            }
-        }
-        stamp_host(&mut ability, TargetRef::Object(bearer));
-    }
-
-    let mut events = Vec::new();
-    resolve_ability_chain(runner.state_mut(), &ability, &mut events, 0)
-        .expect("Cass equipment reattach resolves");
+    process_triggers(runner.state_mut(), &death_events);
+    assert!(
+        !runner.state().stack.is_empty()
+            || matches!(
+                runner.state().waiting_for,
+                WaitingFor::TriggerTargetSelection { .. } | WaitingFor::OrderTriggers { .. }
+            ),
+        "Cass dies trigger must be pending after equipped Cass dies; \
+         stack={} waiting={:?}",
+        runner.state().stack.len(),
+        runner.state().waiting_for
+    );
     drain_priority_preferring(&mut runner, &[bearer, equipment]);
 
     assert_eq!(
@@ -1089,6 +1038,13 @@ fn cass_reattaches_equipment_to_chosen_host_via_pipeline() {
         "Equipment that was attached to dying Cass must reattach to chosen bearer; \
          attached_to={:?}",
         runner.state().objects[&equipment].attached_to
+    );
+    assert!(
+        !matches!(
+            runner.state().waiting_for,
+            WaitingFor::ReturnAsAuraTarget { .. }
+        ),
+        "must not open CR 303.4f Aura host choice for Equipment reattach"
     );
 }
 
@@ -1253,9 +1209,9 @@ fn smoke_shroud_attaches_to_entering_ninja_among_multiple_hosts() {
 #[test]
 fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
     // CR 608.2c + CR 303.4f: Necrotic Plague nests Attach→ParentTarget under a
-    // TargetOnly→ChangeZone chain. The trigger event is the creature that died,
-    // but ParentTarget must bind the controller's chosen creature. Drive the
-    // parsed card through the production dies → target → resolve pipeline.
+    // TargetOnly→ChangeZone chain. Drive the printed dies trigger through
+    // process_triggers → TriggerTargetSelection → resolution with distinct dying
+    // and chosen creatures — no stamp_host / hand-built ResolvedAbility.
     let parsed = parse_oracle_text(
         NECROTIC_PLAGUE_ORACLE,
         "Necrotic Plague",
@@ -1320,13 +1276,19 @@ fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
         "Necrotic Plague must nest Attach→ParentTarget; execute={:?}",
         execute.effect
     );
+    assert!(
+        dies.trigger_zones.contains(&Zone::Battlefield),
+        "AttachedTo dies trigger must fire from the battlefield (Gift-shaped), not only GY; \
+         trigger_zones={:?}",
+        dies.trigger_zones
+    );
 
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
 
     let dying = scenario.add_creature(P0, "Dying Host", 2, 2).id();
     let chosen = scenario.add_creature(P1, "Chosen Host", 2, 2).id();
-    let _other_opp = scenario.add_creature(P1, "Other Opp Creature", 2, 2).id();
+    let other_opp = scenario.add_creature(P1, "Other Opp Creature", 2, 2).id();
     let plague = scenario
         .add_creature(P0, "Necrotic Plague", 0, 0)
         .as_enchantment()
@@ -1340,6 +1302,8 @@ fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
     let mut runner = scenario.build();
     attach_to(runner.state_mut(), plague, dying);
 
+    // Mirror Gift: collect dies triggers while the Aura is still on the battlefield
+    // (CR 603.6d LKI); SBAs during drain move it to the GY before resolution.
     let mut death_events = Vec::new();
     engine::game::zones::move_to_zone(
         runner.state_mut(),
@@ -1347,47 +1311,27 @@ fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
         Zone::Graveyard,
         &mut death_events,
     );
-    let death_event = death_events
-        .iter()
-        .find(|e| {
-            matches!(
-                e,
-                engine::types::events::GameEvent::ZoneChanged {
-                    object_id,
-                    from: Some(Zone::Battlefield),
-                    to: Zone::Graveyard,
-                    ..
-                } if *object_id == dying
-            )
-        })
-        .cloned()
-        .expect("dying ZoneChanged to GY");
-    runner.state_mut().current_trigger_event = Some(death_event);
-    if runner.state().objects[&plague].zone != Zone::Graveyard {
-        let mut gy = Vec::new();
-        engine::game::zones::move_to_zone(runner.state_mut(), plague, Zone::Graveyard, &mut gy);
-    }
-
-    use engine::game::ability_utils::build_resolved_from_def_with_targets;
-    use engine::game::effects::resolve_ability_chain;
-    let mut ability =
-        build_resolved_from_def_with_targets(execute, plague, P0, vec![TargetRef::Object(chosen)]);
-    {
-        fn stamp_host(ability: &mut engine::types::ability::ResolvedAbility, host: TargetRef) {
-            ability.targets = vec![host.clone()];
-            if let Some(sub) = ability.sub_ability.as_mut() {
-                stamp_host(sub, host.clone());
-            }
-            if let Some(else_ab) = ability.else_ability.as_mut() {
-                stamp_host(else_ab, host);
-            }
-        }
-        stamp_host(&mut ability, TargetRef::Object(chosen));
-    }
-
-    let mut events = Vec::new();
-    resolve_ability_chain(runner.state_mut(), &ability, &mut events, 0)
-        .expect("Necrotic Plague return resolves");
+    process_triggers(runner.state_mut(), &death_events);
+    assert!(
+        !runner.state().stack.is_empty()
+            || matches!(
+                runner.state().waiting_for,
+                WaitingFor::TriggerTargetSelection { .. } | WaitingFor::OrderTriggers { .. }
+            ),
+        "Necrotic dies trigger must be pending after enchanted creature dies; \
+         stack={} waiting={:?}",
+        runner.state().stack.len(),
+        runner.state().waiting_for
+    );
+    // CR 704.5m + CR 704.3: Aura with illegal/dead host goes to GY before the
+    // pending trigger resolves. The printed return is "from its owner's
+    // graveyard", so ChangeZone's origin guard needs the Aura in GY first.
+    engine::game::sba::check_state_based_actions(runner.state_mut(), &mut death_events);
+    assert_eq!(
+        runner.state().objects[&plague].zone,
+        Zone::Graveyard,
+        "SBA must put Necrotic Plague into GY before its return resolves"
+    );
     drain_priority_preferring(&mut runner, &[chosen]);
 
     assert_eq!(
@@ -1398,8 +1342,8 @@ fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
     assert_eq!(
         runner.state().objects[&plague].attached_to,
         Some(AttachTarget::Object(chosen)),
-        "must attach to the chosen opponent creature ({chosen:?}), not the dying host ({dying:?}); \
-         attached_to={:?}",
+        "must attach to the chosen opponent creature ({chosen:?}), not the dying host \
+         ({dying:?}) or distractor ({other_opp:?}); attached_to={:?}",
         runner.state().objects[&plague].attached_to
     );
     assert!(
@@ -1409,5 +1353,4 @@ fn necrotic_plague_attaches_to_chosen_creature_not_dying_host() {
         ),
         "must not open CR 303.4f Aura host choice when ParentTarget is the chosen creature"
     );
-    let _ = _other_opp;
 }
