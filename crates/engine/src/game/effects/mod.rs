@@ -9632,7 +9632,17 @@ fn resolve_chain_body(
     if next_sub_needs_tracked_set(ability) {
         let affected_with_causes =
             affected_objects_with_causes(state, ability, &ability.effect, &events[events_before..]);
-        publish_tracked_set_with_causes(state, affected_with_causes);
+        if !affected_with_causes.is_empty() {
+            publish_tracked_set_with_causes(state, affected_with_causes);
+        } else if !waits_for_resolution_choice(&state.waiting_for) {
+            // CR 603.7: A completed effect that moved nothing must still rebind
+            // an empty chain set so TrackedSet / TrackedSetSize consumers do not
+            // reuse a prior non-empty set (Fumigate with 0 creatures;
+            // ChangeZoneAll → GrantCastingPermission). Skip while a resolution
+            // choice is still open — publishing empty mid-pause would permanently
+            // bind Storm Herald's delayed exile to an empty set before Auras move.
+            publish_fresh_tracked_set(state, Vec::new());
+        }
     }
 
     // ExileFromTopUntil handles its own sub_ability chain internally for both

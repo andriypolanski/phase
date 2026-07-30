@@ -23300,6 +23300,13 @@ impl ResolvedAbility {
     ///
     /// Off-battlefield zone-match currency alone (co-departure mis-latch) does
     /// not suffice — CR 400.7e own-departure successor proof is required.
+    ///
+    /// CR 400.7 + CR 603.6c + CR 704.5m: A further exception is an Aura that
+    /// latched its AttachedTo dies trigger while still on the battlefield
+    /// (Necrotic Plague), then moved to the graveyard by SBAs before
+    /// resolution. `SelfRef` return-from-GY must bind that graveyard object
+    /// without rewriting `trigger_source` (which would flip `source_read` to
+    /// ExactLive and drop LKI attachments/counters for other dies triggers).
     pub fn self_ref_is_current(&self, state: &crate::types::game_state::GameState) -> bool {
         if self.source_is_current(state) {
             // CR 400.7e: co-departure mis-latch — zone-match currency alone cannot
@@ -23316,6 +23323,53 @@ impl ResolvedAbility {
             return true;
         };
         self.self_ref_own_departure_successor(state)
+            || self.self_ref_post_sba_graveyard_return(state)
+    }
+
+    /// CR 400.7 + CR 704.5m: True when this ability returns `SelfRef` from the
+    /// graveyard and the source is now there after an SBA move that followed a
+    /// battlefield latch (AttachedTo dies → Aura to GY before resolution).
+    fn self_ref_post_sba_graveyard_return(
+        &self,
+        state: &crate::types::game_state::GameState,
+    ) -> bool {
+        let Some(source) = self.trigger_source.as_ref() else {
+            return false;
+        };
+        if source.identity.expected_zone != crate::types::zones::Zone::Battlefield {
+            return false;
+        }
+        if source.identity.reference.object_id != self.source_id {
+            return false;
+        }
+        if !self.effect_returns_self_ref_from_graveyard() {
+            return false;
+        }
+        state
+            .objects
+            .get(&self.source_id)
+            .is_some_and(|object| object.zone == crate::types::zones::Zone::Graveyard)
+    }
+
+    /// True when this ability (or a nested sub) is a `ChangeZone` of `SelfRef`
+    /// whose origin is the graveyard.
+    fn effect_returns_self_ref_from_graveyard(&self) -> bool {
+        fn change_zone_self_from_gy(effect: &Effect) -> bool {
+            matches!(
+                effect,
+                Effect::ChangeZone {
+                    origin: Some(crate::types::zones::Zone::Graveyard),
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            )
+        }
+        fn walk(ability: &ResolvedAbility) -> bool {
+            change_zone_self_from_gy(&ability.effect)
+                || ability.sub_ability.as_deref().is_some_and(walk)
+                || ability.else_ability.as_deref().is_some_and(walk)
+        }
+        walk(self)
     }
 
     /// CR 608.2c: Bind a tracked-set sentinel (`TrackedSetId(0)`) to a CONCRETE
