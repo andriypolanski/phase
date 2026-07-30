@@ -17,6 +17,7 @@ import type {
   SubmitResult,
   WaitingFor,
 } from "./types";
+import type { InteractionSubmission } from "./generated/interaction";
 import type { BracketDeckRequest, BracketEstimate } from "../types/bracketEstimate";
 
 import { AdapterError, AdapterErrorCode, EMPTY_LEGAL_ACTIONS, actionRejectionError, nextSnapshotSeq } from "./types";
@@ -258,6 +259,13 @@ class NativeP2PBridge {
 
   async submitAction(action: GameAction, playerId: PlayerId): Promise<SubmitResult> {
     return this.clientFor(playerId).submitAction(action, playerId);
+  }
+
+  async submitInteraction(
+    submission: InteractionSubmission,
+    playerId: PlayerId,
+  ): Promise<SubmitResult> {
+    return this.clientFor(playerId).submitInteraction(submission, playerId);
   }
 
   async previewManaPayment(action: GameAction, playerId: PlayerId): Promise<ObjectId[]> {
@@ -534,6 +542,14 @@ export class P2PHostAdapter implements EngineAdapter {
   private nativeBridge: NativeP2PBridge | null = null;
   private nativeInitialSetupPending = false;
   private listeners: P2PAdapterEventListener[] = [];
+  /**
+   * Mirrors WasmAdapter's initialization contract: setup runs exactly once,
+   * and concurrent callers share its in-flight promise. The lobby initializes
+   * the host before advertising it; the game-page handoff later calls
+   * initialize again while seeding gameStore.
+   */
+  private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   private guestSessions = new Map<PlayerId, PeerSession>();
   private guestDecks = new Map<PlayerId, DeckListPayload["player"]>();
@@ -570,10 +586,7 @@ export class P2PHostAdapter implements EngineAdapter {
   private pregameOpQueue: Promise<void> = Promise.resolve();
   private resolvePregameReady!: () => void;
   private rejectPregameReady!: (err: unknown) => void;
-  private readonly pregameReady: Promise<void> = new Promise((resolve, reject) => {
-    this.resolvePregameReady = resolve;
-    this.rejectPregameReady = reject;
-  });
+  private pregameReady!: Promise<void>;
   private allowPartialStart = false;
 
   /**
@@ -1093,7 +1106,35 @@ export class P2PHostAdapter implements EngineAdapter {
     }
   }
 
+  private resetPregameReady(): void {
+    this.pregameReady = new Promise((resolve, reject) => {
+      this.resolvePregameReady = resolve;
+      this.rejectPregameReady = reject;
+    });
+    // Initialization can fail before a guest arrives to await this gate. Keep
+    // that rejection observable to a queued guest while preventing it from
+    // becoming an unhandled rejection when no guest exists yet.
+    void this.pregameReady.catch(() => {});
+  }
+
+  private unsubscribeHostConnections(): void {
+    this.hostConnectionUnsub?.();
+    this.hostConnectionUnsub = null;
+  }
+
   async initialize(): Promise<void> {
+    if (this.initialized) return;
+    if (this.initPromise) return this.initPromise;
+    this.resetPregameReady();
+    const pending = this.initializeInner();
+    this.initPromise = pending;
+    pending.catch(() => {
+      if (this.initPromise === pending) this.initPromise = null;
+    });
+    return pending;
+  }
+
+  private async initializeInner(): Promise<void> {
     traceAdapter("Host", "initialize-start", { isResume: this.isResume });
     // Subscribe SYNCHRONOUSLY before any `await`. `hostRoom()` buffers
     // inbound guest connections that arrived between peer-open and the
@@ -1147,6 +1188,7 @@ export class P2PHostAdapter implements EngineAdapter {
       }
       this.resolvePregameReady();
     } catch (err) {
+      this.unsubscribeHostConnections();
       this.rejectPregameReady(err);
       throw err;
     }
@@ -1158,6 +1200,7 @@ export class P2PHostAdapter implements EngineAdapter {
       });
     }
     traceAdapter("Host", "initialize-complete", {});
+    this.initialized = true;
   }
 
   private handleNewConnection(conn: DataConnection): void {
@@ -1499,6 +1542,26 @@ export class P2PHostAdapter implements EngineAdapter {
     return result;
   }
 
+  async submitInteraction(
+    submission: InteractionSubmission,
+    actor: PlayerId,
+  ): Promise<SubmitResult> {
+    if (this.gameRunState !== "running") {
+      throw new AdapterError(
+        "P2P_PAUSED",
+        `Cannot submit interaction while game state is ${this.gameRunState}`,
+        true,
+      );
+    }
+    const result = this.nativeBridge
+      ? await this.nativeBridge.submitInteraction(submission, actor)
+      : await this.wasm.submitInteraction(submission, actor);
+    await this.broadcastStateUpdate(result.events, result.log_entries);
+    await this.runAiLoop();
+    this.persistAuthoritativeState();
+    return result;
+  }
+
   async previewManaPayment(action: GameAction, actor: PlayerId): Promise<ObjectId[]> {
     if (this.gameRunState !== "running") {
       throw new AdapterError(
@@ -1637,7 +1700,7 @@ export class P2PHostAdapter implements EngineAdapter {
    * clears the persistence before disposing.
    */
   dispose(): void {
-    if (this.hostConnectionUnsub) this.hostConnectionUnsub();
+    this.unsubscribeHostConnections();
     for (const { timer } of this.disconnectedSeats.values()) {
       if (timer !== null) clearTimeout(timer);
     }
@@ -1780,6 +1843,44 @@ export class P2PHostAdapter implements EngineAdapter {
           const reason = err instanceof Error ? err.message : String(err);
           const session = this.guestSessions.get(pid);
           if (session) session.send({ type: "action_rejected", reason });
+        }
+        break;
+      }
+      case "interaction": {
+        const session = this.guestSessions.get(pid);
+        if (!session || msg.senderPlayerId !== pid) {
+          if (session) session.send({ type: "action_rejected", reason: "senderPlayerId mismatch" });
+          return;
+        }
+        if (this.eliminatedSeats.has(pid) || this.gameRunState !== "running") {
+          session.send({
+            type: "action_rejected",
+            reason: this.eliminatedSeats.has(pid)
+              ? "Player has conceded and can no longer act"
+              : `Game ${this.gameRunState}`,
+          });
+          return;
+        }
+        try {
+          const result = this.nativeBridge
+            ? await this.nativeBridge.submitInteraction(msg.submission, pid)
+            : await this.wasm.submitInteraction(msg.submission, pid);
+          await this.broadcastStateUpdate(result.events, result.log_entries);
+          await this.runAiLoop();
+          this.persistAuthoritativeState();
+          if (!this.nativeBridge) {
+            this.emit({
+              type: "stateChanged",
+              snapshot: await this.wasm.getSnapshot(),
+              events: result.events,
+              logEntries: result.log_entries,
+            });
+          }
+        } catch (err) {
+          session.send({
+            type: "action_rejected",
+            reason: err instanceof Error ? err.message : String(err),
+          });
         }
         break;
       }
@@ -2277,6 +2378,27 @@ export class P2PGuestAdapter implements EngineAdapter {
         type: "action",
         senderPlayerId: this.assignedPlayerId!,
         action,
+      });
+    });
+  }
+
+  async submitInteraction(
+    submission: InteractionSubmission,
+    _actor: PlayerId,
+  ): Promise<SubmitResult> {
+    if (!this.session) {
+      throw new AdapterError("P2P_ERROR", "Not connected to host", true);
+    }
+    if (this.assignedPlayerId === null) {
+      throw new AdapterError("P2P_ERROR", "Not yet assigned a player ID", true);
+    }
+    return new Promise<SubmitResult>((resolve, reject) => {
+      this.pendingResolve = resolve;
+      this.pendingReject = reject;
+      this.session!.send({
+        type: "interaction",
+        senderPlayerId: this.assignedPlayerId!,
+        submission,
       });
     });
   }

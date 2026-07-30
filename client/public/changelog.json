@@ -1,6 +1,35 @@
 {
   "entries": [
     {
+      "id": 182,
+      "date": "2026-07-28",
+      "title": "Yurlok brings mana burn back",
+      "tags": [
+        "new-cards",
+        "card-fixes",
+        "gameplay",
+        "interface",
+        "ai",
+        "multiplayer"
+      ],
+      "body": "✨ New Cards & Mechanics\n• Yurlok of Scorch Thrash now brings its three-player mana burst and life loss for unspent mana to the battlefield\n• Scholarship Sponsor, Enigma Ridges, Felisa, Fang of Silverquill, Orzhov Advokist, The Temporal Anchor, and Hidetsugu and Kairi join the supported pool\n\n🛠️ Cards That Now Work Right\n• Molten Psyche, Relic of Progenitus, Circle of Power, Licids, Aven Courier, Orcish Farmer, Elrond, Master of Healing, Moonmist, and Waterbend cards now follow their printed targets, durations, costs, or effects\n• Effects that scry multiple times in one resolution now preserve every resulting trigger; face-down exile piles and zero-target divided triggers resolve without the hangs and crashes they could cause\n\n⚔️ Combat & Gameplay\n• Extra-turn sequences resume with the right player, and multiplayer games accept legal attack declarations split across defenders\n• Sideboarding accepts legal main-deck sizes for the selected format, while the deck builder makes adjusting that size easier\n\n🖥️ Interface\n• Target prompts now distinguish helpful selections from hostile ones, instead of treating every target as an attack\n• Mana choices retain their individual costs and restrictions, hover previews behave reliably across pointer types, and desktop solo games regain their sandbox, checkpoint, and reconnect options\n\n🤖 AI\n• AI better recognizes draw-payoff and devotion strategies, chooses more effective removal, and makes sounder choices around mana development, self-bounce, and costly trades\n\n🌐 Multiplayer\n• Private lobby hosts stay private, and the server more reliably preserves legal actions and manual payment choices across multiplayer games",
+      "discordUrl": "https://discord.com/channels/1485498006781427802/1486432040332296424/1531741229509775480"
+    },
+    {
+      "id": 181,
+      "date": "2026-07-25",
+      "title": "Kamigawa flip cards arrive",
+      "tags": [
+        "new-cards",
+        "card-fixes",
+        "gameplay",
+        "interface",
+        "multiplayer"
+      ],
+      "body": "✨ New Cards & Mechanics\n• Kamigawa flip cards now work: 19 cards can flip to their alternate face while correctly retaining their color and mana cost (Bushi Tenderfoot, Budoka Gardener, Nezumi Shortfang, Kitsune Mystic, Akki Lavarunner, and the Ascendants)\n\n🛠️ Cards That Now Work Right\n• Devour now honors what it says to sacrifice: Famished Worldsire can devour lands, Caprichrome artifacts, and Feasting Hobbit Food, while ordinary Devour still takes creatures\n• Shadow of the Goblin correctly distinguishes cards played or cast from outside your hand; Doppelgang makes the intended X copies for each of its X targets\n• Strategic Betrayal lets the targeted opponent choose a creature they control without wrongly targeting it, so Ward and similar abilities behave correctly\n• Lion’s Eye Diamond, Diamond Lion, and Bomat Courier can activate a \"discard your hand\" cost with no cards in hand\n• Peerless Recycling and other Gift cards retain the opponent you chose, including in multiplayer games; Grindstone repeats its mill while the milled cards share a color\n• Mutable Pupa grants each matching perpetual keyword independently, Kathril can choose a different creature for each conditional counter, and reflexive \"that token\" effects follow the token they just created (Iroh, Tea Master; Summoner’s Sending)\n\n⚔️ Combat & Gameplay\n• Effects that force a creature to block now bind to the relevant combat event, and temporary unblockable effects are visible while they apply\n\n🖥️ Interface\n• Card previews stay open reliably, including over Remote Desktop; printed mana costs fit cleanly in a card’s title bar\n• Mana abilities with the same result are labeled by their actual activation cost, and unlimited counter growth is shown consistently in the hover panel\n• Desktop native games restore saved sessions more reliably, avoid a flashing Windows console, and no longer hit setup races in peer-to-peer or multi-AI games\n• Replacement-effect choices are clearer at a glance\n\n🌐 Multiplayer\n• Hosted peer-to-peer games no longer initialize the host more than once after a failed attempt",
+      "discordUrl": "https://discord.com/channels/1485498006781427802/1486432040332296424/1530478339129610251"
+    },
+    {
       "id": 180,
       "date": "2026-07-24",
       "title": "Resume solo games on desktop",

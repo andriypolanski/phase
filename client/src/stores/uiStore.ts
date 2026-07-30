@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type {
-  GameAction,
+  ObjectAction,
   ObjectId,
   PlayerId,
   TurnOrderSlotView,
@@ -8,6 +8,21 @@ import type {
 import { DICE_ROLL_DURATION_MS, TURN_BANNER_DURATION_MS } from "../animation/types";
 import { usePreferencesStore } from "./preferencesStore";
 import type { FilterKey } from "../components/modal/cardChoice/gridSelection";
+
+/**
+ * Ephemeral, player-selected blocker pairs. A creature can block more than one
+ * attacker, so the value is a set rather than a single attacker id.
+ */
+export type BlockerAssignments = Map<ObjectId, Set<ObjectId>>;
+
+/** Flatten the UI's per-blocker representation at the engine action boundary. */
+export function blockerAssignmentPairs(
+  assignments: ReadonlyMap<ObjectId, ReadonlySet<ObjectId>>,
+): [ObjectId, ObjectId][] {
+  return Array.from(assignments, ([blockerId, attackerIds]) =>
+    Array.from(attackerIds, (attackerId): [ObjectId, ObjectId] => [blockerId, attackerId]),
+  ).flat();
+}
 
 /**
  * A dice-roll / coin-flip moment to animate, surfaced from engine-authored
@@ -160,7 +175,7 @@ interface UiStoreState {
   /** CR 702.22c: attacking bands declared this combat (each inner array is one
    *  band of attacker ids). Empty when no bands are declared. */
   attackerBands: ObjectId[][];
-  blockerAssignments: Map<ObjectId, ObjectId>;
+  blockerAssignments: BlockerAssignments;
   combatClickHandler: ((id: ObjectId) => void) | null;
   previewSticky: boolean;
   isDragging: boolean;
@@ -174,7 +189,7 @@ interface UiStoreState {
    *  back-to-back rolls play serially instead of clobbering. */
   diceRollQueue: DiceRollPayload[];
   focusedOpponent: number | null;
-  pendingAbilityChoice: { objectId: ObjectId; actions: GameAction[] } | null;
+  pendingAbilityChoice: { objectId: ObjectId; actions: ObjectAction[] } | null;
   /** When non-null, the AttachmentsDialog is open showing every Aura
    *  enchanting this player. Lives in uiStore (not local React state inside
    *  the badge) so the dialog can be rendered as a child of `<DialogHost>`
@@ -262,7 +277,7 @@ interface UiStoreActions {
   selectAllAttackers: (ids: ObjectId[]) => void;
   setAttackerBands: (bands: ObjectId[][]) => void;
   assignBlocker: (blockerId: ObjectId, attackerId: ObjectId) => void;
-  removeBlockerAssignment: (blockerId: ObjectId) => void;
+  removeBlockerAssignment: (blockerId: ObjectId, attackerId?: ObjectId) => void;
   clearCombatSelection: () => void;
   setCombatClickHandler: (handler: ((id: ObjectId) => void) | null) => void;
   setPreviewSticky: (sticky: boolean) => void;
@@ -278,7 +293,7 @@ interface UiStoreActions {
    *  advancing to the next queued roll if any. */
   skipDiceRoll: () => void;
   setFocusedOpponent: (id: number | null) => void;
-  setPendingAbilityChoice: (choice: { objectId: ObjectId; actions: GameAction[] } | null) => void;
+  setPendingAbilityChoice: (choice: { objectId: ObjectId; actions: ObjectAction[] } | null) => void;
   setEnchantmentsDialogPlayer: (id: number | null) => void;
   setAttachmentFanHost: (id: ObjectId | null) => void;
   setMobileHandOpen: (open: boolean) => void;
@@ -548,14 +563,26 @@ export const useUiStore = create<UiStore>()((set, get) => ({
   assignBlocker: (blockerId, attackerId) =>
     set((state) => {
       const next = new Map(state.blockerAssignments);
-      next.set(blockerId, attackerId);
+      const attackerIds = new Set(next.get(blockerId));
+      attackerIds.add(attackerId);
+      next.set(blockerId, attackerIds);
       return { blockerAssignments: next };
     }),
 
-  removeBlockerAssignment: (blockerId) =>
+  removeBlockerAssignment: (blockerId, attackerId) =>
     set((state) => {
       const next = new Map(state.blockerAssignments);
-      next.delete(blockerId);
+      if (attackerId === undefined) {
+        next.delete(blockerId);
+      } else {
+        const attackerIds = new Set(next.get(blockerId));
+        attackerIds.delete(attackerId);
+        if (attackerIds.size === 0) {
+          next.delete(blockerId);
+        } else {
+          next.set(blockerId, attackerIds);
+        }
+      }
       return { blockerAssignments: next };
     }),
 
