@@ -5299,19 +5299,19 @@ fn mandatory_parent_effect_performed(effect: &Effect, events: &[GameEvent]) -> b
 }
 
 pub(crate) fn publish_tracked_set(state: &mut GameState, affected_ids: Vec<ObjectId>) {
-    // CR 603.7 + CR 608.2c: An empty publish must not allocate a chain set id —
-    // otherwise a deferred Resolution-time zone choice (Storm Herald: choose
-    // Auras, then move) can stamp `chain_tracked_set_id` to an empty set before
-    // the real move, and a following CreateDelayedTrigger binds TrackedSet to
-    // that empty id forever.
-    if affected_ids.is_empty() {
-        return;
-    }
     // CR 603.7 + CR 608.2c: Chain unification. If an ancestor in this
     // resolution chain already published a tracked set, extend that set with
     // the current publish so compound zone-changing effects expose every
     // affected object to a single downstream "those cards" reference.
     // Otherwise start a new chain-scoped set.
+    //
+    // An empty `affected_ids` still participates: with no active chain it
+    // allocates a fresh empty set so TrackedSet consumers cannot reuse a prior
+    // non-empty set (Fumigate / ChangeZoneAll → grant). With an active chain,
+    // extending by nothing leaves existing members intact (Beseech: Shuffle
+    // between exile and hand-fallback must not wipe the exiled card).
+    // Storm Herald mid-pause empty publishes are skipped at the EffectZoneChoice
+    // site; CreateDelayedTrigger also prefers a nonempty chain id.
     if let Some(chain_id) = state.chain_tracked_set_id {
         state
             .tracked_object_sets
@@ -9632,17 +9632,7 @@ fn resolve_chain_body(
     if next_sub_needs_tracked_set(ability) {
         let affected_with_causes =
             affected_objects_with_causes(state, ability, &ability.effect, &events[events_before..]);
-        if !affected_with_causes.is_empty() {
-            publish_tracked_set_with_causes(state, affected_with_causes);
-        } else if !waits_for_resolution_choice(&state.waiting_for) {
-            // CR 603.7: A completed effect that moved nothing must still rebind
-            // an empty chain set so TrackedSet / TrackedSetSize consumers do not
-            // reuse a prior non-empty set (Fumigate with 0 creatures;
-            // ChangeZoneAll → GrantCastingPermission). Skip while a resolution
-            // choice is still open — publishing empty mid-pause would permanently
-            // bind Storm Herald's delayed exile to an empty set before Auras move.
-            publish_fresh_tracked_set(state, Vec::new());
-        }
+        publish_tracked_set_with_causes(state, affected_with_causes);
     }
 
     // ExileFromTopUntil handles its own sub_ability chain internally for both
@@ -10487,10 +10477,12 @@ fn resolve_chain_body(
                             ..
                         }
                     );
-                    // CR 608.2c: ParentTarget hosts inherit the parent's chosen
-                    // object (Necrotic Plague / Cass trailing Equipment). Do not
-                    // append the ability source — that would rebind the host to
-                    // the returned Aura/attachment itself.
+                    // CR 608.2c: ParentTarget hosts inherit an explicit parent
+                    // choice when present (Necrotic Plague). When none was chosen,
+                    // fall back to the ability source as host — CR 301.5b +
+                    // CR 701.3a put→attach-to-~ (Iron Man, Armored Skyhunter).
+                    // Do not append the source on top of an already-bound host:
+                    // that would let ParentTarget resolve to the returned Aura.
                     let attach_target_is_parent = matches!(
                         &sub.effect,
                         Effect::Attach {
@@ -10499,8 +10491,14 @@ fn resolve_chain_body(
                         }
                     );
                     if attach_target_is_parent {
-                        if sub_with_context.targets.is_empty() && !ability.targets.is_empty() {
-                            sub_with_context.targets = ability.targets.clone();
+                        if sub_with_context.targets.is_empty() {
+                            if !ability.targets.is_empty() {
+                                sub_with_context.targets = ability.targets.clone();
+                            } else {
+                                sub_with_context
+                                    .targets
+                                    .push(TargetRef::Object(ability.source_id));
+                            }
                         }
                     } else if !attach_target_is_last_created
                         && !sub_with_context
