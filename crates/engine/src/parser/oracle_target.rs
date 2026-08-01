@@ -995,6 +995,7 @@ pub fn parse_target_with_syntax<'a>(
         {
             if let Ok((object_tail, _)) = alt((
                 tag::<_, _, OracleError<'_>>(", and/or "),
+                tag(", and "),
                 tag(", or "),
                 tag(", "),
             ))
@@ -1003,12 +1004,17 @@ pub fn parse_target_with_syntax<'a>(
                 if starts_with_type_word(object_tail) {
                     let mut combined = player_filter.clone();
                     let mut leg_text = &text[lower.len() - object_tail.len()..];
+                    let mut merged_any = false;
                     loop {
                         let (leg, rest) = parse_type_phrase_with_ctx(leg_text, ctx);
                         if matches!(leg, TargetFilter::Any) {
+                            if merged_any {
+                                return (combined, leg_text, syntax);
+                            }
                             break;
                         }
                         combined = merge_or_filters(combined, leg);
+                        merged_any = true;
 
                         let rest_lower = rest.to_lowercase();
                         let Ok((next_leg, _)) = alt((
@@ -9651,6 +9657,23 @@ mod tests {
                     TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
                 ],
             }
+        );
+    }
+
+    #[test]
+    fn coordinated_player_and_object_target_accepts_and_connector() {
+        let (filter, rest) = parse_target("target player, and creature you control");
+
+        assert_eq!(rest, "");
+        assert_eq!(
+            filter,
+            TargetFilter::Or {
+                filters: vec![
+                    TargetFilter::Player,
+                    TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
+                ],
+            },
+            "the ordinary `, and` connector must retain the object alternative"
         );
     }
 
